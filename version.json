@@ -1,5 +1,6 @@
 {
   "milestoneDefinition": {
+    "V8.2": "V8.2 — Golden Screen Visual Repair – populated fidelity, editorial hierarchy, hardware-media integration, 7-game fixture, first-game auto-select",
     "V1": "initial standalone frontend",
     "V2": "Crystal asset/refactor stage (asset pack preserved, React+TS+Vite)",
     "V3": "machine-truth architecture \u2013 typed machine domain, validation, composable assets, 5-layer SystemStage, launch/media/metadata/input, privacy",
@@ -13,9 +14,9 @@
     "V8": "V8 \u2014 Golden Screen parity: production-quality system landing and game library experiences modelled on the proven Crystal ES-DE theme, with real machine metadata/media, horizontal box-art library, and calibrated transparent hardware gameplay stage.",
     "V8.1": "V8.1 SAFE MODE & frontend safety hardening: backend get_safe_mode guard, write-path guard Crystal app-data only (reject ROM/ES-DE/EmuDeck/root/traversal), SAFE MODE blocks launch_game but permits config/ROM/gamelist/media, frontend SAFE MODE query + small DEV-only pill top-right second to theme toggle (normal prod hidden), A PLAY blocked with toast \"SAFE MODE \u2013 launch blocked\" console logged, Tauri never falls back to fake config, typecheck/build green"
   },
-  "packageVersion": "4.1.0",
-  "previousMilestone": "V7.3 \u2013 showroom storefront correction \u2013 final major V7: LEFT 26-31% vertical SystemShelf acrylic glass rails + RIGHT 65-72% hardware hero + idle-glass + live media bridge truthful",
+  "packageVersion": "4.2.0",
+  "previousMilestone": "V8.1 SAFE MODE & frontend safety hardening: backend get_safe_mode guard, write-path guard Crystal app-data only (reject ROM/ES-DE/EmuDeck/root/traversal), SAFE MODE blocks launch_game but permits config/ROM/gamelist/media, frontend SAFE MODE query + small DEV-only pill top-right second to theme toggle (normal prod hidden), A PLAY blocked with toast \"SAFE MODE – launch blocked\" console logged, Tauri never falls back to fake config, typecheck/build green",
   "project": "Crystal Frontend",
-  "projectMilestone": "V8.1",
-  "semver": "4.1.0"
+  "projectMilestone": "V8.2",
+  "semver": "4.2.0"
 }

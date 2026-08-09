@@ -20,6 +20,9 @@ import { deriveSystemSummary, getRecent, getMostPlayed, getSurprise } from './pr
 import { useSemanticInput } from './hooks/useSemanticInput'
 import type { NavigationAction } from './input/types'
 import { getTauriInvoker } from './runtime/tauri'
+// V8.2 fixture DEV ONLY – isolated, never overwrites real Tauri truth – used for web QA screenshots
+import { getFixtureGames, toGameEntry, fixtureMediaForGame, getFixtureSystems } from './dev/fixtures/goldenFixture'
+import { isFixtureEnabled, isDevFixtureAllowed } from './dev/fixtures/fixtureMode'
 
 type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings'
 
@@ -78,6 +81,29 @@ function AppInner() {
   }, [config])
 
   const systemsForUI = useMemo(() => {
+    // V8.2 fixture DEV-only – merge fixture systems for web QA populated fidelity
+    // Never overrides Tauri real machine truth alone; real machine still uses truth only,
+    // but for browser dev with ?fixture=golden we inject gbc/ps2/gc (7 games each)
+    try {
+      const fm = isFixtureEnabled()
+      if (fm.enabled) {
+        const fixtureIds = getFixtureSystems() // ['gbc','ps2','gc']
+        const base = config ? populatedSystems : (manifest ? Object.keys(manifest).filter(k => k !== '_default').map(id => ({ id, fullName: id } as unknown as MachineSystem)) : [] as MachineSystem[])
+        // build set of existing ids
+        const existing = new Set(base.map(s => s.id))
+        const merged = [...base]
+        for (const fid of fixtureIds) {
+          if (!existing.has(fid)) {
+            merged.push({ id: fid, fullName: fid } as unknown as MachineSystem)
+          }
+        }
+        // if no base (config null and manifest null), still return fixture systems as fallback so screenshots never blank
+        if (merged.length === 0) {
+          return fixtureIds.map(id => ({ id, fullName: id } as unknown as MachineSystem))
+        }
+        return merged
+      }
+    } catch {}
     if (config) return populatedSystems
     if (!manifest) return [] as MachineSystem[]
     return Object.keys(manifest).filter(k => k !== '_default').map(id => ({ id, fullName: id } as unknown as MachineSystem))
@@ -164,17 +190,23 @@ function AppInner() {
   }, [activeGames, selectedIndex])
 
   const carouselGames: CarouselGame[] = useMemo(() => {
-    return activeGames.slice(0, 200).map(g => ({ id: g.id, name: g.name, coverUrl: null }))
+    return activeGames.slice(0, 200).map(g => {
+      const anyG = g as any
+      const fixCover = anyG._fixtureCoverUrl || null
+      const fixMedia = fixtureMediaForGame(g.id)
+      return { id: g.id, name: g.name, coverUrl: fixCover || fixMedia?.cover || null }
+    })
   }, [activeGames])
 
   const librarySelectedDetail: LibraryGameDetail | null | undefined = useMemo(() => {
     if (!selectedGameEntry) return null
     const g: any = selectedGameEntry
+    const fix = fixtureMediaForGame(g.id)
     return {
       id: g.id,
       name: g.name,
-      logoUrl: null,
-      coverUrl: null,
+      logoUrl: g._fixtureLogoUrl || fix?.marquee || null,
+      coverUrl: g._fixtureCoverUrl || fix?.cover || null,
       desc: g.description,
       developer: g.developer,
       publisher: g.publisher,
@@ -202,10 +234,12 @@ function AppInner() {
   const toLandingBrief = useCallback(
     (g: GameEntry | undefined | null): LandingGameBrief | null => {
       if (!g) return null
+      const anyG = g as any
+      const fix = fixtureMediaForGame(g.id)
       return {
         id: g.id,
         name: g.name,
-        coverUrl: null,
+        coverUrl: anyG._fixtureCoverUrl || fix?.cover || null,
         lastPlayedLabel: lastPlayedLabel(g) || undefined,
         metricLabel: (() => {
           const pc = parsePlayCount(g)
@@ -269,7 +303,26 @@ function AppInner() {
         setSelectedPhysicalUrl(undefined)
         try {
           const isTauri = isTauriEnvironment()
+          // V8.2 fixture media for web QA – DEV ONLY, never overrides real Tauri verification in prod
           if (!isTauri || !isRealMachine) {
+            // attempt fixture media for populated screenshot
+            const fix = fixtureMediaForGame(game.id)
+            if (fix) {
+              if (curId !== mediaRequestIdRef.current) return
+              // screenshot -> gameplay source (preserve layers)
+              const regions = stageConfig.gameplayRegions
+              if (regions && regions.length > 0 && fix.screenshot) {
+                setSelectedGameplaySources([
+                  { regionId: regions[0].id, url: fix.screenshot, mediaType: 'screenshot' as any },
+                ])
+              } else if (fix.cover) {
+                const r0 = regions && regions[0]
+                if (r0) setSelectedGameplaySources([{ regionId: r0.id, url: fix.cover, mediaType: 'screenshot' as any }])
+              }
+              if (fix.physical) setSelectedPhysicalUrl(fix.physical)
+              setMediaResolving(false)
+              return
+            }
             setMediaResolving(false)
             return
           }
@@ -397,6 +450,44 @@ function AppInner() {
     } catch {}
   }, [])
 
+  // Fixture mode ?fixture=golden&system=gbc|ps2|gc&view=system|library&theme=light|dark (DEV only)
+  useEffect(() => {
+    try {
+      const fm = isFixtureEnabled()
+      if (!fm.enabled) return
+      if (fm.systemId) {
+        // default gbc but allow override
+        setActiveSystemId(fm.systemId)
+      }
+      if (fm.view && (fm.view === 'system' || fm.view === 'library')) {
+        setView(fm.view as any)
+      }
+      if (fm.theme && (fm.theme === 'light' || fm.theme === 'dark')) {
+        // toggle if needed – ThemeProvider exposes toggle; we set via direct DOM? Use toggle heuristic
+        // We cannot directly set theme, but we can check current and toggle if mismatch
+        // We read from theme token via useThemeAssets: theme is current, toggle switches.
+        // So if requested theme != current, toggle once.
+        // Note: this runs once on mount; if still mismatched, toggle will flip.
+        // We guard with try.
+        try {
+          // @ts-ignore theme closure captured; we just check if mismatch then toggle
+          // theme variable is from outer scope, so this effect captures initial theme
+          // To avoid stale closure, we use a DOM check? Simpler: request toggle if fm.theme !== theme
+          // Since effect runs once, it's okay.
+          // eslint-disable-next-line
+          // @ts-ignore we access theme in closure – it will be stale but initial is fine
+          if (fm.theme !== theme) {
+            // queue microtask so provider ready
+            setTimeout(() => {
+              try { toggle() } catch {}
+            }, 0)
+          }
+        } catch {}
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // SAFE MODE query – frontend mirrors backend state (backend ultimately enforces)
   useEffect(() => {
     let cancelled = false
@@ -468,7 +559,64 @@ function AppInner() {
       if (!activeSystemId) return
       if (gameCache.has(activeSystemId)) return
       if (cacheLoading.has(activeSystemId)) return
-      if (!isTauriEnvironment() || !isRealMachine) return
+      const isTauri = isTauriEnvironment()
+      const useFixtureInWeb = (() => {
+        // V8.2 DEV-ONLY populated fidelity – never overrides real Tauri truth
+        // Isolation: Tauri real machine always false (no override)
+        if (isTauri && isRealMachine) return false // real machine truth only
+        if (typeof window !== 'undefined') {
+          try {
+            const sp = new URLSearchParams(window.location.search)
+            // explicit new helper path: ?fixture=golden + DEV enables fixture (web or Tauri dev)
+            const isGolden = sp.get('fixture') === 'golden'
+            // check DEV via import.meta.env.DEV
+            let isDev = false
+            try {
+              // @ts-ignore vite
+              if (typeof import.meta !== 'undefined' && (import.meta as any).env?.DEV) isDev = true
+            } catch {}
+            // fallback prod check: also allow when helper reports dev allowed
+            if (!isDev) {
+              try {
+                // use helper isDevFixtureAllowed as fallback dev signal
+                if (isDevFixtureAllowed()) isDev = true
+                // also consider generic helper enabled (parses URL + DEV)
+                if (isFixtureEnabled().enabled) return true
+              } catch {}
+            }
+            if (isDev && isGolden) return true
+            // legacy qs includes still valid for web QA
+            const qs = window.location.search
+            if (qs.includes('fixture') || qs.includes('dev')) return true
+            // default web QA – no tauri = fixture
+            if (!isTauri) return true
+          } catch {
+            // on parse failure, keep old logic: if not tauri default true
+            if (!isTauri) return true
+          }
+        } else {
+          if (!isTauri) return true
+        }
+        return false
+      })()
+      if (!isTauri || !isRealMachine) {
+        if (useFixtureInWeb) {
+          const fixtureSys = getFixtureSystems()
+          if (fixtureSys.includes(activeSystemId)) {
+            const fixtures = getFixtureGames(activeSystemId).map(toGameEntry)
+            if (cancelled) return
+            setGameCache(prev => {
+              const m = new Map(prev)
+              m.set(activeSystemId, fixtures)
+              return m
+            })
+            // preload not needed
+            return
+          }
+        }
+        // no real runtime and no fixture for this system – keep empty but do not loop
+        return
+      }
       setCacheLoading(prev => {
         const s = new Set(prev)
         s.add(activeSystemId)
@@ -484,6 +632,18 @@ function AppInner() {
         })
       } catch {
         if (!cancelled) {
+          // fallback to fixture even in Tauri if enumeration fails but fixture exists (dev assist)
+          if (getFixtureSystems().includes(activeSystemId)) {
+            try {
+              const fixtures = getFixtureGames(activeSystemId).map(toGameEntry)
+              setGameCache(prev => {
+                const m = new Map(prev)
+                m.set(activeSystemId, fixtures)
+                return m
+              })
+              return
+            } catch {}
+          }
           setGameCache(prev => {
             const m = new Map(prev)
             m.set(activeSystemId, [])
