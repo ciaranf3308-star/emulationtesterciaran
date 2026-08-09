@@ -1,0 +1,877 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-09T00:00:00Z",
+  "populatedSystemCount": 5,
+  "roots": {
+    "rom": "D:/Emulation/roms/",
+    "scrapedMedia": "D:/Emulation/storage/downloaded_media",
+    "gamelists": "D:/Emulation/gamelists"
+  },
+  "authoritativeFiles": {
+    "customSystems": "example/es_systems.xml",
+    "bundledSystems": "example/bundled/es_systems.xml"
+  },
+  "systems": [
+    {
+      "id": "ps2",
+      "fullName": "Sony PlayStation 2",
+      "configSource": "example/bundled",
+      "configOrigin": "example",
+      "romDirectory": "D:/Emulation/roms/ps2",
+      "extensionString": ".bin .BIN .chd .CHD .ciso .CISO .cso .CSO .dump .DUMP .elf .ELF .gz .GZ .lnk .LNK .m3u .M3U .mdf .MDF .img .IMG .iso .ISO .isz .ISZ .ngr .NRG .zso .ZSO",
+      "validExtensions": [
+        ".bin",
+        ".BIN",
+        ".chd",
+        ".CHD",
+        ".ciso",
+        ".CISO",
+        ".cso",
+        ".CSO",
+        ".dump",
+        ".DUMP",
+        ".elf",
+        ".ELF",
+        ".gz",
+        ".GZ",
+        ".lnk",
+        ".LNK",
+        ".m3u",
+        ".M3U",
+        ".mdf",
+        ".MDF",
+        ".img",
+        ".IMG",
+        ".iso",
+        ".ISO",
+        ".isz",
+        ".ISZ",
+        ".ngr",
+        ".NRG",
+        ".zso",
+        ".ZSO"
+      ],
+      "matchingRomFileCount": 3,
+      "commands": [
+        {
+          "label": "LRPS2",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\pcsx2_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": true,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "pcsx2_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        },
+        {
+          "label": "PCSX2",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\pcsx2_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": false,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "pcsx2_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        }
+      ],
+      "launchSelection": {
+        "selectedLabel": "PCSX2 (Standalone)",
+        "rule": "example/system-level",
+        "status": "STATICALLY_RESOLVED",
+        "source": "example/gamelists/ps2/gamelist.xml",
+        "systemAlternativeLabel": "PCSX2 (Standalone)",
+        "perGameOverrideCount": 0,
+        "perGameOverrides": []
+      },
+      "media": {
+        "covers": {
+          "directory": "D:/Emulation/storage/downloaded_media/ps2/covers",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "screenshots": {
+          "directory": "D:/Emulation/storage/downloaded_media/ps2/screenshots",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "videos": {
+          "directory": "D:/Emulation/storage/downloaded_media/ps2/videos",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        }
+      },
+      "metadata": {
+        "exists": true,
+        "favorites": 1,
+        "gameEntries": 3,
+        "gamelistPath": "D:/Emulation/gamelists/ps2/gamelist.xml",
+        "entriesWithPlayCount": 0,
+        "entriesWithLastPlayed": 0,
+        "fields": "gameList/game nodes"
+      }
+    },
+    {
+      "id": "gc",
+      "fullName": "Nintendo GameCube",
+      "configSource": "example/bundled",
+      "configOrigin": "example",
+      "romDirectory": "D:/Emulation/roms/gc",
+      "extensionString": ".ciso .CISO .dff .DFF .dol .DOL .elf .ELF .gcm .GCM .gcz .GCZ .iso .ISO .json .JSON .m3u .M3U .rvz .RVZ .tgc .TGC .wad .WAD .wbfs .WBFS .wia .WIA .7z .7Z .zip .ZIP",
+      "validExtensions": [
+        ".ciso",
+        ".CISO",
+        ".dff",
+        ".DFF",
+        ".dol",
+        ".DOL",
+        ".elf",
+        ".ELF",
+        ".gcm",
+        ".GCM",
+        ".gcz",
+        ".GCZ",
+        ".iso",
+        ".ISO",
+        ".json",
+        ".JSON",
+        ".m3u",
+        ".M3U",
+        ".rvz",
+        ".RVZ",
+        ".tgc",
+        ".TGC",
+        ".wad",
+        ".WAD",
+        ".wbfs",
+        ".WBFS",
+        ".wia",
+        ".WIA",
+        ".7z",
+        ".7Z",
+        ".zip",
+        ".ZIP"
+      ],
+      "matchingRomFileCount": 3,
+      "commands": [
+        {
+          "label": "Dolphin",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\dolphin_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": true,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "dolphin_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        },
+        {
+          "label": "Dolphin (Standalone)",
+          "template": "%EMULATOR_DOLPHIN% -b -e %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": false,
+          "findRules": [
+            {
+              "identifier": "DOLPHIN",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\Dolphin-x64\\Dolphin.exe",
+                    "%ESPATH%\\..\\Emulators\\Dolphin-x64\\Dolphin.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [],
+            "corePathIdentifiers": [],
+            "emulatorIdentifiers": [
+              "DOLPHIN"
+            ]
+          }
+        }
+      ],
+      "launchSelection": {
+        "selectedLabel": "Dolphin (Standalone)",
+        "rule": "example/system-level",
+        "status": "STATICALLY_RESOLVED",
+        "source": "example/gamelists/gc/gamelist.xml",
+        "systemAlternativeLabel": "Dolphin (Standalone)",
+        "perGameOverrideCount": 0,
+        "perGameOverrides": []
+      },
+      "media": {
+        "covers": {
+          "directory": "D:/Emulation/storage/downloaded_media/gc/covers",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "screenshots": {
+          "directory": "D:/Emulation/storage/downloaded_media/gc/screenshots",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "videos": {
+          "directory": "D:/Emulation/storage/downloaded_media/gc/videos",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        }
+      },
+      "metadata": {
+        "exists": true,
+        "favorites": 1,
+        "gameEntries": 3,
+        "gamelistPath": "D:/Emulation/gamelists/gc/gamelist.xml",
+        "entriesWithPlayCount": 0,
+        "entriesWithLastPlayed": 0,
+        "fields": "gameList/game nodes"
+      }
+    },
+    {
+      "id": "gba",
+      "fullName": "Nintendo Game Boy Advance",
+      "configSource": "example/bundled",
+      "configOrigin": "example",
+      "romDirectory": "D:/Emulation/roms/gba",
+      "extensionString": ".agb .AGB .bin .BIN .cgb .CGB .dmg .DMG .gb .GB .gba .GBA .gbc .GBC .gbx .GBX .sgb .SGB .7z .7Z .zip .ZIP",
+      "validExtensions": [
+        ".agb",
+        ".AGB",
+        ".bin",
+        ".BIN",
+        ".cgb",
+        ".CGB",
+        ".dmg",
+        ".DMG",
+        ".gb",
+        ".GB",
+        ".gba",
+        ".GBA",
+        ".gbc",
+        ".GBC",
+        ".gbx",
+        ".GBX",
+        ".sgb",
+        ".SGB",
+        ".7z",
+        ".7Z",
+        ".zip",
+        ".ZIP"
+      ],
+      "matchingRomFileCount": 3,
+      "commands": [
+        {
+          "label": "mGBA",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\mgba_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": true,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "mgba_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        },
+        {
+          "label": "mGBA (Standalone)",
+          "template": "%EMULATOR_MGBA% -f %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": false,
+          "findRules": [
+            {
+              "identifier": "MGBA",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\mGBA\\mGBA.exe",
+                    "%ESPATH%\\..\\Emulators\\mGBA\\mGBA.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [],
+            "corePathIdentifiers": [],
+            "emulatorIdentifiers": [
+              "MGBA"
+            ]
+          }
+        }
+      ],
+      "launchSelection": {
+        "selectedLabel": "mGBA",
+        "rule": "example/system-level",
+        "status": "STATICALLY_RESOLVED",
+        "source": "example/gamelists/gba/gamelist.xml",
+        "systemAlternativeLabel": null,
+        "perGameOverrideCount": 0,
+        "perGameOverrides": []
+      },
+      "media": {
+        "covers": {
+          "directory": "D:/Emulation/storage/downloaded_media/gba/covers",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "screenshots": {
+          "directory": "D:/Emulation/storage/downloaded_media/gba/screenshots",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "videos": {
+          "directory": "D:/Emulation/storage/downloaded_media/gba/videos",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        }
+      },
+      "metadata": {
+        "exists": true,
+        "favorites": 1,
+        "gameEntries": 3,
+        "gamelistPath": "D:/Emulation/gamelists/gba/gamelist.xml",
+        "entriesWithPlayCount": 0,
+        "entriesWithLastPlayed": 0,
+        "fields": "gameList/game nodes"
+      }
+    },
+    {
+      "id": "n64",
+      "fullName": "Nintendo 64",
+      "configSource": "example/bundled",
+      "configOrigin": "example",
+      "romDirectory": "D:/Emulation/roms/n64",
+      "extensionString": ".bin .BIN .d64 .D64 .exe .EXE .lnk .LNK .n64 .N64 .ndd .NDD .u1 .U1 .v64 .V64 .z64 .Z64 .7z .7Z .zip .ZIP",
+      "validExtensions": [
+        ".bin",
+        ".BIN",
+        ".d64",
+        ".D64",
+        ".exe",
+        ".EXE",
+        ".lnk",
+        ".LNK",
+        ".n64",
+        ".N64",
+        ".ndd",
+        ".NDD",
+        ".u1",
+        ".U1",
+        ".v64",
+        ".V64",
+        ".z64",
+        ".Z64",
+        ".7z",
+        ".7Z",
+        ".zip",
+        ".ZIP"
+      ],
+      "matchingRomFileCount": 3,
+      "commands": [
+        {
+          "label": "Mupen64Plus-Next",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\mupen64plus_next_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": true,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "mupen64plus_next_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        },
+        {
+          "label": "Mupen64Plus (Standalone)",
+          "template": "%EMULATOR_MUPEN64PLUS% --fullscreen %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": false,
+          "findRules": [
+            {
+              "identifier": "MUPEN64PLUS",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\mupen64plus\\mupen64plus-ui-console.exe",
+                    "%ESPATH%\\..\\Emulators\\mupen64plus\\mupen64plus-ui-console.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [],
+            "corePathIdentifiers": [],
+            "emulatorIdentifiers": [
+              "MUPEN64PLUS"
+            ]
+          }
+        }
+      ],
+      "launchSelection": {
+        "selectedLabel": "Mupen64Plus-Next",
+        "rule": "example/system-level",
+        "status": "STATICALLY_RESOLVED",
+        "source": "example/gamelists/n64/gamelist.xml",
+        "systemAlternativeLabel": null,
+        "perGameOverrideCount": 0,
+        "perGameOverrides": []
+      },
+      "media": {
+        "covers": {
+          "directory": "D:/Emulation/storage/downloaded_media/n64/covers",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "screenshots": {
+          "directory": "D:/Emulation/storage/downloaded_media/n64/screenshots",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "videos": {
+          "directory": "D:/Emulation/storage/downloaded_media/n64/videos",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        }
+      },
+      "metadata": {
+        "exists": true,
+        "favorites": 1,
+        "gameEntries": 3,
+        "gamelistPath": "D:/Emulation/gamelists/n64/gamelist.xml",
+        "entriesWithPlayCount": 0,
+        "entriesWithLastPlayed": 0,
+        "fields": "gameList/game nodes"
+      }
+    },
+    {
+      "id": "snes",
+      "fullName": "Nintendo SNES (Super Nintendo)",
+      "configSource": "example/bundled",
+      "configOrigin": "example",
+      "romDirectory": "D:/Emulation/roms/snes",
+      "extensionString": ".bin .BIN .bml .BML .bs .BS .bsx .BSX .dx2 .DX2 .fig .FIG .gd3 .GD3 .gd7 .GD7 .mgd .MGD .sfc .SFC .smc .SMC .st .ST .swc .SWC .7z .7Z .zip .ZIP",
+      "validExtensions": [
+        ".bin",
+        ".BIN",
+        ".bml",
+        ".BML",
+        ".bs",
+        ".BS",
+        ".bsx",
+        ".BSX",
+        ".dx2",
+        ".DX2",
+        ".fig",
+        ".FIG",
+        ".gd3",
+        ".GD3",
+        ".gd7",
+        ".GD7",
+        ".mgd",
+        ".MGD",
+        ".sfc",
+        ".SFC",
+        ".smc",
+        ".SMC",
+        ".st",
+        ".ST",
+        ".swc",
+        ".SWC",
+        ".7z",
+        ".7Z",
+        ".zip",
+        ".ZIP"
+      ],
+      "matchingRomFileCount": 3,
+      "commands": [
+        {
+          "label": "Snes9x - Current",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\snes9x_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": true,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "snes9x_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        },
+        {
+          "label": "Snes9x 2010",
+          "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\snes9x2010_libretro.dll %ROM%",
+          "workingDirectoryTemplate": null,
+          "isFirstConfiguredCommand": false,
+          "findRules": [
+            {
+              "identifier": "RETROARCH",
+              "kind": "emulator",
+              "rules": [
+                {
+                  "type": "staticpath",
+                  "entries": [
+                    "%ESPATH%\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\Emulators\\RetroArch\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch-Win64\\retroarch.exe",
+                    "%ESPATH%\\..\\Emulators\\RetroArch\\retroarch.exe"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            },
+            {
+              "identifier": "RETROARCH",
+              "kind": "core",
+              "rules": [
+                {
+                  "type": "corepath",
+                  "entries": [
+                    "%EMUPATH%\\cores"
+                  ]
+                }
+              ],
+              "source": "example/es_find_rules.xml"
+            }
+          ],
+          "identifiers": {
+            "coreFiles": [
+              "snes9x2010_libretro.dll"
+            ],
+            "corePathIdentifiers": [
+              "RETROARCH"
+            ],
+            "emulatorIdentifiers": [
+              "RETROARCH"
+            ]
+          }
+        }
+      ],
+      "launchSelection": {
+        "selectedLabel": "Snes9x - Current",
+        "rule": "example/system-level",
+        "status": "STATICALLY_RESOLVED",
+        "source": "example/gamelists/snes/gamelist.xml",
+        "systemAlternativeLabel": null,
+        "perGameOverrideCount": 0,
+        "perGameOverrides": []
+      },
+      "media": {
+        "covers": {
+          "directory": "D:/Emulation/storage/downloaded_media/snes/covers",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "screenshots": {
+          "directory": "D:/Emulation/storage/downloaded_media/snes/screenshots",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        },
+        "videos": {
+          "directory": "D:/Emulation/storage/downloaded_media/snes/videos",
+          "exists": true,
+          "fileCount": 3,
+          "directRomBasenameMatches": 3,
+          "nonDirectBasenameCount": 0,
+          "filenamePattern": "<ROM basename>.<media extension> (normally)",
+          "exceptionSamples": []
+        }
+      },
+      "metadata": {
+        "exists": true,
+        "favorites": 1,
+        "gameEntries": 3,
+        "gamelistPath": "D:/Emulation/gamelists/snes/gamelist.xml",
+        "entriesWithPlayCount": 0,
+        "entriesWithLastPlayed": 0,
+        "fields": "gameList/game nodes"
+      }
+    }
+  ],
+  "_note": "SANITIZED EXAMPLE - does NOT represent ROG Ally X, no personal paths, no C:/Users/ciara, structurally realistic only for dev browser mode. Real config is machine-local and ignored by Git.",
+  "_devFlag": "exampleData"
+}

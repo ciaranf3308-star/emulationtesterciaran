@@ -12,7 +12,7 @@ dist
 dist-ssr
 *.local
 
-# Editor directories and files
+# Editor
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -22,3 +22,30 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Machine-local manifests (NEVER public)
+crystal-machine-config.json
+machine-config.json
+*.machine.local.json
+CRYSTAL-MACHINE-AUDIT.md
+
+# Build outputs
+dist/
+node_modules/
+
+# ROMs, BIOS, saves, media cache, personal dumps
+roms/
+bios/
+saves/
+scraped_media_cache/
+scraped-media/
+downloaded_media/
+
+# Secrets / tokens / personal paths
+.env
+*.key
+*.token
+
+# Original asset ZIPs - artwork already extracted to public/assets/ (which is allowed to stay)
+*.zip
+**/Crystal-Frontend-Asset-Pack.zip
