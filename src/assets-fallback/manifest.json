@@ -1,0 +1,784 @@
+{
+    "_default":  {
+                     "backgroundLight":  "backgrounds/light/_default.webp",
+                     "backgroundDark":  "backgrounds/dark/_default.webp"
+                 },
+    "3do":  {
+                "carouselIcon":  "carousel-icons/3do.webp"
+            },
+    "adam":  {
+                 "carouselIcon":  "carousel-icons/adam.webp"
+             },
+    "ags":  {
+                "carouselIcon":  "carousel-icons/ags.webp"
+            },
+    "amiga":  {
+                  "carouselIcon":  "carousel-icons/amiga.webp"
+              },
+    "amiga1200":  {
+                      "carouselIcon":  "carousel-icons/amiga1200.webp"
+                  },
+    "amiga600":  {
+                     "carouselIcon":  "carousel-icons/amiga600.webp"
+                 },
+    "amigacd32":  {
+                      "carouselIcon":  "carousel-icons/amigacd32.webp"
+                  },
+    "amstradcpc":  {
+                       "carouselIcon":  "carousel-icons/amstradcpc.webp"
+                   },
+    "android":  {
+                    "carouselIcon":  "carousel-icons/android.webp"
+                },
+    "androidapps":  {
+                        "carouselIcon":  "carousel-icons/androidapps.webp"
+                    },
+    "androidgames":  {
+                         "carouselIcon":  "carousel-icons/androidgames.webp"
+                     },
+    "apple2":  {
+                   "carouselIcon":  "carousel-icons/apple2.webp"
+               },
+    "apple2gs":  {
+                     "carouselIcon":  "carousel-icons/apple2gs.webp"
+                 },
+    "arcade":  {
+                   "carouselIcon":  "carousel-icons/arcade.webp"
+               },
+    "arcade_alt":  {
+                       "carouselIcon":  "carousel-icons/arcade_alt.webp"
+                   },
+    "arcadia":  {
+                    "carouselIcon":  "carousel-icons/arcadia.webp"
+                },
+    "archimedes":  {
+                       "carouselIcon":  "carousel-icons/archimedes.webp"
+                   },
+    "arduboy":  {
+                    "carouselIcon":  "carousel-icons/arduboy.webp"
+                },
+    "astrocade":  {
+                      "carouselIcon":  "carousel-icons/astrocade.webp"
+                  },
+    "atari2600":  {
+                      "carouselIcon":  "carousel-icons/atari2600.webp"
+                  },
+    "atari5200":  {
+                      "carouselIcon":  "carousel-icons/atari5200.webp"
+                  },
+    "atari7800":  {
+                      "carouselIcon":  "carousel-icons/atari7800.webp"
+                  },
+    "atari800":  {
+                     "carouselIcon":  "carousel-icons/atari800.webp"
+                 },
+    "atarijaguar":  {
+                        "carouselIcon":  "carousel-icons/atarijaguar.webp"
+                    },
+    "atarijaguarcd":  {
+                          "carouselIcon":  "carousel-icons/atarijaguarcd.webp"
+                      },
+    "atarilynx":  {
+                      "carouselIcon":  "carousel-icons/atarilynx.webp"
+                  },
+    "atarist":  {
+                    "carouselIcon":  "carousel-icons/atarist.webp"
+                },
+    "atarixe":  {
+                    "carouselIcon":  "carousel-icons/atarixe.webp"
+                },
+    "atomiswave":  {
+                       "carouselIcon":  "carousel-icons/atomiswave.webp"
+                   },
+    "auto-allgames":  {
+                          "backgroundLight":  "backgrounds/light/auto-allgames.png",
+                          "backgroundDark":  "backgrounds/dark/auto-allgames.webp",
+                          "logoLight":  "logos/light/auto-allgames.png",
+                          "logoDark":  "logos/dark/auto-allgames.png",
+                          "carouselIcon":  "carousel-icons/auto-allgames.webp"
+                      },
+    "auto-allgames-alt":  {
+                              "carouselIcon":  "carousel-icons/auto-allgames-alt.webp"
+                          },
+    "auto-favorites":  {
+                           "carouselIcon":  "carousel-icons/auto-favorites.webp"
+                       },
+    "auto-favorites-alt":  {
+                               "carouselIcon":  "carousel-icons/auto-favorites-alt.webp"
+                           },
+    "auto-lastplayed":  {
+                            "carouselIcon":  "carousel-icons/auto-lastplayed.webp"
+                        },
+    "auto-lastplayed-alt":  {
+                                "carouselIcon":  "carousel-icons/auto-lastplayed-alt.webp"
+                            },
+    "bbcmicro":  {
+                     "carouselIcon":  "carousel-icons/bbcmicro.webp"
+                 },
+    "c64":  {
+                "carouselIcon":  "carousel-icons/c64.webp"
+            },
+    "cavestory":  {
+                      "carouselIcon":  "carousel-icons/cavestory.webp"
+                  },
+    "cdimono1":  {
+                     "carouselIcon":  "carousel-icons/cdimono1.webp"
+                 },
+    "cdtv":  {
+                 "carouselIcon":  "carousel-icons/cdtv.webp"
+             },
+    "chailove":  {
+                     "carouselIcon":  "carousel-icons/chailove.webp"
+                 },
+    "channelf":  {
+                     "carouselIcon":  "carousel-icons/channelf.webp"
+                 },
+    "coco":  {
+                 "carouselIcon":  "carousel-icons/coco.webp"
+             },
+    "colecovision":  {
+                         "carouselIcon":  "carousel-icons/colecovision.webp"
+                     },
+    "completed":  {
+                      "carouselIcon":  "carousel-icons/completed.webp"
+                  },
+    "completed-alt":  {
+                          "carouselIcon":  "carousel-icons/completed-alt.webp"
+                      },
+    "consolearcade":  {
+                          "carouselIcon":  "carousel-icons/consolearcade.webp"
+                      },
+    "cps":  {
+                "carouselIcon":  "carousel-icons/cps.webp"
+            },
+    "cps1":  {
+                 "carouselIcon":  "carousel-icons/cps1.webp"
+             },
+    "cps2":  {
+                 "carouselIcon":  "carousel-icons/cps2.webp"
+             },
+    "cps3":  {
+                 "carouselIcon":  "carousel-icons/cps3.webp"
+             },
+    "crvision":  {
+                     "carouselIcon":  "carousel-icons/crvision.webp"
+                 },
+    "custom-collections":  {
+                               "carouselIcon":  "carousel-icons/custom-collections.webp"
+                           },
+    "custom-collections-alt":  {
+                                   "carouselIcon":  "carousel-icons/custom-collections-alt.webp"
+                               },
+    "daphne":  {
+                   "carouselIcon":  "carousel-icons/daphne.webp"
+               },
+    "desktop":  {
+                    "carouselIcon":  "carousel-icons/desktop.webp"
+                },
+    "doom":  {
+                 "carouselIcon":  "carousel-icons/doom.webp"
+             },
+    "dos":  {
+                "carouselIcon":  "carousel-icons/dos.webp"
+            },
+    "dragon32":  {
+                     "carouselIcon":  "carousel-icons/dragon32.webp"
+                 },
+    "dreamcast":  {
+                      "backgroundLight":  "backgrounds/light/dreamcast.png",
+                      "backgroundDark":  "backgrounds/dark/dreamcast.webp",
+                      "logoLight":  "logos/light/dreamcast.png",
+                      "logoDark":  "logos/dark/dreamcast.png",
+                      "carouselIcon":  "carousel-icons/dreamcast.webp"
+                  },
+    "easyrpg":  {
+                    "carouselIcon":  "carousel-icons/easyrpg.webp"
+                },
+    "electron":  {
+                     "carouselIcon":  "carousel-icons/electron.webp"
+                 },
+    "emulators":  {
+                      "carouselIcon":  "carousel-icons/emulators.webp"
+                  },
+    "epic":  {
+                 "carouselIcon":  "carousel-icons/epic.webp"
+             },
+    "famicom":  {
+                    "carouselIcon":  "carousel-icons/famicom.webp"
+                },
+    "fba":  {
+                "carouselIcon":  "carousel-icons/fba.webp"
+            },
+    "fbneo":  {
+                  "carouselIcon":  "carousel-icons/fbneo.webp"
+              },
+    "fds":  {
+                "carouselIcon":  "carousel-icons/fds.webp"
+            },
+    "final-fantasy":  {
+                          "carouselIcon":  "carousel-icons/final-fantasy.webp"
+                      },
+    "flash":  {
+                  "carouselIcon":  "carousel-icons/flash.webp"
+              },
+    "fm7":  {
+                "carouselIcon":  "carousel-icons/fm7.webp"
+            },
+    "fmtowns":  {
+                    "carouselIcon":  "carousel-icons/fmtowns.webp"
+                },
+    "fpinball":  {
+                     "carouselIcon":  "carousel-icons/fpinball.webp"
+                 },
+    "gamate":  {
+                   "carouselIcon":  "carousel-icons/gamate.webp"
+               },
+    "gameandwatch":  {
+                         "carouselIcon":  "carousel-icons/gameandwatch.webp"
+                     },
+    "gamecom":  {
+                    "carouselIcon":  "carousel-icons/gamecom.webp"
+                },
+    "gamegear":  {
+                     "carouselIcon":  "carousel-icons/gamegear.webp"
+                 },
+    "gb":  {
+               "backgroundLight":  "backgrounds/light/gb.png",
+               "backgroundDark":  "backgrounds/dark/gb.webp",
+               "logoLight":  "logos/light/gb.png",
+               "logoDark":  "logos/dark/gb.png",
+               "carouselIcon":  "carousel-icons/gb.webp"
+           },
+    "gba":  {
+                "backgroundLight":  "backgrounds/light/gba.png",
+                "backgroundDark":  "backgrounds/dark/gba.webp",
+                "logoLight":  "logos/light/gba.png",
+                "logoDark":  "logos/dark/gba.png",
+                "carouselIcon":  "carousel-icons/gba.webp"
+            },
+    "gbah":  {
+                 "carouselIcon":  "carousel-icons/gbah.webp"
+             },
+    "gbc":  {
+                "backgroundLight":  "backgrounds/light/gbc.png",
+                "backgroundDark":  "backgrounds/dark/gbc.webp",
+                "logoLight":  "logos/light/gbc.png",
+                "logoDark":  "logos/dark/gbc.png",
+                "carouselIcon":  "carousel-icons/gbc.webp"
+            },
+    "gbch":  {
+                 "carouselIcon":  "carousel-icons/gbch.webp"
+             },
+    "gbh":  {
+                "carouselIcon":  "carousel-icons/gbh.webp"
+            },
+    "gc":  {
+               "backgroundLight":  "backgrounds/light/gc.png",
+               "backgroundDark":  "backgrounds/dark/gc.webp",
+               "logoLight":  "logos/light/gc.png",
+               "logoDark":  "logos/dark/gc.png",
+               "carouselIcon":  "carousel-icons/gc.webp"
+           },
+    "genesis":  {
+                    "backgroundLight":  "backgrounds/light/genesis.png",
+                    "backgroundDark":  "backgrounds/dark/genesis.webp",
+                    "logoLight":  "logos/light/genesis.png",
+                    "logoDark":  "logos/dark/genesis.png",
+                    "carouselIcon":  "carousel-icons/genesis.webp"
+                },
+    "genh":  {
+                 "carouselIcon":  "carousel-icons/genh.webp"
+             },
+    "gmaster":  {
+                    "carouselIcon":  "carousel-icons/gmaster.webp"
+                },
+    "gx4000":  {
+                   "carouselIcon":  "carousel-icons/gx4000.webp"
+               },
+    "intellivision":  {
+                          "carouselIcon":  "carousel-icons/intellivision.webp"
+                      },
+    "j2me":  {
+                 "carouselIcon":  "carousel-icons/j2me.webp"
+             },
+    "kodi":  {
+                 "carouselIcon":  "carousel-icons/kodi.webp"
+             },
+    "laserdisc":  {
+                      "carouselIcon":  "carousel-icons/laserdisc.webp"
+                  },
+    "lcdgames":  {
+                     "carouselIcon":  "carousel-icons/lcdgames.webp"
+                 },
+    "lowresnx":  {
+                     "carouselIcon":  "carousel-icons/lowresnx.webp"
+                 },
+    "lutris":  {
+                   "carouselIcon":  "carousel-icons/lutris.webp"
+               },
+    "lutro":  {
+                  "carouselIcon":  "carousel-icons/lutro.webp"
+              },
+    "macintosh":  {
+                      "carouselIcon":  "carousel-icons/macintosh.webp"
+                  },
+    "mame":  {
+                 "carouselIcon":  "carousel-icons/mame.webp"
+             },
+    "mame-advmame":  {
+                         "carouselIcon":  "carousel-icons/mame-advmame.webp"
+                     },
+    "mame-mame4all":  {
+                          "carouselIcon":  "carousel-icons/mame-mame4all.webp"
+                      },
+    "mario":  {
+                  "carouselIcon":  "carousel-icons/mario.webp"
+              },
+    "mark3":  {
+                  "carouselIcon":  "carousel-icons/mark3.webp"
+              },
+    "mastersystem":  {
+                         "carouselIcon":  "carousel-icons/mastersystem.webp"
+                     },
+    "megacd":  {
+                   "carouselIcon":  "carousel-icons/megacd.webp"
+               },
+    "megacdjp":  {
+                     "carouselIcon":  "carousel-icons/megacdjp.webp"
+                 },
+    "megadrive":  {
+                      "carouselIcon":  "carousel-icons/megadrive.webp"
+                  },
+    "megadrivejp":  {
+                        "carouselIcon":  "carousel-icons/megadrivejp.webp"
+                    },
+    "megaduck":  {
+                     "carouselIcon":  "carousel-icons/megaduck.webp"
+                 },
+    "mess":  {
+                 "carouselIcon":  "carousel-icons/mess.webp"
+             },
+    "model1":  {
+                   "carouselIcon":  "carousel-icons/model1.webp"
+               },
+    "model2":  {
+                   "carouselIcon":  "carousel-icons/model2.webp"
+               },
+    "model3":  {
+                   "carouselIcon":  "carousel-icons/model3.webp"
+               },
+    "moonlight":  {
+                      "carouselIcon":  "carousel-icons/moonlight.webp"
+                  },
+    "moto":  {
+                 "carouselIcon":  "carousel-icons/moto.webp"
+             },
+    "msx":  {
+                "carouselIcon":  "carousel-icons/msx.webp"
+            },
+    "msx1":  {
+                 "carouselIcon":  "carousel-icons/msx1.webp"
+             },
+    "msx2":  {
+                 "carouselIcon":  "carousel-icons/msx2.webp"
+             },
+    "msxturbor":  {
+                      "carouselIcon":  "carousel-icons/msxturbor.webp"
+                  },
+    "mugen":  {
+                  "carouselIcon":  "carousel-icons/mugen.webp"
+              },
+    "multivision":  {
+                        "carouselIcon":  "carousel-icons/multivision.webp"
+                    },
+    "n3ds":  {
+                 "backgroundLight":  "backgrounds/light/n3ds.png",
+                 "backgroundDark":  "backgrounds/dark/n3ds.webp",
+                 "logoLight":  "logos/light/n3ds.png",
+                 "logoDark":  "logos/dark/n3ds.png",
+                 "carouselIcon":  "carousel-icons/n3ds.webp"
+             },
+    "n64":  {
+                "backgroundLight":  "backgrounds/light/n64.png",
+                "backgroundDark":  "backgrounds/dark/n64.webp",
+                "logoLight":  "logos/light/n64.png",
+                "logoDark":  "logos/dark/n64.png",
+                "carouselIcon":  "carousel-icons/n64.webp"
+            },
+    "n64dd":  {
+                  "carouselIcon":  "carousel-icons/n64dd.webp"
+              },
+    "naomi":  {
+                  "carouselIcon":  "carousel-icons/naomi.webp"
+              },
+    "naomi2":  {
+                   "carouselIcon":  "carousel-icons/naomi2.webp"
+               },
+    "naomigd":  {
+                    "carouselIcon":  "carousel-icons/naomigd.webp"
+                },
+    "nds":  {
+                "backgroundLight":  "backgrounds/light/nds.png",
+                "backgroundDark":  "backgrounds/dark/nds.webp",
+                "logoLight":  "logos/light/nds.png",
+                "logoDark":  "logos/dark/nds.png",
+                "carouselIcon":  "carousel-icons/nds.webp"
+            },
+    "neogeo":  {
+                   "carouselIcon":  "carousel-icons/neogeo.webp"
+               },
+    "neogeocd":  {
+                     "carouselIcon":  "carousel-icons/neogeocd.webp"
+                 },
+    "neogeocdjp":  {
+                       "carouselIcon":  "carousel-icons/neogeocdjp.webp"
+                   },
+    "nes":  {
+                "backgroundLight":  "backgrounds/light/nes.png",
+                "backgroundDark":  "backgrounds/dark/nes.webp",
+                "logoLight":  "logos/light/nes.png",
+                "logoDark":  "logos/dark/nes.png",
+                "carouselIcon":  "carousel-icons/nes.webp"
+            },
+    "nesh":  {
+                 "carouselIcon":  "carousel-icons/nesh.webp"
+             },
+    "ngage":  {
+                  "carouselIcon":  "carousel-icons/ngage.webp"
+              },
+    "ngp":  {
+                "carouselIcon":  "carousel-icons/ngp.webp"
+            },
+    "ngpc":  {
+                 "carouselIcon":  "carousel-icons/ngpc.webp"
+             },
+    "now-playing":  {
+                        "carouselIcon":  "carousel-icons/now-playing.webp"
+                    },
+    "now-playing-alt":  {
+                            "carouselIcon":  "carousel-icons/now-playing-alt.webp"
+                        },
+    "odyssey2":  {
+                     "carouselIcon":  "carousel-icons/odyssey2.webp"
+                 },
+    "openbor":  {
+                    "carouselIcon":  "carousel-icons/openbor.webp"
+                },
+    "oric":  {
+                 "carouselIcon":  "carousel-icons/oric.webp"
+             },
+    "palm":  {
+                 "carouselIcon":  "carousel-icons/palm.webp"
+             },
+    "pc":  {
+               "carouselIcon":  "carousel-icons/pc.webp"
+           },
+    "pc88":  {
+                 "carouselIcon":  "carousel-icons/pc88.webp"
+             },
+    "pc98":  {
+                 "carouselIcon":  "carousel-icons/pc98.webp"
+             },
+    "pcarcade":  {
+                     "carouselIcon":  "carousel-icons/pcarcade.webp"
+                 },
+    "pcengine":  {
+                     "carouselIcon":  "carousel-icons/pcengine.webp"
+                 },
+    "pcenginecd":  {
+                       "carouselIcon":  "carousel-icons/pcenginecd.webp"
+                   },
+    "pcfx":  {
+                 "carouselIcon":  "carousel-icons/pcfx.webp"
+             },
+    "pico8":  {
+                  "carouselIcon":  "carousel-icons/pico8.webp"
+              },
+    "plus4":  {
+                  "carouselIcon":  "carousel-icons/plus4.webp"
+              },
+    "pokemini":  {
+                     "carouselIcon":  "carousel-icons/pokemini.webp"
+                 },
+    "pokemon":  {
+                    "backgroundLight":  "backgrounds/light/pokemon.png",
+                    "backgroundDark":  "backgrounds/dark/pokemon.webp",
+                    "logoLight":  "logos/light/pokemon.png",
+                    "logoDark":  "logos/dark/pokemon.png",
+                    "carouselIcon":  "carousel-icons/pokemon.webp"
+                },
+    "ports":  {
+                  "carouselIcon":  "carousel-icons/ports.webp"
+              },
+    "ps2":  {
+                "backgroundLight":  "backgrounds/light/ps2.png",
+                "backgroundDark":  "backgrounds/dark/ps2.webp",
+                "logoLight":  "logos/light/ps2.png",
+                "logoDark":  "logos/dark/ps2.png",
+                "carouselIcon":  "carousel-icons/ps2.webp"
+            },
+    "ps3":  {
+                "carouselIcon":  "carousel-icons/ps3.webp"
+            },
+    "ps4":  {
+                "carouselIcon":  "carousel-icons/ps4.webp"
+            },
+    "psp":  {
+                "backgroundLight":  "backgrounds/light/psp.png",
+                "backgroundDark":  "backgrounds/dark/psp.webp",
+                "logoLight":  "logos/light/psp.png",
+                "logoDark":  "logos/dark/psp.png",
+                "carouselIcon":  "carousel-icons/psp.webp"
+            },
+    "psvita":  {
+                   "carouselIcon":  "carousel-icons/psvita.webp"
+               },
+    "psx":  {
+                "backgroundLight":  "backgrounds/light/psx.png",
+                "backgroundDark":  "backgrounds/dark/psx.webp",
+                "logoLight":  "logos/light/psx.png",
+                "logoDark":  "logos/dark/psx.png",
+                "carouselIcon":  "carousel-icons/psx.webp"
+            },
+    "pv1000":  {
+                   "carouselIcon":  "carousel-icons/pv1000.webp"
+               },
+    "quake":  {
+                  "carouselIcon":  "carousel-icons/quake.webp"
+              },
+    "sailor-moon":  {
+                        "carouselIcon":  "carousel-icons/sailor-moon.webp"
+                    },
+    "samcoupe":  {
+                     "carouselIcon":  "carousel-icons/samcoupe.webp"
+                 },
+    "satellaview":  {
+                        "carouselIcon":  "carousel-icons/satellaview.webp"
+                    },
+    "saturn":  {
+                   "carouselIcon":  "carousel-icons/saturn.webp"
+               },
+    "saturnjp":  {
+                     "carouselIcon":  "carousel-icons/saturnjp.webp"
+                 },
+    "scummvm":  {
+                    "carouselIcon":  "carousel-icons/scummvm.webp"
+                },
+    "scv":  {
+                "carouselIcon":  "carousel-icons/scv.webp"
+            },
+    "sega32x":  {
+                    "carouselIcon":  "carousel-icons/sega32x.webp"
+                },
+    "sega32xjp":  {
+                      "carouselIcon":  "carousel-icons/sega32xjp.webp"
+                  },
+    "sega32xna":  {
+                      "carouselIcon":  "carousel-icons/sega32xna.webp"
+                  },
+    "segacd":  {
+                   "carouselIcon":  "carousel-icons/segacd.webp"
+               },
+    "sfc":  {
+                "carouselIcon":  "carousel-icons/sfc.webp"
+            },
+    "sg-1000":  {
+                    "carouselIcon":  "carousel-icons/sg-1000.webp"
+                },
+    "sgb":  {
+                "carouselIcon":  "carousel-icons/sgb.webp"
+            },
+    "snes":  {
+                 "backgroundLight":  "backgrounds/light/snes.png",
+                 "backgroundDark":  "backgrounds/dark/snes.webp",
+                 "logoLight":  "logos/light/snes.png",
+                 "logoDark":  "logos/dark/snes.png",
+                 "carouselIcon":  "carousel-icons/snes.webp"
+             },
+    "snesh":  {
+                  "carouselIcon":  "carousel-icons/snesh.webp"
+              },
+    "snesna":  {
+                   "carouselIcon":  "carousel-icons/snesna.webp"
+               },
+    "snesnah":  {
+                    "carouselIcon":  "carousel-icons/snesnah.webp"
+                },
+    "solarus":  {
+                    "carouselIcon":  "carousel-icons/solarus.webp"
+                },
+    "sonic-the-hedgehog":  {
+                               "carouselIcon":  "carousel-icons/sonic-the-hedgehog.webp"
+                           },
+    "spectravideo":  {
+                         "carouselIcon":  "carousel-icons/spectravideo.webp"
+                     },
+    "steam":  {
+                  "logoDark":  "logos/dark/steam.png",
+                  "carouselIcon":  "carousel-icons/steam.webp"
+              },
+    "stratagus":  {
+                      "carouselIcon":  "carousel-icons/stratagus.webp"
+                  },
+    "stv":  {
+                "carouselIcon":  "carousel-icons/stv.webp"
+            },
+    "sufami":  {
+                   "carouselIcon":  "carousel-icons/sufami.webp"
+               },
+    "supergrafx":  {
+                       "carouselIcon":  "carousel-icons/supergrafx.webp"
+                   },
+    "supervision":  {
+                        "carouselIcon":  "carousel-icons/supervision.webp"
+                    },
+    "supracan":  {
+                     "carouselIcon":  "carousel-icons/supracan.webp"
+                 },
+    "switch":  {
+                   "carouselIcon":  "carousel-icons/switch.webp"
+               },
+    "symbian":  {
+                    "carouselIcon":  "carousel-icons/symbian.webp"
+                },
+    "system2x6":  {
+                      "carouselIcon":  "carousel-icons/system2x6.webp"
+                  },
+    "tanodragon":  {
+                       "carouselIcon":  "carousel-icons/tanodragon.webp"
+                   },
+    "tetris":  {
+                   "carouselIcon":  "carousel-icons/tetris.webp"
+               },
+    "tg16":  {
+                 "carouselIcon":  "carousel-icons/tg16.webp"
+             },
+    "tg-cd":  {
+                  "carouselIcon":  "carousel-icons/tg-cd.webp"
+              },
+    "ti99":  {
+                 "carouselIcon":  "carousel-icons/ti99.webp"
+             },
+    "tic80":  {
+                  "carouselIcon":  "carousel-icons/tic80.webp"
+              },
+    "to8":  {
+                "carouselIcon":  "carousel-icons/to8.webp"
+            },
+    "tools":  {
+                  "carouselIcon":  "carousel-icons/tools.webp"
+              },
+    "triforce":  {
+                     "carouselIcon":  "carousel-icons/triforce.webp"
+                 },
+    "trs-80":  {
+                   "carouselIcon":  "carousel-icons/trs-80.webp"
+               },
+    "type-x":  {
+                   "carouselIcon":  "carousel-icons/type-x.webp"
+               },
+    "uzebox":  {
+                   "carouselIcon":  "carousel-icons/uzebox.webp"
+               },
+    "vectrex":  {
+                    "carouselIcon":  "carousel-icons/vectrex.webp"
+                },
+    "vic20":  {
+                  "carouselIcon":  "carousel-icons/vic20.webp"
+              },
+    "videopac":  {
+                     "carouselIcon":  "carousel-icons/videopac.webp"
+                 },
+    "vircon32":  {
+                     "carouselIcon":  "carousel-icons/vircon32.webp"
+                 },
+    "virtualboy":  {
+                       "carouselIcon":  "carousel-icons/virtualboy.webp"
+                   },
+    "vocaloid":  {
+                     "carouselIcon":  "carousel-icons/vocaloid.webp"
+                 },
+    "vpinball":  {
+                     "carouselIcon":  "carousel-icons/vpinball.webp"
+                 },
+    "vsmile":  {
+                   "carouselIcon":  "carousel-icons/vsmile.webp"
+               },
+    "wasm4":  {
+                  "carouselIcon":  "carousel-icons/wasm4.webp"
+              },
+    "wii":  {
+                "backgroundLight":  "backgrounds/light/wii.png",
+                "backgroundDark":  "backgrounds/dark/wii.webp",
+                "logoLight":  "logos/light/wii.png",
+                "logoDark":  "logos/dark/wii.png",
+                "carouselIcon":  "carousel-icons/wii.webp"
+            },
+    "wiiu":  {
+                 "backgroundLight":  "backgrounds/light/wiiu.png",
+                 "backgroundDark":  "backgrounds/dark/wiiu.webp",
+                 "logoLight":  "logos/light/wiiu.png",
+                 "logoDark":  "logos/dark/wiiu.png",
+                 "carouselIcon":  "carousel-icons/wiiu.webp"
+             },
+    "windows":  {
+                    "backgroundLight":  "backgrounds/light/windows.png",
+                    "backgroundDark":  "backgrounds/dark/windows.webp",
+                    "logoLight":  "logos/light/windows.png",
+                    "logoDark":  "logos/dark/windows.png",
+                    "carouselIcon":  "carousel-icons/windows.webp"
+                },
+    "windows3x":  {
+                      "carouselIcon":  "carousel-icons/windows3x.webp"
+                  },
+    "windows9x":  {
+                      "carouselIcon":  "carousel-icons/windows9x.webp"
+                  },
+    "wonderswan":  {
+                       "carouselIcon":  "carousel-icons/wonderswan.webp"
+                   },
+    "wonderswancolor":  {
+                            "carouselIcon":  "carousel-icons/wonderswancolor.webp"
+                        },
+    "x1":  {
+               "carouselIcon":  "carousel-icons/x1.webp"
+           },
+    "x68000":  {
+                   "carouselIcon":  "carousel-icons/x68000.webp"
+               },
+    "xbox":  {
+                 "backgroundLight":  "backgrounds/light/xbox.png",
+                 "backgroundDark":  "backgrounds/dark/xbox.webp",
+                 "logoLight":  "logos/light/xbox.png",
+                 "logoDark":  "logos/dark/xbox.png",
+                 "carouselIcon":  "carousel-icons/xbox.webp"
+             },
+    "xbox360":  {
+                    "backgroundLight":  "backgrounds/light/xbox360.png",
+                    "backgroundDark":  "backgrounds/dark/xbox360.webp",
+                    "logoLight":  "logos/light/xbox360.png",
+                    "logoDark":  "logos/dark/xbox360.png",
+                    "carouselIcon":  "carousel-icons/xbox360.webp"
+                },
+    "xboxone":  {
+                    "carouselIcon":  "carousel-icons/xboxone.webp"
+                },
+    "zelda":  {
+                  "carouselIcon":  "carousel-icons/zelda.webp"
+              },
+    "zmachine":  {
+                     "carouselIcon":  "carousel-icons/zmachine.webp"
+                 },
+    "zx81":  {
+                 "carouselIcon":  "carousel-icons/zx81.webp"
+             },
+    "zx81.bak":  {
+                     "carouselIcon":  "carousel-icons/zx81.bak.webp"
+                 },
+    "zxnext":  {
+                   "carouselIcon":  "carousel-icons/zxnext.webp"
+               },
+    "zxspectrum":  {
+                       "carouselIcon":  "carousel-icons/zxspectrum.webp"
+                   }
+}

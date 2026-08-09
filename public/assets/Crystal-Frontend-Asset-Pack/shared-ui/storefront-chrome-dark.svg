@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#080d20" stop-opacity=".97"/>
+      <stop offset=".45" stop-color="#080d20" stop-opacity=".77"/>
+      <stop offset=".75" stop-color="#080d20" stop-opacity=".10"/>
+      <stop offset="1" stop-color="#080d20" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#000000" flood-opacity=".48"/>
+    </filter>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#fade)"/>
+  <rect x="30" y="23" width="1860" height="84" rx="23" fill="#0b1128" fill-opacity=".78" stroke="#fff" stroke-opacity=".9" filter="url(#shadow)"/>
+  <circle cx="80" cy="65" r="27" fill="#fff" fill-opacity=".84" stroke="#61dcff" stroke-opacity=".35"/>
+  <path d="M89 52L73 65l16 13M74 65h25" fill="none" stroke="#f3f7ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="397" y1="45" x2="397" y2="86" stroke="#7288b8" stroke-opacity=".38"/>
+  <line x1="603" y1="45" x2="603" y2="86" stroke="#7288b8" stroke-opacity=".38"/>
+  <g font-family="sans-serif" font-weight="700" fill="#f3f7ff">
+    <circle cx="1778" cy="65" r="4" fill="#ed174c"/>
+    <text x="1800" y="61" text-anchor="end" font-size="12" letter-spacing="2">CURATED LIBRARY</text>
+    <text x="1800" y="79" text-anchor="end" font-size="10" letter-spacing="1" fill="#b6c7e8">LIVE GAME PREVIEW</text>
+  </g>
+  <rect x="38" y="140" width="736" height="548" rx="28" fill="#0b1128" fill-opacity=".84" stroke="#fff" stroke-opacity=".94" filter="url(#shadow)"/>
+  <line x1="86" y1="505" x2="726" y2="505" stroke="#61dcff" stroke-opacity=".30"/>
+  <g font-family="sans-serif" font-weight="700" font-size="12" letter-spacing="1" fill="#b6c7e8">
+    <text x="145" y="531" text-anchor="middle">RATING</text><text x="306" y="531" text-anchor="middle">PLAYERS</text>
+    <text x="468" y="531" text-anchor="middle">LAST PLAYED</text><text x="647" y="531" text-anchor="middle">PLAY TIME</text>
+  </g>
+  <line x1="218" y1="520" x2="218" y2="582" stroke="#61dcff" stroke-opacity=".28"/><line x1="385" y1="520" x2="385" y2="582" stroke="#61dcff" stroke-opacity=".28"/><line x1="555" y1="520" x2="555" y2="582" stroke="#61dcff" stroke-opacity=".28"/>
+  <rect x="66" y="607" width="220" height="60" rx="13" fill="#ed174c"/><circle cx="115" cy="637" r="17" fill="#fff"/><text x="115" y="644" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="19" fill="#ed174c">A</text><text x="188" y="645" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="22" fill="#fff">PLAY</text>
+  <rect x="305" y="607" width="230" height="60" rx="13" fill="#0b1128" fill-opacity=".82" stroke="#4557cf" stroke-opacity=".30"/><circle cx="340" cy="637" r="17" fill="#4557cf"/><text x="340" y="644" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="18" fill="#fff">X</text><text x="430" y="643" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="14" letter-spacing="1" fill="#4557cf">MEDIA THEATRE</text>
+  <rect x="0" y="695" width="1920" height="385" fill="#080d20" fill-opacity=".24"/>
+  <rect x="30" y="1007" width="220" height="49" rx="12" fill="#0b1128" fill-opacity=".76"/><text x="140" y="1038" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="15" fill="#f3f7ff">BACKSPACE  SYSTEMS</text>
+  <rect x="1690" y="1007" width="200" height="49" rx="12" fill="#0b1128" fill-opacity=".76"/><text x="1790" y="1038" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="15" fill="#f3f7ff">ESC  OPTIONS</text>
+</svg>
