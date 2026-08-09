@@ -1,6 +1,6 @@
 [package]
 name = "crystal-frontend"
-version = "4.2.0"
+version = "4.3.0"
 description = "Crystal Frontend – premium next-gen gaming OS (Tauri v2) – real machine runtime"
 authors = ["ciaranf3308-star"]
 license = "MIT"

@@ -573,19 +573,48 @@ export function SystemStage({
                         </div>
                       </div>
                     ) : (
+                      /* V8.3: powered-off glass – blurred dark acrylic with subtle dot, no literal text */
                       <div
+                        className="library-idle-glass"
                         style={{
                           width: '100%',
                           height: '100%',
-                          display: 'grid',
-                          placeItems: 'center',
-                          background: theme === 'dark' ? 'rgba(8,12,18,0.52)' : 'rgba(242,246,255,0.66)',
-                          fontSize: 11,
-                          color: theme === 'dark' ? 'rgba(230,244,255,0.42)' : 'rgba(18,26,44,0.42)',
-                          fontFamily: 'var(--crystal-mono, monospace)',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          borderRadius: corner ?? 8,
+                          background: theme === 'dark'
+                            ? 'linear-gradient(180deg, rgba(10,14,20,0.48) 0%, rgba(8,12,18,0.62) 56%, rgba(6,10,16,0.70) 100%)'
+                            : 'linear-gradient(180deg, rgba(230,238,250,0.58) 0%, rgba(218,228,244,0.66) 58%, rgba(206,218,236,0.72) 100%)',
+                          backdropFilter: 'blur(16px) brightness(0.86) saturate(0.94)',
+                          WebkitBackdropFilter: 'blur(16px) brightness(0.86) saturate(0.94)',
+                          border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
+                          boxShadow: theme === 'dark'
+                            ? 'inset 0 1px 0 rgba(255,255,255,0.04), inset 0 0 24px rgba(0,0,0,0.22), 0 2px 12px rgba(0,0,0,0.18)'
+                            : 'inset 0 1px 0 rgba(255,255,255,0.54), inset 0 0 20px rgba(18,26,44,0.04), 0 2px 10px rgba(18,26,44,0.06)',
                         }}
                       >
-                        <span>no media</span>
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            background: theme === 'dark'
+                              ? 'radial-gradient(ellipse 68% 44% at 34% 20%, rgba(125,249,255,0.08), transparent 60%)'
+                              : 'radial-gradient(ellipse 68% 44% at 34% 20%, rgba(90,170,255,0.07), transparent 62%)',
+                            opacity: 0.72,
+                          }}
+                        />
+                        <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 1, background: `linear-gradient(90deg, transparent, ${theme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.06)'}, transparent)`, opacity: 0.6 }} />
+                        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', opacity: 0.26 }}>
+                          <div
+                            style={{
+                              width: 22,
+                              height: 22,
+                              borderRadius: '50%',
+                              border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                              boxShadow: theme === 'dark' ? '0 0 12px rgba(0,0,0,0.24)' : '0 0 8px rgba(18,26,44,0.08)',
+                            }}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>

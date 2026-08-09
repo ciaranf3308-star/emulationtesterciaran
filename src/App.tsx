@@ -847,33 +847,6 @@ function AppInner() {
             }}
           />
 
-          <div style={{ position: 'absolute', left: 26, bottom: 12, display: 'flex', gap: 10, zIndex: 7, pointerEvents: 'auto', fontFamily: 'var(--crystal-mono)', fontSize: 10 }}>
-            {[
-              { id: 'allgames', label: 'All' },
-              { id: 'favorites', label: 'Fav' },
-              { id: 'recent', label: 'Recent' },
-              { id: 'settings', label: 'Settings' },
-            ].map(u => (
-              <button
-                key={u.id}
-                onClick={() => setView(u.id as any)}
-                style={{
-                  appearance: 'none',
-                  background: theme === 'dark' ? 'rgba(6,9,14,0.28)' : 'rgba(250,252,255,0.56)',
-                  border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}`,
-                  color: theme === 'dark' ? 'rgba(230,244,255,0.68)' : 'rgba(18,26,44,0.62)',
-                  padding: '4px 10px',
-                  borderRadius: 999,
-                  cursor: 'pointer',
-                  backdropFilter: 'blur(10px)',
-                  fontSize: 10,
-                }}
-              >
-                {u.label}
-              </button>
-            ))}
-          </div>
-
           <button
             onClick={toggle}
             aria-label="Toggle theme"
