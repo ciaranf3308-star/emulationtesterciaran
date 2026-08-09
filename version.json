@@ -1,0 +1,21 @@
+{
+  "app": "Crystal Frontend",
+  "repo": "emulationtesterciaran",
+  "version": "2.1.0",
+  "phase": "Phase 2 – machine-truth + sanitize",
+  "commits": {
+    "v1": "b22ec0a8745ce635ba8ed591d4c0a755e312c239",
+    "phase2": "9eec261e8b9f9c5c1c02b0e1c9b94bcf7a9f2a6e",
+    "sanitize": "a67bcf21f38c405adf6f42e4763506f683d83d9e"
+  },
+  "liveAt": "2026-08-09T21:28:24+01:00",
+  "liveCommit": "a67bcf21f38c405adf6f42e4763506f683d83d9e",
+  "build": {
+    "modules": 50,
+    "js": "182.12 kB",
+    "gzip": "57.34 kB",
+    "css": "9.63 kB",
+    "manifest": "19.68 kB",
+    "tests": "27 pass"
+  }
+}
