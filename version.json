@@ -1,1 +1,15 @@
-{"milestoneDefinition":{"V1":"initial standalone frontend","V2":"Crystal asset/refactor stage (asset pack preserved, React+TS+Vite)","V3":"machine-truth architecture – typed machine domain, validation, composable assets, 5-layer SystemStage, launch/media/metadata/input, privacy","V4":"Crystal product rule split from Beirt, cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error","V5":"V5 hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI"},"packageVersion":"3.2.0","previousMilestone":"V4 – Crystal product rule split from Beirt, cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error","project":"Crystal Frontend","projectMilestone":"V5","semver":"3.2.0"}
+{
+  "project": "Crystal Frontend",
+  "projectMilestone": "V6",
+  "previousMilestone": "V5 – V5 hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI",
+  "milestoneDefinition": {
+    "V1": "initial standalone frontend",
+    "V2": "Crystal asset/refactor stage (asset pack preserved, React+TS+Vite)",
+    "V3": "machine-truth architecture – typed machine domain, validation, composable assets, 5-layer SystemStage, launch/media/metadata/input, privacy",
+    "V4": "Crystal product rule split from Beirt, cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error",
+    "V5": "V5 hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI",
+    "V6": "V6 real desktop runtime: Tauri v2 app with src-tauri main.rs implementing get_machine_config (real machine-local, no fallback), real ROM enumeration per system respecting validExtensions, gamelist.xml join, real media FS verification, All Games/Favorites/Recently Played wired to real runtime, launch_game backend owning find-rule resolution, placeholder substitution, working dir, quoting, spawn detached, INJECT/OS-SHELL blocked, GBA/mGBA PS2/PCSX2 3DS/Azahar prioritized, return flow safe, controller flow end-to-end, hardware presentation contract untouched"
+  },
+  "semver": "3.3.0",
+  "packageVersion": "3.3.0"
+}

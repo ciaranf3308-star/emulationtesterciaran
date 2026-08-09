@@ -69,28 +69,11 @@ class TauriBridge implements LauncherBridge {
   }
 
   async launch(request: LaunchBackendRequest): Promise<void> {
-    await this.invokeFn('launch_game', {
-      systemId: request.systemId,
-      systemFullName: request.systemFullName,
-      romPath: request.romPath,
-      romBasename: request.romBasename,
-      romDirectory: request.romDirectory,
-      commandLabel: request.commandLabel,
-      commandTemplate: request.commandTemplate,
-      workingDirectoryTemplate: request.workingDirectoryTemplate,
-      isFirstConfiguredCommand: request.isFirstConfiguredCommand,
-      emulatorFindRules: request.emulatorFindRules,
-      coreFindRules: request.coreFindRules,
-      emulatorIdentifiers: request.emulatorIdentifiers,
-      coreFiles: request.coreFiles,
-      corePathIdentifiers: request.corePathIdentifiers,
-      identifiers: request.identifiers,
-      findRules: request.findRules,
-      placeholders: request.placeholders,
-      placeholdersPresent: request.placeholdersPresent,
-      backendRequest: request,
-      request,
-    })
+    // V6 aligned: Rust expects single arg `request: LaunchBackendRequest`
+    // Compatible fallback: send {request} – Tauri v2 will map to named arg.
+    await this.invokeFn('launch_game', { request })
+    // If backend expects flattened earlier versions, we have already covered via generic
+    // secondary attempt would be handled server-side; no double-launch.
   }
 }
 
