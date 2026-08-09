@@ -1,14 +1,20 @@
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,300;6..72,400&family=Fragment+Mono&display=swap');
+@import url('./styles/crystal-tokens.css');
+
+/* Crystal tokens now provide --crystal-* variables.
+   Old --bg/--text vars are mapped inside crystal-tokens for backward compat.
+   Primary font is industrial sans (Sora/Instrument/Geist), NOT Newsreader editorial.
+*/
 
 :root {
-  --bg: #121214;
-  --bg-2: #17171b;
-  --panel: #1c1c20;
-  --panel-2: #232326;
-  --text: #f3eee8;
-  --text-dim: #a49e96;
-  --line: rgba(255,255,255,0.08);
-  --accent: #efe8e0;
+  /* mapped via tokens, kept explicit for tooling that reads :root directly */
+  --bg: var(--crystal-bg);
+  --bg-2: var(--crystal-bg-2);
+  --panel: var(--crystal-panel);
+  --panel-2: var(--crystal-panel-2);
+  --text: var(--crystal-ink);
+  --text-dim: var(--crystal-ink-dim);
+  --line: var(--crystal-line);
+  --accent: var(--crystal-electric);
 }
 
 * { box-sizing: border-box; }
@@ -18,9 +24,9 @@ html, body, #root {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Fragment Mono', ui-monospace, monospace;
+  background: var(--crystal-bg);
+  color: var(--crystal-ink);
+  font-family: var(--crystal-sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -105,9 +111,8 @@ button, a { font-family: inherit; }
 .top-bar > * { pointer-events: auto; }
 
 .wordmark {
-  font-family: "Newsreader", serif;
-  font-optical-sizing: auto;
-  font-weight: 300;
+  font-family: var(--crystal-display);
+  font-weight: 500;
   font-size: 18px;
   letter-spacing: -0.02em;
   display: flex;
@@ -116,7 +121,7 @@ button, a { font-family: inherit; }
 }
 
 .wordmark small {
-  font-family: "Fragment Mono", monospace;
+  font-family: var(--crystal-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -167,8 +172,8 @@ button, a { font-family: inherit; }
 }
 
 .system-title {
-  font-family: "Newsreader", serif;
-  font-weight: 300;
+  font-family: var(--crystal-display);
+  font-weight: 500;
   font-size: clamp(42px, 6vw, 72px);
   line-height: 0.92;
   letter-spacing: -0.03em;

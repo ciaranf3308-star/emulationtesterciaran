@@ -1,0 +1,83 @@
+/* Crystal Frontend – Design Tokens
+   Premium next-gen Gaming OS, NOT boutique-hotel/editorial.
+   See docs/CRYSTAL-PRODUCT-RULE.md
+   This layer establishes Crystal-native variables so future work no longer inherits Beirt styling.
+*/
+
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=Instrument+Sans:wght@400;500;600&family=Fragment+Mono&family=Geist:wght@300;400;500;600&display=swap');
+
+:root {
+  /* Crystal core – graphite / black base */
+  --crystal-bg: #0A0A0F;                /* main graphite black */
+  --crystal-bg-2: #11131A;              /* elevated */
+  --crystal-bg-3: #171A23;              /* tier-3 */
+  --crystal-panel: #151821;             /* card / glass base */
+  --crystal-panel-2: #1C202E;
+  --crystal-panel-glass: rgba(20,24,36,0.55); /* translucent acrylic */
+  --crystal-panel-glass-strong: rgba(22,26,42,0.72);
+
+  /* Ink / text on dark */
+  --crystal-ink: #E6E8EF;
+  --crystal-ink-dim: #9AA0B2;
+  --crystal-ink-faint: #6D758B;
+  --crystal-silver: #C7CAD6;
+
+  /* Lines / hairlines – cool, not warm beige */
+  --crystal-line: rgba(230,235,255,0.08);
+  --crystal-line-strong: rgba(230,235,255,0.14);
+  --crystal-line-glow: rgba(125,249,255,0.18);
+
+  /* Electric – cool cyan highlight (never orange Vault #FF6B26) */
+  --crystal-electric: #7DF9FF;
+  --crystal-electric-2: #6BE7FF;
+  --crystal-electric-dim: rgba(125,249,255,0.18);
+  --crystal-focus: #8BE8FF;
+  --crystal-focus-ring: 0 0 0 1px var(--crystal-electric), 0 0 24px rgba(125,249,255,0.25);
+
+  /* Glass materials */
+  --crystal-glass: rgba(20,24,36,0.55);
+  --crystal-glass-border: rgba(230,235,255,0.09);
+  --crystal-blur: 28px;
+
+  /* Typography stacks – industrial product UI, NOT Newsreader serif primary */
+  --crystal-display: "Sora", "Instrument Sans", "Geist", ui-sans-system, system-ui, sans-serif;
+  --crystal-sans: "Instrument Sans", "Geist", "Sora", Inter, ui-sans-system, system-ui, sans-serif;
+  --crystal-mono: "Fragment Mono", "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Motion – cinematic, not editorial fade */
+  --crystal-ease-out: cubic-bezier(0.2,0.8,0.2,1);
+  --crystal-ease-spring: cubic-bezier(0.34,1.56,0.64,1);
+  --crystal-duration-fast: 160ms;
+  --crystal-duration: 240ms;
+  --crystal-duration-slow: 900ms;
+}
+
+/* Light theme – cooler than warm cream, still Crystal */
+:root .light-theme,
+.light-theme {
+  --crystal-bg: #F2F4F8;               /* cool light, NOT #f7f3ef warm */
+  --crystal-bg-2: #E9EDF4;
+  --crystal-bg-3: #DDE3EF;
+  --crystal-panel: #FFFFFF;
+  --crystal-panel-2: #F7F9FD;
+  --crystal-panel-glass: rgba(255,255,255,0.78);
+  --crystal-panel-glass-strong: rgba(255,255,255,0.88);
+  --crystal-ink: #14151A;
+  --crystal-ink-dim: #6B7286;
+  --crystal-ink-faint: #9AA0B2;
+  --crystal-line: rgba(20,24,36,0.08);
+  --crystal-line-strong: rgba(20,24,36,0.14);
+  --crystal-silver: #5C657D;
+}
+
+/* Backward compatibility – map old semantic --bg etc to crystal */
+:root {
+  --bg: var(--crystal-bg);
+  --bg-2: var(--crystal-bg-2);
+  --panel: var(--crystal-panel);
+  --panel-2: var(--crystal-panel-2);
+  --text: var(--crystal-ink);
+  --text-dim: var(--crystal-ink-dim);
+  --line: var(--crystal-line);
+  --accent: var(--crystal-electric);
+}

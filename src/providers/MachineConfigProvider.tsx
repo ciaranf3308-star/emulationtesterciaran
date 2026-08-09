@@ -1,64 +1,130 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import type { MachineConfig } from '../machine/types'
-import { loadMachineConfigFromJson, loadExampleMachineConfig, isExampleConfig } from '../machine/loader'
+import type { MachineConfig, ValidationError } from '../machine/types'
+import { loadMachineConfigFromJson, loadExampleMachineConfig, isExampleConfig, isTauriEnvironment, MachineConfigLoadError } from '../machine/loader'
 
 type MachineState = {
   config: MachineConfig | null
   isExample: boolean
   error: string | null
-  validationErrors: import('../machine/types').ValidationError[]
+  validationErrors: ValidationError[]
   loading: boolean
   isRealMachine: boolean
+  blockingError: boolean // true when Tauri real-config failed and we must not show example UI
 }
 
 const Ctx = createContext<MachineState | null>(null)
 
 export function MachineConfigProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<MachineState>({
-    config:null, isExample:false, error:null, validationErrors:[], loading:true, isRealMachine:false
+    config:null, isExample:false, error:null, validationErrors:[], loading:true, isRealMachine:false, blockingError:false
   })
 
   useEffect(()=>{
     let cancelled=false
     async function init() {
-      // Attempt to load real machine config via window (Tauri) or fail to example
-      // In browser dev mode we load sanitized example
-      try {
-        // Try to fetch from possible backend-provided global? For now try window.__CRYSTAL_MACHINE_CONFIG__
-        // @ts-ignore
-        const injected = (window as any).__CRYSTAL_MACHINE_CONFIG__
-        if (injected) {
+      const tauriMode = isTauriEnvironment()
+
+      // 1) Try injected global (window.__CRYSTAL_MACHINE_CONFIG__) – could be Tauri injected or test hook
+      const injected = (typeof window !== 'undefined' ? (window as any).__CRYSTAL_MACHINE_CONFIG__ : undefined)
+      if (injected) {
+        try {
           const cfg = loadMachineConfigFromJson(injected)
           if (cancelled) return
-          setState({ config:cfg, isExample:isExampleConfig(cfg), error:null, validationErrors:[], loading:false, isRealMachine: !isExampleConfig(cfg) })
+          setState({ config:cfg, isExample:isExampleConfig(cfg), error:null, validationErrors:[], loading:false, isRealMachine: !isExampleConfig(cfg), blockingError:false })
           return
+        } catch (e: any) {
+          // If we are in Tauri real-machine mode and injected config was attempted but invalid -> BLOCK, do not fallback to example
+          if (tauriMode) {
+            const errs = (e instanceof MachineConfigLoadError) ? e.validationErrors : [{ path:'$', message: e?.message||String(e) }]
+            if (cancelled) return
+            setState({
+              config:null,
+              isExample:false,
+              error: `Real machine configuration failed to load – frontend cannot start with example data in installed mode. ${e?.message||String(e)}`,
+              validationErrors: errs as ValidationError[],
+              loading:false,
+              isRealMachine:false,
+              blockingError:true
+            })
+            return
+          }
+          // if not Tauri (browser dev), allow fallthrough to Tauri invoke / example
         }
-      } catch(e) {
-        // fallthrough
       }
 
-      // Try load via Tauri invoke if available
+      // 2) Try Tauri invoke if available – this is REAL machine path
       try {
-        // @ts-ignore
-        const tauri = (window as any).__TAURI__
-        if (tauri?.invoke) {
-          const txt = await tauri.invoke('get_machine_config')
-          const j = typeof txt === 'string' ? JSON.parse(txt) : txt
-          const cfg = loadMachineConfigFromJson(j)
+        const w = typeof window !== 'undefined' ? (window as any) : undefined
+        const tauri = w?.__TAURI__
+        const invoke = tauri?.invoke || w?.__TAURI_INVOKE__ || (w?.__TAURI_IPC__?.invoke)
+        if (typeof invoke === 'function' || tauriMode) {
+          try {
+            // normalize invoke function
+            const invokeFn = typeof tauri?.invoke === 'function' ? tauri.invoke.bind(tauri) : invoke
+            const txt = await invokeFn('get_machine_config')
+            const j = typeof txt === 'string' ? JSON.parse(txt) : txt
+            const cfg = loadMachineConfigFromJson(j)
+            if (cancelled) return
+            setState({ config:cfg, isExample:isExampleConfig(cfg), error:null, validationErrors:[], loading:false, isRealMachine:true, blockingError:false })
+            return
+          } catch (e: any) {
+            // Tauri attempted but failed – this is a blocking error per product rule, DO NOT fallback to example
+            const errs = (e instanceof MachineConfigLoadError) ? e.validationErrors : [{ path:'get_machine_config', message: e?.message||String(e) }]
+            if (cancelled) return
+            setState({
+              config:null,
+              isExample:false,
+              error: `Real machine configuration failed to load – frontend cannot start with example data in installed mode. Backend get_machine_config failed: ${e?.message||String(e)}`,
+              validationErrors: errs as ValidationError[],
+              loading:false,
+              isRealMachine:false,
+              blockingError:true
+            })
+            return
+          }
+        }
+      } catch {
+        // outer catch – if we were in Tauri mode we should have already returned blockingError; fallthrough only for non-Tauri browser
+        if (tauriMode) {
           if (cancelled) return
-          setState({ config:cfg, isExample:isExampleConfig(cfg), error:null, validationErrors:[], loading:false, isRealMachine:true })
+          setState({
+            config:null,
+            isExample:false,
+            error: `Real machine configuration failed to load – frontend cannot start with example data in installed mode. Tauri backend invoke unavailable or threw.`,
+            validationErrors: [{ path:'tauri.invoke', message:'invoke missing/failed in Tauri mode' }],
+            loading:false,
+            isRealMachine:false,
+            blockingError:true
+          })
           return
         }
-      } catch {}
+      }
 
-      // Browser dev fallback: sanitized example
+      // 3) Browser dev fallback – only allowed when NOT in Tauri mode
+      if (tauriMode) {
+        // We already ensured Tauri not available but tauriMode detection was truthy -> treat as blocking
+        if (cancelled) return
+        setState({
+          config:null,
+          isExample:false,
+          error: `Real machine configuration failed to load – frontend cannot start with example data in installed mode. Detected Tauri environment but no valid config supplied via __CRYSTAL_MACHINE_CONFIG__ or get_machine_config.`,
+          validationErrors: [{ path:'tauri.realConfig', message:'real machine config missing in Tauri mode' }],
+          loading:false,
+          isRealMachine:false,
+          blockingError:true
+        })
+        return
+      }
+
+      // Browser dev path – sanitized example allowed
       try {
         const cfg = await loadExampleMachineConfig()
         if (cancelled) return
-        setState({ config:cfg, isExample:true, error:null, validationErrors:[], loading:false, isRealMachine:false })
+        setState({ config:cfg, isExample:true, error:null, validationErrors:[], loading:false, isRealMachine:false, blockingError:false })
       } catch(e:any) {
         if (cancelled) return
-        setState({ config:null, isExample:false, error:e?.message||String(e), validationErrors:e?.errors||[], loading:false, isRealMachine:false })
+        const errs = (e instanceof MachineConfigLoadError) ? e.validationErrors : [{ path:'exampleConfig', message:e?.message||String(e) }]
+        setState({ config:null, isExample:false, error:e?.message||String(e), validationErrors: errs as ValidationError[], loading:false, isRealMachine:false, blockingError:false })
       }
     }
     init()

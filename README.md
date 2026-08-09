@@ -4,7 +4,9 @@ Premium fullscreen Windows gaming frontend (React + TypeScript + Vite → Tauri)
 
 > **Note:** This build is still web-preview (Vite). Tauri wrapper next step converts `dist/` into single 8–12 MB exe.
 
-## What Actually Exists (Phase 2 — 2026-08-09)
+## What Actually Exists (V3/V4 — 2026-08-09)
+
+V1 = initial standalone frontend, V2 = Crystal asset/refactor (asset pack preserved), V3 = machine-truth architecture (typed machine domain, validation, composable asset resolver genesis≠megadrive, 5-layer SystemStage with multiple DS/3DS regions, launch/media/metadata/input, privacy, tests 27), V4 = Crystal product rule firewall from Beirt, contamination removal, Crystal-native design tokens (graphite/silver/cyan glass), truth-only UI (no fake game placeholders), real-config blocking error in Tauri (no silent fallback to example).
 
 ### Machine-Local Truth (Never Committed)
 Generated read-only from ROG Ally X:
@@ -145,10 +147,17 @@ Browser = dev fallback loads sanitized example `config/machine-config.example.js
 
 Avoid mounting hundreds videos – Library view paginates placeholder list (40). Memoize stage config. Preload background via `decoding="async"`. State isolation via providers to avoid rerenders on carousel nav. GPU transforms `translateZ(0)` on bg/logo/carousel.
 
-## Creative Rule (always)
+## Creative Rule (Crystal – always)
 
-Push for most impressive creative/aesthetic solution, not safe/basic. Push back hard on flat/boxed admin-panel/tech-dashboard. Boutique-hotel polish bar (Soho House + Hume + Aesop/Cereal). Boutique-hotel polish, Not orange Vault terminal.
+Push for most impressive creative/aesthetic solution, not safe/basic. Push back hard on flat/boxed admin-panel/tech-dashboard/generic SaaS.
+
+Crystal bar = premium next-gen gaming OS. Think cinematic hardware reveal:
+- translucent glass/crystal/acrylic depth, graphite/black/silver structure, cool electric cyan focus
+- studio-lit console hardware, cartridge/disc interaction, sharp premium presentation
+- controller-first, hardware-led, screen breaks overlay edge with shadow (stage), not clipped
+
+No orange Vault terminal (#FF6B26), no fake counts, no generic SaaS admin. See `docs/CRYSTAL-PRODUCT-RULE.md` for permanent product firewall – Crystal is a gaming OS, not hospitality / editorial / boutique lifestyle. Never transfer Beirt references into Crystal.
 
 ---
 
-*Phase 2 built 2026-08-09 by subagents + manual merge, typecheck 0, tests 27 pass, build 182 kB.*
+*V3 machine-truth built 2026-08-09, V4 corrections 2026-08-09 – typecheck 0, tests 27 pass, build 182 kB, tokens Crystal-native.*

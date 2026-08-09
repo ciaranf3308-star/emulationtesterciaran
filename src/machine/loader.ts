@@ -146,12 +146,24 @@ export function isExampleConfig(cfg: MachineConfig): boolean {
   return false;
 }
 
+export function isTauriEnvironment(): boolean {
+  if (typeof window === 'undefined') return false
+  const w = window as any
+  return !!(w.__TAURI__ || w.__TAURI_INTERNALS__ || w.__TAURI_INVOKE__ || w.__TAURI_IPC__)
+}
+
 export async function loadMachineConfigWithFallback(primaryPath?: string): Promise<MachineConfig> {
   if (primaryPath) {
     try {
       return await loadMachineConfigFromPath(primaryPath);
     } catch {
-      // fall through
+      // fall through only if not Tauri – in Tauri callers should surface error instead of silently falling back
+      if (isTauriEnvironment()) {
+        throw new MachineConfigLoadError(
+          `Failed to load machine config from "${primaryPath}" in Tauri mode – blocking fallback to example.`,
+          [{ path: primaryPath, message: 'Tauri real-config load failed – blocking example fallback' }]
+        )
+      }
     }
   }
   const dev = await loadMachineConfigExampleDev();
