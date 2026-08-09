@@ -1,0 +1,46 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node 20 (for tsc)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          if [ -f bun.lockb ]; then
+            bun install --frozen-lockfile
+          elif [ -f bun.lock ]; then
+            bun install --frozen-lockfile || bun install
+          elif [ -f package-lock.json ]; then
+            npm ci
+          else
+            bun install
+          fi
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Tests
+        run: bun test
+
+      - name: Build (production, no Tauri/Rust required)
+        run: bun run build
+        env:
+          CI: true
