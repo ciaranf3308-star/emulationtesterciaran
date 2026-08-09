@@ -1,0 +1,156 @@
+name: Release – signed Windows updater
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag for release (e.g. v4.3.1) – must exist and be pushed'
+        required: false
+        default: ''
+
+# Only releases replaces binaries, never ROM/ES-DE/gamelist/media – safety preserved per UPDATES.md
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      # Secrets – private key ONLY from GH secrets; never committed – required for signed artifacts
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+        shell: bash
+
+      - name: Install deps (frozen)
+        run: bun install --frozen-lockfile
+        shell: bash
+
+      - name: Typecheck + tests (quick gate)
+        run: |
+          npx tsc --noEmit || npx tsc -p tsconfig.app.json --noEmit
+          bun test
+        shell: bash
+
+      - name: Derive version
+        id: version
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if (-not $v) { $v = (Get-Content package.json | ConvertFrom-Json).version }
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "Derived version $v"
+        shell: pwsh
+
+      - name: Build Tauri signed Windows bundles (msi + nsis)
+        # This produces src-tauri/target/release/bundle/msi/*.msi + nsis/*.exe + *.msi.zip (+ .sig) + .nsis.zip.sig when signing env present
+        run: bun run tauri build -- --bundles msi,nsis
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: List bundles
+        run: |
+          Get-ChildItem -Recurse src-tauri/target/release/bundle | Format-Table -AutoSize
+        shell: pwsh
+
+      - name: Generate latest.json manifest
+        id: manifest
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          if (-not $tag.StartsWith('v')) { $tag = "v$ver" }
+
+          $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+          # Locate signature + zip – prefer msi.zip (Tauri updater convention)
+          $msiZip = Get-ChildItem -Path src-tauri/target/release/bundle/msi -Filter *.zip -Recurse | Select-Object -First 1
+          $msiSig  = Get-ChildItem -Path src-tauri/target/release/bundle/msi -Filter *.sig -Recurse | Select-Object -First 1
+          $nsisSig = Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter *.sig -Recurse | Select-Object -First 1
+
+          $sigContent = ""
+          $bundleUrl = ""
+
+          if ($msiSig -and (Test-Path $msiSig.FullName)) {
+            $sigContent = (Get-Content $msiSig.FullName -Raw).Trim()
+            $bundleName = $msiZip.Name
+            $bundleUrl = "https://github.com/${{ github.repository }}/releases/download/$tag/$bundleName"
+          } elseif ($nsisSig -and (Test-Path $nsisSig.FullName)) {
+            $sigContent = (Get-Content $nsisSig.FullName -Raw).Trim()
+            # nsis fallback – updater still expects zip, we create ziped nsis installer manually? For now use nsis exe url (Tauru updater accepts .exe if configured)
+            $exe = Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter *.exe -Recurse | Select-Object -First 1
+            if ($exe) { $bundleUrl = "https://github.com/${{ github.repository }}/releases/download/$tag/$($exe.Name)" }
+          } else {
+            Write-Host "::warning::No .sig found – releasing without signature (INVALID for updater). Ensure TAURI_SIGNING_PRIVATE_KEY secret set."
+          }
+
+          $manifest = @{
+            version = $tag
+            notes = "Crystal $tag – signed updater artifact – binaries only, no ROM/ES-DE/media changes"
+            pub_date = $date
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $sigContent
+                url = $bundleUrl
+              }
+            }
+          } | ConvertTo-Json -Depth 5
+
+          $manifest | Out-File -Encoding utf8 latest.json
+          $manifest | Out-File -Encoding utf8 dist/latest.json
+          Write-Host $manifest
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Publish GitHub Release with signed artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.manifest.outputs.tag }}
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.zip
+            src-tauri/target/release/bundle/msi/*.zip.sig
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+            latest.json
+            dist/latest.json
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Artifact – latest.json (fallback upload)
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-manifest-latest-json
+          path: |
+            latest.json
+            dist/latest.json
