@@ -12,7 +12,7 @@
     "V1": "initial standalone frontend",
     "V2": "Crystal asset/refactor stage (asset pack preserved, React+TS+Vite)",
     "V3": "machine-truth architecture – typed machine domain, validation, composable assets, 5-layer SystemStage, launch/media/metadata/input, privacy",
-    "V4": "Crystal product rule split from Beirt, boutique cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error"
+    "V4": "Crystal product rule split from Beirt, cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error"
   },
   "packageVersion": "3.1.0",
   "previousMilestone": "V3 – machine-truth architecture",

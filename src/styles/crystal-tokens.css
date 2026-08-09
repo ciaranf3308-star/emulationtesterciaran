@@ -1,7 +1,6 @@
 /* Crystal Frontend – Design Tokens
-   Premium next-gen Gaming OS, NOT boutique-hotel/editorial.
-   See docs/CRYSTAL-PRODUCT-RULE.md
-   This layer establishes Crystal-native variables so future work no longer inherits Beirt styling.
+   Premium next-gen Gaming OS – see PRODUCT-RULE.md for Beirt firewall.
+   This layer establishes Crystal-native variables so future work no longer inherits warm editorial styling.
 */
 
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=Instrument+Sans:wght@400;500;600&family=Fragment+Mono&family=Geist:wght@300;400;500;600&display=swap');
