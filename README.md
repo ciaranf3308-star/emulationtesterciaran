@@ -9,14 +9,14 @@ Premium fullscreen Windows gaming frontend (React + TypeScript + Vite → Tauri)
 ### Machine-Local Truth (Never Committed)
 Generated read-only from ROG Ally X:
 
-- `CRYSTAL-MACHINE-AUDIT.md` — 60 lines, 19 populated systems table (`n3ds,dreamcast,gb,gba,gbc,gc,genesis,megadrive,n64,nds,ps2,psp,psx,snes,steam,wii,wiiu,xbox,xbox360`) with ROM counts, launch labels, `STATICALLY_RESOLVED`, authoritative paths `C:\Users\ciara\AppData\Roaming\EmuDeck\...`, ambiguities: `ps4` invalid `ShadPS4 Shortcut`, media seed conflict `D:\Emulation/storage/downloaded_media` vs `C:\Emulation/...`
-- `crystal-machine-config.json` — `schemaVersion 1`, `populatedSystemCount 19`, `generatedAt 2026-08-09T20:38:48.4484774+01:00`, `roots { gamelists: C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE\gamelists, rom: D:\Emulation\roms\, scrapedMedia: C:\Emulation\storage/downloaded_media }`, per-system `romDirectory`, `validExtensions`, `matchingRomFileCount`, `commands[]` with `findRules { identifier,kind, rules: staticpath|corepath|systempath }`, `launchSelection { selectedLabel, rule, status, source gamelist.xml, perGameOverrideCount 0 }`, `media {covers,marquees,miximages,physicalmedia,screenshots,titlescreens,videos fileCount/directRomBasenameMatches/nonDirectBasenameCount/filenamePattern/exceptionSamples }`, `metadata { exists,favorites,gameEntries,gamelistPath,entriesWithPlayCount,entriesWithLastPlayed,fields }`
+- `CRYSTAL-MACHINE-AUDIT.md` — 60 lines, 19 populated systems table (`n3ds,dreamcast,gb,gba,gbc,gc,genesis,megadrive,n64,nds,ps2,psp,psx,snes,steam,wii,wiiu,xbox,xbox360`) with ROM counts, launch labels, `STATICALLY_RESOLVED`, authoritative paths `%USERPROFILE%\AppData\Roaming\EmuDeck\...`, ambiguities: `ps4` invalid `ShadPS4 Shortcut`, media seed conflict `D:\Emulation/storage/downloaded_media` vs `C:\Emulation/...`
+- `crystal-machine-config.json` — `schemaVersion 1`, `populatedSystemCount 19`, `generatedAt 2026-08-09T20:38:48.4484774+01:00`, `roots { gamelists: %USERPROFILE%\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE\gamelists, rom: D:\Emulation\roms\, scrapedMedia: C:\Emulation\storage/downloaded_media }`, per-system `romDirectory`, `validExtensions`, `matchingRomFileCount`, `commands[]` with `findRules { identifier,kind, rules: staticpath|corepath|systempath }`, `launchSelection { selectedLabel, rule, status, source gamelist.xml, perGameOverrideCount 0 }`, `media {covers,marquees,miximages,physicalmedia,screenshots,titlescreens,videos fileCount/directRomBasenameMatches/nonDirectBasenameCount/filenamePattern/exceptionSamples }`, `metadata { exists,favorites,gameEntries,gamelistPath,entriesWithPlayCount,entriesWithLastPlayed,fields }`
 
 Both are **machine-local** → stored in `~/workspace/` only, `.gitignore`d. Real paths never leave machine.
 
 ### Sanitized Example
 
-`config/machine-config.example.json` — 27 KB, 5 systems (`ps2,gc,gba,n64,snes`), roots `D:/Emulation/...`, flagged `_devFlag: exampleData`, **no** `C:\Users\ciara` personal paths. Used automatically for browser dev mode.
+`config/machine-config.example.json` — 27 KB, 5 systems (`ps2,gc,gba,n64,snes`), roots `D:/Emulation/...`, flagged `_devFlag: exampleData`, **no** `%USERPROFILE%` personal paths. Used automatically for browser dev mode.
 
 ### Asset Pack
 

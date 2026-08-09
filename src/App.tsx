@@ -215,7 +215,7 @@ function SystemLibraryView({ system, onBack, theme: _theme }: { system: MachineS
         <button onClick={onBack} style={{ padding:'6px 12px', borderRadius:999, border:'1px solid rgba(255,255,255,0.12)', background:'rgba(255,255,255,0.06)', color:'#f3eee8' }}>Back</button>
       </div>
       <div style={{ display:'flex', gap:10, fontSize:11, opacity:0.7, fontFamily:'Fragment Mono' }}>
-        <span>ROM dir: {system.romDirectory.replace('C:\\\\Users\\\\ciara','~')}</span>
+        <span>ROM dir: {system.romDirectory.replace(/^[A-Z]:\\Users\\[^\\]+/i,'~')}</span>
         <span>• {system.matchingRomFileCount} files</span>
         <span>• cmd: {system.launchSelection.selectedLabel}</span>
         <span style={{ color: system.launchSelection.status==='STATICALLY_RESOLVED' ? '#8ef0a4' : '#ffb86a' }}>• {system.launchSelection.status}</span>
