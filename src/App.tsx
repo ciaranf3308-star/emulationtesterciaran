@@ -23,6 +23,11 @@ import { getTauriInvoker } from './runtime/tauri'
 // V8.2 fixture DEV ONLY – isolated, never overwrites real Tauri truth – used for web QA screenshots
 import { getFixtureGames, toGameEntry, fixtureMediaForGame, getFixtureSystems } from './dev/fixtures/goldenFixture'
 import { isFixtureEnabled, isDevFixtureAllowed } from './dev/fixtures/fixtureMode'
+// V8.3.1 signed updater – official Tauri v2 plugin – non-blocking startup check, restrained UI, manual Settings entry
+import { checkForUpdate } from './updater/crystalUpdater'
+import type { CrystalUpdateInfo } from './updater/crystalUpdater'
+import { UpdaterBanner } from './components/UpdaterBanner'
+import { SettingsUpdaterPanel } from './components/SettingsUpdaterPanel'
 
 type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings'
 
@@ -74,6 +79,14 @@ function AppInner() {
   const [collectionGames, setCollectionGames] = useState<GameEntry[] | null>(null)
   const [collectionLoading, setCollectionLoading] = useState(false)
   const [collectionError, setCollectionError] = useState<string | null>(null)
+
+  // V8.3.1 updater – restrained UI, never blocks startup, never touches ROMs/media/saves
+  const [availableUpdate, setAvailableUpdate] = useState<CrystalUpdateInfo | null>(null)
+  const [updaterDownloading, setUpdaterDownloading] = useState(false)
+  const [updaterPct, setUpdaterPct] = useState(0)
+  const [updaterError, setUpdaterError] = useState<string | null>(null)
+  const [updaterPendingConfirm, setUpdaterPendingConfirm] = useState(false)
+  const [updaterRawObj, setUpdaterRawObj] = useState<any | null>(null)
 
   const populatedSystems = useMemo(() => {
     if (!config) return [] as MachineSystem[]
@@ -762,6 +775,34 @@ function AppInner() {
 
   useSemanticInput(onNav as any)
 
+  // V8.3.1 – startup update check, async, non-blocking, silent on failure/offline
+  useEffect(() => {
+    if (!isTauriEnvironment()) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      try {
+        // Gentle delay so first paint not blocked – 1.8s
+        const info = await checkForUpdate().catch(() => null)
+        if (cancelled) return
+        if (info && info.available && !availableUpdate) {
+          // Log to Crystal-local logs via safety logger? Frontend fallback console log
+          console.info(`[updater] available v${info.version} (current ${info.currentVersion}) – showing restrained banner`)
+          setAvailableUpdate(info)
+          // If we got raw object with download methods it would be here, but checkForUpdate returns normalized only.
+          // We re-check with module raw when user clicks UPDATE to preserve full object.
+        }
+      } catch (e) {
+        // swallow – current app usable
+        console.debug('[updater] startup check failed (ignored):', e)
+      }
+    }, 1800)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Now early returns safe – all hooks already called unconditionally
   if (machineLoading || manifestLoading) {
     return (
@@ -1027,6 +1068,7 @@ function AppInner() {
               </div>
             )}
           </div>
+          <SettingsUpdaterPanel theme={theme} />
         </div>
       )}
 
@@ -1081,6 +1123,108 @@ function AppInner() {
         >
           {safeModeToast}
         </div>
+      )}
+
+      {/* V8.3.1 Crystal signed updater – restrained boutique card, NEVER force, explicit confirm */}
+      {availableUpdate && (
+        <UpdaterBanner
+          update={availableUpdate}
+          downloading={updaterDownloading}
+          progressPct={updaterPct}
+          error={updaterError}
+          theme={theme}
+          onSkip={() => {
+            setAvailableUpdate(null)
+            setUpdaterError(null)
+            setUpdaterDownloading(false)
+            setUpdaterPct(0)
+            setUpdaterPendingConfirm(false)
+            setUpdaterRawObj(null)
+          }}
+          onStartUpdate={async () => {
+            // Re-fetch raw Update object via direct check in service to preserve download methods
+            setUpdaterDownloading(true)
+            setUpdaterError(null)
+            setUpdaterPct(2)
+            try {
+              // dynamic import to get raw check
+              // @ts-ignore
+              let mod: any = null
+              try {
+                mod = await import('@tauri-apps/plugin-updater')
+              } catch {
+                mod = null
+              }
+              let raw: any = null
+              if (mod && mod.check) {
+                raw = await mod.check().catch(() => null)
+              } else {
+                // fallback raw via Tauri invoke path
+                try {
+                  const { invoke } = await import('@tauri-apps/api/core')
+                  // @ts-ignore
+                  raw = await (invoke as any)('plugin:updater|check').catch(() => null)
+                } catch {}
+              }
+              if (!raw) {
+                setUpdaterError('no-update – try again later')
+                setUpdaterDownloading(false)
+                return
+              }
+              setUpdaterRawObj(raw)
+              // Start progress simulated if plugin does event callbacks inside downloadAndInstall wrapper
+              const { downloadAndInstallWithProgress: doInstall } = await import('./updater/crystalUpdater')
+              const res = await doInstall(
+                (p) => setUpdaterPct(p),
+                raw
+              )
+              if (res.ok) {
+                // Download finished – require explicit install confirmation
+                setUpdaterPct(100)
+                setUpdaterDownloading(false)
+                setUpdaterPendingConfirm(true)
+                // keep banner visible for confirmation step
+              } else {
+                setUpdaterError(res.error || 'download failed – kept current')
+                setUpdaterDownloading(false)
+                // do not dismiss – let user retry LATER
+              }
+            } catch (e: any) {
+              setUpdaterError(e?.message || String(e) || 'update failed – kept current')
+              setUpdaterDownloading(false)
+            }
+          }}
+          onConfirmInstall={async () => {
+            // Final explicit user confirmation before restart
+            try {
+              if (updaterRawObj && typeof updaterRawObj.install === 'function') {
+                await updaterRawObj.install()
+                // Tauri updater install triggers restart automatically after install completes (when using installAndRestart pattern)
+                // If install separate, we now trigger relaunch via AppHandle? Plugin handles restart.
+              } else {
+                // fallback direct invoke installer which performs install+restart
+                try {
+                  const { downloadAndInstallWithProgress: doInstall } = await import('./updater/crystalUpdater')
+                  // If we already downloaded, some impls require installAndRestart helper
+                  const { installAndRestart } = await import('./updater/crystalUpdater')
+                  const ok = await installAndRestart(updaterRawObj)
+                  if (!ok) {
+                    // last resort – attempt full downloadAndInstall again will restart
+                    await doInstall(undefined, updaterRawObj)
+                  }
+                } catch {}
+              }
+            } catch (e: any) {
+              setUpdaterError('install failed – kept current: ' + (e?.message || String(e)))
+              setUpdaterPendingConfirm(false)
+            }
+          }}
+          onCancelConfirm={() => {
+            setUpdaterPendingConfirm(false)
+            // keep availableUpdate showing so user can LATER or retry
+          }}
+          pendingConfirm={updaterPendingConfirm}
+        />
       )}
     </div>
   )

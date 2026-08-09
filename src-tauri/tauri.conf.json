@@ -38,6 +38,17 @@
       "nsis"
     ]
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "gMqZ8bVKU26sQqirx7TX7H+j67/TgPj3Kh747WWVfOU=",
+      "endpoints": [
+        "https://github.com/ciaranf3308-star/emulationtesterciaran/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "identifier": "com.crystal.frontend",
   "productName": "Crystal Frontend",
   "version": "4.3.0"
