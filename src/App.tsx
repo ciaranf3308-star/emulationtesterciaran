@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ThemeProvider, useThemeAssets } from './providers/ThemeProvider'
 import { MachineConfigProvider, useMachineConfig } from './providers/MachineConfigProvider'
 import { getPopulatedSystems, getSystemById, getSystemFullName } from './machine/selectors'
@@ -6,6 +6,7 @@ import { configForSystem } from './stage'
 import SystemStage from './stage/SystemStage'
 import type { MachineSystem } from './machine/types'
 import { useSemanticInput } from './hooks/useSemanticInput'
+import { useViewNavigation } from './hooks/useViewNavigation'
 
 type View = 'systems' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings'
 
@@ -23,13 +24,17 @@ function AppInner() {
     return getPopulatedSystems(config)
   }, [config])
 
-  // All systems (including those with 0 files but defined) for Systems view? Prefer populated per audit
+  // Truth-only machine source: when MachineConfig is present we NEVER invent systems from theme/manifest.
+  // Only when config is missing entirely (browser dev before example load) may we show manifest ids as scaffolding.
   const systemsForUI = useMemo(() => {
-    if (populatedSystems.length) return populatedSystems
-    // fallback to manifest ids only if machine missing (dev without config)
+    if (config) {
+      // machine truth present – even if 0, return truth (0) – no theme fallback
+      return populatedSystems
+    }
+    // config missing – dev scaffolding fallback allowed
     if (!manifest) return []
     return Object.keys(manifest).filter(k => k !== '_default').map(id => ({ id, fullName: id } as MachineSystem))
-  }, [populatedSystems, manifest])
+  }, [config, populatedSystems, manifest])
 
   const currentSystem = useMemo(() => {
     if (!config) return undefined
@@ -71,21 +76,9 @@ function AppInner() {
     if (active) active.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
   }, [selected])
 
-  // Semantic input: controller-first, keyboard adapter, mouse secondary
-  const onNavigate = useCallback((action: import('./input/types').NavigationAction) => {
-    const ids = systemsForUI.map(s=>s.id)
-    const idx = ids.indexOf(selected)
-    if (action === 'left' || action === 'up' || action === 'previousSystem') {
-      setSelected(ids[(idx-1+ids.length)%ids.length])
-    } else if (action === 'right' || action === 'down' || action === 'nextSystem') {
-      setSelected(ids[(idx+1)%ids.length])
-    } else if (action === 'confirm' && view === 'systems') {
-      setView('library')
-    } else if (action === 'back' && view === 'library') {
-      setView('systems')
-    }
-  }, [selected, systemsForUI, view])
-
+  // View-aware navigation – semantic input central, directional does NOT mutate selected when in library/settings/etc.
+  const systemIds = useMemo(()=> systemsForUI.map(s=>s.id), [systemsForUI])
+  const onNavigate = useViewNavigation({ view, systemIds, selected, setSelected, setView })
   useSemanticInput(onNavigate)
 
   // Dev performance: reduced-motion detection, tab hidden pause
@@ -124,6 +117,26 @@ function AppInner() {
           )}
           <div style={{ marginTop:12, opacity:0.6, fontSize:11 }}>
             {isBlocking ? 'A real installed frontend must never masquerade as successfully configured while showing example-machine data. Fix backend config/invoke and restart.' : 'Browser dev mode expects sanitized example at /config/machine-config.example.json. Tauri / installed mode must supply real machine config via window.__CRYSTAL_MACHINE_CONFIG__ or get_machine_config invoke.'}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Truth-only empty state – when MachineConfig loaded but reports 0 populated systems,
+  // we must NOT fill UI with systems because artwork exists. Show explicit truth.
+  if (config && populatedSystems.length === 0) {
+    return (
+      <div style={{ width:'100vw', height:'100vh', display:'grid', placeItems:'center', background:'var(--crystal-bg,#0a0a0f)', color:'var(--crystal-ink)', padding:24 }}>
+        <div style={{ maxWidth:560, fontSize:13, lineHeight:1.6, fontFamily:'var(--crystal-mono)', border:'1px solid var(--crystal-line)', background:'var(--crystal-glass)', padding:18, borderRadius:12 }}>
+          <div style={{ fontFamily:'var(--crystal-display)', fontSize:14, fontWeight:500, marginBottom:8, color:'var(--crystal-ink)' }}>Machine reports 0 populated systems – add ROMs / check machine config</div>
+          <div style={{ opacity:0.8, fontSize:11 }}>
+            Truth-only: MachineConfig loaded (isExample={String(isExample)}, isRealMachine={String(isRealMachine)}, populatedSystemCount={String((config as any)?.populatedSystemCount ?? 0)}, systems={String((config as any)?.systems?.length ?? 0)}) but `getPopulatedSystems()` = 0.
+            <br/>Theme artwork contains many system icons, but theme must NEVER create machine systems. Verify `romDirectory` existence and `matchingRomFileCount` on the real machine, or check machine-config/example generation.
+          </div>
+          <div style={{ marginTop:12, display:'flex', gap:8 }}>
+            <button onClick={()=>window.location.reload()} style={{ padding:'6px 12px', borderRadius:999, border:'1px solid var(--crystal-line)', background:'var(--crystal-glass)', color:'var(--crystal-ink)', fontSize:11 }}>Reload</button>
+            <button onClick={()=>setShowGuides(v=>!v)} style={{ padding:'6px 12px', borderRadius:999, border:'1px solid var(--crystal-line)', background:'var(--crystal-glass)', color:'var(--crystal-ink)', fontSize:11 }}>Toggle guides</button>
           </div>
         </div>
       </div>

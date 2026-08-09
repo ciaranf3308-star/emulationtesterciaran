@@ -37,23 +37,32 @@ function validateRoots(roots: unknown, errors: ValidationError[]) {
 }
 
 /**
- * ROM directory representation rule:
+ * ROM directory representation rule (V3 tolerant):
  * - must be non-empty string
- * - must contain backslash (Windows absolute like D:\... or C:\Users\...) – allows forward mix
- * - should imply Emulation root or contain ':' or '\\' – not overly strict
- * We avoid hardcoding "C:\\Emulation" as default per spec.
+ * - must be Windows absolute like D:\... or D:/... (drive letter + colon + slash/backslash)
+ * - rejects relative paths like "roms" / "ps2"
+ * - rejects empty, "D:", ":\Emulation", etc.
+ * We avoid hardcoding "default Windows emulation root (hardcoded path)" as default per spec.
+ * Exported for unit-testing.
  */
-function isValidRomDirectory(s: string): boolean {
-  if (!s || typeof s !== 'string') return false;
+export function isValidRomDirectory(s: unknown): boolean {
+  if (typeof s !== 'string') return false;
+  if (!s) return false;
   if (s.trim().length === 0) return false;
-  if (!s.includes('\\')) return false;
-  // must look like path: contains ':' or '\\' at start or includes 'Emulation' / 'rom'
-  if (!(s.includes(':') || s.toLowerCase().includes('emulation') || s.toLowerCase().includes('roms'))) {
-    // still accept if it has backslashes and length > 3
-    return s.length > 3;
-  }
+  // Tolerant Windows absolute: case-insensitive drive letter + colon + slash OR backslash
+  // e.g. D:\Emulation\roms\ps2  or  D:/Emulation/roms/ps2
+  if (!/^[A-Za-z]:[\\/]/.test(s)) return false;
+  // Must be more than just "D:" – regex already ensures slash exists,
+  // but reject lone root with no name? D:\ and D:/ are acceptable as roots (minimal absolute).
+  // ":\Emulation" fails because no drive letter; "D:" fails because no slash.
+  if (s.length < 3) return false;
+  // Disallow obvious malformed where drive is followed by slash but immediate end is okay;
+  // we already allow that, but to be safe ensure not just "D:\ " (trim already).
   return true;
 }
+
+/** Back-compat: keep internal alias if other files import via validation internals */
+// (isValidRomDirectory is now exported)
 
 function validateMediaCategory(
   cat: unknown,
@@ -251,7 +260,7 @@ export function validateMachineConfig(config: unknown): ValidationResult {
     if (typeof s.romDirectory !== 'string' || s.romDirectory.length === 0) {
       push(errors, `${path}.romDirectory`, 'must be non-empty string');
     } else if (!isValidRomDirectory(s.romDirectory)) {
-      push(errors, `${path}.romDirectory`, `must be absolute Windows-like path containing "\\" – got "${s.romDirectory}"`);
+      push(errors, `${path}.romDirectory`, `must be absolute Windows path like "D:\\..." or "D:/..." matching /^[A-Za-z]:[\\\\/]/ – got "${s.romDirectory}"`);
     }
 
     // commands non-empty

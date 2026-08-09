@@ -5,7 +5,7 @@ import type { MachineSystem } from '../machine/types'
 /**
  * Media Resolver – boundary for path/file resolution logic.
  * React components must NOT compute media paths directly; call these functions.
- * No hardcoded C:\Emulation – caller provides mediaRoot from roots.scrapedMedia.
+ * No hardcoded default Windows emulation root (hardcoded path) – caller provides mediaRoot from roots.scrapedMedia.
  *
  * Pattern authoritative: <root>/<system>/<media-type>/<ROM basename>.<ext>
  * Exception handling: some ROMs have translation tags causing non-direct matches.

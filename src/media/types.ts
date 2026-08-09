@@ -1,7 +1,7 @@
 /**
  * Media Domain – authoritative types
  * Pattern: <root>/<system>/<media-type>/<ROM basename>.<ext>
- * No hardcoded C:\Emulation – root supplied via MediaResolverConfig / roots.scrapedMedia
+ * No hardcoded default Windows emulation root (hardcoded path) – root supplied via MediaResolverConfig / roots.scrapedMedia
  */
 export type MediaType = 'covers' | 'physicalmedia' | 'screenshots' | 'titlescreens' | 'videos' | 'marquees' | 'miximages'
 

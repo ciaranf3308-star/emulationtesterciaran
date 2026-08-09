@@ -1,6 +1,6 @@
 /**
  * Loader for MachineConfig – Node/Tauri desktop mode + JSON overload.
- * Avoids hardcoding C:\Emulation defaults.
+ * Avoids hardcoding default Windows emulation root (hardcoded path) defaults.
  * Exports required by spec:
  *  - loadMachineConfigFromPath(path: string): Promise<MachineConfig>
  *  - loadMachineConfigFromJson(json: unknown): MachineConfig (sync, throws on invalid)

@@ -6,6 +6,9 @@
  *
  * URLs are kept as `/assets/Crystal-Frontend-Asset-Pack/<rel>` exactly
  * as in manifest.json — never recompress/rename.
+ *
+ * V4: provider-specific roots – Crystal uses /assets/Crystal-Frontend-Asset-Pack/
+ * hardware uses /assets/hardware/ etc. Per-field override preserves root origin.
  */
 
 export type Theme = 'light' | 'dark'
@@ -28,18 +31,46 @@ export type ThemeAssetSet = Record<string, ThemeAsset> & {
   _default?: ThemeAsset
 }
 
-/** Resolved per-theme view for a single system */
+/** Provider root reference */
+export interface AssetRef {
+  providerId: string
+  relativePath: string
+  baseRoot: string
+}
+
+/** Resolved single asset with origin tracking */
+export interface ResolvedAsset {
+  url: string
+  providerId: string
+  relativePath: string
+  baseRoot: string
+}
+
+/** Resolved per-theme view for a single system – urls include correct baseRoot */
 export interface ResolvedThemeAssets {
   systemId: string
   theme: Theme
   /** original merged raw asset (theme-agnostic) */
   raw: ThemeAsset
-  background?: string // resolved url or undefined
+  background?: string // resolved url or undefined – includes provider baseRoot
   logo?: string
   carouselIcon?: string
   hardwareForeground?: string
   screenMask?: string
   slotMask?: string
+  /** Optional detailed origin – for provider-roots testing */
+  origins?: Record<string, ResolvedAsset>
+}
+
+/** Legacy helper – resolve with explicit baseRoot */
+export function resolveAssetUrl(baseRoot: string, rel: string): string {
+  if (!rel) return '' as any
+  if (rel.startsWith('/') || rel.startsWith('http://') || rel.startsWith('https://') || rel.startsWith('data:')) {
+    return rel
+  }
+  const root = baseRoot.replace(/\/+$/g, '')
+  const cleaned = rel.replace(/^\/+/g, '')
+  return `${root}/${cleaned}`
 }
 
 export interface AssetResolver {
@@ -51,12 +82,13 @@ export interface AssetResolver {
   getScreenMask(systemId: string): string | undefined
   getSlotMask(systemId: string): string | undefined
   getThemeAssetsForSystem(systemId: string, theme: Theme): ResolvedThemeAssets
-  /** merge another provider's set into this resolver (composable override) */
-  mergeProvider(set: ThemeAssetSet): void
+  /** merge another provider's set into this resolver (composable override) – supports providerId/baseRoot for V4 */
+  mergeProvider(set: ThemeAssetSet, providerId?: string, baseRoot?: string): void
 }
 
 /** A generic provider source */
 export interface AssetProvider {
   id: string
+  baseRoot?: string
   getAssetSet(): ThemeAssetSet | Promise<ThemeAssetSet>
 }

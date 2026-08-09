@@ -4,9 +4,11 @@ Premium fullscreen Windows gaming frontend (React + TypeScript + Vite → Tauri)
 
 > **Note:** This build is still web-preview (Vite). Tauri wrapper next step converts `dist/` into single 8–12 MB exe.
 
-## What Actually Exists (V3/V4 — 2026-08-09)
+## What Actually Exists (V5/V4 — 2026-08-09)
 
-V1 = initial standalone frontend, V2 = Crystal asset/refactor (asset pack preserved), V3 = machine-truth architecture (typed machine domain, validation, composable asset resolver genesis≠megadrive, 5-layer SystemStage with multiple DS/3DS regions, launch/media/metadata/input, privacy, tests 27), V4 = Crystal product rule firewall from Beirt, contamination removal, Crystal-native design tokens (graphite/silver/cyan glass), truth-only UI (no fake game placeholders), real-config blocking error in Tauri (no silent fallback to example).
+V1 = initial standalone frontend, V2 = Crystal asset/refactor (asset pack preserved), V3 = machine-truth architecture (typed machine domain, validation, composable asset resolver genesis≠megadrive, 5-layer SystemStage with multiple DS/3DS regions, launch/media/metadata/input, privacy, tests 27), V4 = Crystal product rule firewall from Beirt, contamination removal, Crystal-native design tokens (graphite/silver/cyan glass), truth-only UI (no fake game placeholders), real-config blocking error in Tauri (no silent fallback to example), V5 = hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI.
+
+> **Versioning note:** `package.json` version (`3.2.0`) is internal semver independent of milestone (`V5`). Milestone tracks product gating; semver tracks code compatibility/build. Do not conflate them; `version.json` is source of durable metadata (no buildMeta/css/gzip/js stale sizes).
 
 ### Machine-Local Truth (Never Committed)
 Generated read-only from ROG Ally X:
@@ -156,7 +158,7 @@ Crystal bar = premium next-gen gaming OS. Think cinematic hardware reveal:
 - studio-lit console hardware, cartridge/disc interaction, sharp premium presentation
 - controller-first, hardware-led, screen breaks overlay edge with shadow (stage), not clipped
 
-No orange Vault terminal (#FF6B26), no fake counts, no generic SaaS admin. See `docs/CRYSTAL-PRODUCT-RULE.md` for permanent product firewall – Crystal is a gaming OS, not hospitality / editorial / boutique lifestyle. Never transfer Beirt references into Crystal.
+No orange legacy terminal (#FF6B26 generic leftover), no fake counts, no generic SaaS admin. See `docs/CRYSTAL-PRODUCT-RULE.md` for permanent product firewall – Crystal is a gaming OS, not hospitality / editorial / boutique lifestyle. Never transfer Beirt references into Crystal.
 
 ---
 

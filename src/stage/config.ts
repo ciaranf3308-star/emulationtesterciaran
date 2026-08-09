@@ -1,9 +1,36 @@
 /**
- * Preset SystemStage configs — demonstrates dual-screen support and single-screen defaults.
- * Real configs would be sourced from machine/config validation, this is a lightweight preset for UI dev.
+ * Preset SystemStage configs – now delegates to presentation contract.
+ * Keeps genesis vs megadrive distinct.
  */
 
 import type { SystemStageConfig } from './types'
+import { getPresentationForSystem } from '../presentation/resolver'
+import type { SystemPresentationConfig } from '../presentation/types'
+
+function presentationToStageConfig(pres: SystemPresentationConfig, fullNameOverride?: string): SystemStageConfig {
+  const hw = pres.hardwareForeground
+  const hwUrl = typeof hw === 'string' ? hw : hw?.url || (hw as any)?.assetRef?.url || undefined
+
+  const screenMasks = pres.screenMasks
+  const slotMasks = pres.slotMasks
+  const singleScreenMask = (pres as any).screenMask as string | undefined
+  const singleSlotMask = (pres as any).slotMask as string | undefined
+
+  return {
+    systemId: pres.systemId,
+    fullName: fullNameOverride || pres.fullName || pres.systemId,
+    gameplayRegions: pres.gameplayRegions.map(r => ({ ...r })),
+    physicalMediaConfig: pres.physicalMedia ? {
+      type: pres.physicalMedia.type,
+      transform: pres.physicalMedia.transform as any,
+    } : undefined,
+    hardwareForeground: hwUrl,
+    screenMask: singleScreenMask,
+    slotMask: singleSlotMask,
+    screenMasks,
+    slotMasks,
+  }
+}
 
 function singleRegion(): SystemStageConfig['gameplayRegions'] {
   return [
@@ -11,6 +38,7 @@ function singleRegion(): SystemStageConfig['gameplayRegions'] {
   ]
 }
 
+// Keep legacy constants for consumers that import directly from stage/config
 export const SINGLE_SCREEN: SystemStageConfig = {
   systemId: 'ps2',
   fullName: 'PlayStation 2',
@@ -38,9 +66,11 @@ export const DUAL_SCREEN_3DS: SystemStageConfig = {
 }
 
 export function configForSystem(systemId: string, fullName?: string): SystemStageConfig {
-  if (systemId === 'nds') return { ...DUAL_SCREEN_NDS, fullName: fullName || DUAL_SCREEN_NDS.fullName }
-  if (systemId === 'n3ds') return { ...DUAL_SCREEN_3DS, fullName: fullName || DUAL_SCREEN_3DS.fullName }
-  // genesis vs megadrive distinct — same layout but distinct ids preserved
+  const pres = getPresentationForSystem(systemId)
+  if (pres) {
+    return presentationToStageConfig(pres, fullName)
+  }
+  // fallback – should not reach due to resolver generic fallback but preserve distinct genesis/megadrive
   if (systemId === 'genesis' || systemId === 'megadrive') {
     return {
       systemId,
@@ -48,6 +78,8 @@ export function configForSystem(systemId: string, fullName?: string): SystemStag
       gameplayRegions: singleRegion(),
     }
   }
+  if (systemId === 'nds') return { ...DUAL_SCREEN_NDS, fullName: fullName || DUAL_SCREEN_NDS.fullName }
+  if (systemId === 'n3ds') return { ...DUAL_SCREEN_3DS, fullName: fullName || DUAL_SCREEN_3DS.fullName }
   return {
     systemId,
     fullName: fullName || systemId,

@@ -1,4 +1,5 @@
 export * from './types'
+export * from './capability'
 export { resolveLaunchRequest } from './resolver'
 export { getLauncherBridge, launchGame, __setLauncherBridgeForTests } from './bridge'
 export type { LauncherBridge } from './types'

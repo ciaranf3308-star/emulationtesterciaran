@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import type { MachineConfig, ValidationError } from '../machine/types'
-import { loadMachineConfigFromJson, loadExampleMachineConfig, isExampleConfig, isTauriEnvironment, MachineConfigLoadError } from '../machine/loader'
+import { loadMachineConfigFromJson, loadExampleMachineConfig, isExampleConfig, MachineConfigLoadError } from '../machine/loader'
+import { isTauriEnvironment } from '../runtime/environment'
+import { getTauriInvoker } from '../runtime/tauri'
 
 type MachineState = {
   config: MachineConfig | null
@@ -52,17 +54,15 @@ export function MachineConfigProvider({ children }: { children: React.ReactNode 
         }
       }
 
-      // 2) Try Tauri invoke if available – this is REAL machine path
+      // 2) Try Tauri invoke if available – this is REAL machine path via canonical runtime
       try {
-        const w = typeof window !== 'undefined' ? (window as any) : undefined
-        const tauri = w?.__TAURI__
-        const invoke = tauri?.invoke || w?.__TAURI_INVOKE__ || (w?.__TAURI_IPC__?.invoke)
-        if (typeof invoke === 'function' || tauriMode) {
+        const invoke = await getTauriInvoker()
+        if (invoke || tauriMode) {
           try {
-            // normalize invoke function
-            const invokeFn = typeof tauri?.invoke === 'function' ? tauri.invoke.bind(tauri) : invoke
+            const invokeFn = invoke
+            if (!invokeFn) throw new Error('Tauri invoke unavailable in Tauri mode')
             const txt = await invokeFn('get_machine_config')
-            const j = typeof txt === 'string' ? JSON.parse(txt) : txt
+            const j = typeof txt === 'string' ? JSON.parse(txt as string) : txt
             const cfg = loadMachineConfigFromJson(j)
             if (cancelled) return
             setState({ config:cfg, isExample:isExampleConfig(cfg), error:null, validationErrors:[], loading:false, isRealMachine:true, blockingError:false })

@@ -48,7 +48,6 @@ const KEY_MAP: Record<string, NavigationAction> = {
 const NAV_KEYS_BLOCK_SCROLL = new Set(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Spacebar','PageUp','PageDown'])
 
 export function keyboardToAction(e: KeyboardEvent): NavigationAction | null {
-  // Do NOT use Tab for nav
   if (e.key === 'Tab') return null
   const direct = KEY_MAP[e.key]
   if (direct) return direct
@@ -79,6 +78,7 @@ export type KeyboardAdapter = InputAdapter & ((() => void) & { start: () => void
 
 export function createKeyboardAdapter(onAction: InputHandler): KeyboardAdapter {
   const keyStates = new Map<string, KeyState>()
+  let active = false
 
   function emit(action: NavigationAction, repeat: boolean) {
     const ts = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
@@ -118,20 +118,29 @@ export function createKeyboardAdapter(onAction: InputHandler): KeyboardAdapter {
   }
 
   function start() {
+    if (active) return
     if (typeof window === 'undefined') return
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
+    active = true
   }
 
   function stop() {
-    if (typeof window === 'undefined') return
-    window.removeEventListener('keydown', handleKeyDown)
-    window.removeEventListener('keyup', handleKeyUp)
+    if (!active) return
+    if (typeof window !== 'undefined') {
+      try { window.removeEventListener('keydown', handleKeyDown) } catch {}
+      try { window.removeEventListener('keyup', handleKeyUp) } catch {}
+    }
     for (const [, st] of keyStates) {
-      if (st.timeoutId !== null) window.clearTimeout(st.timeoutId)
-      if (st.intervalId !== null) window.clearInterval(st.intervalId)
+      if (st.timeoutId !== null) {
+        try { window.clearTimeout(st.timeoutId) } catch {}
+      }
+      if (st.intervalId !== null) {
+        try { window.clearInterval(st.intervalId) } catch {}
+      }
     }
     keyStates.clear()
+    active = false
   }
 
   const cleanup = function cleanup() {
@@ -141,16 +150,13 @@ export function createKeyboardAdapter(onAction: InputHandler): KeyboardAdapter {
   Object.assign(cleanup, {
     start,
     stop,
-    isActive: () => keyStates.size > 0,
+    isActive: () => active,
   })
-
-  // Auto-start per spec: returns cleanup but already listening
-  start()
 
   return cleanup
 }
 
-/** Variant returning explicit cleanup function */
+/** Variant returning explicit cleanup function – side-effect free construction */
 export function createKeyboardCleanup(onAction: InputHandler): () => void {
   const adapter = createKeyboardAdapter(onAction)
   return () => adapter.stop()

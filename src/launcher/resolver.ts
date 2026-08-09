@@ -1,6 +1,7 @@
 import type { MachineConfig, MachineSystem } from '../machine/types'
 import { getSystemById } from '../machine/selectors'
 import type { LaunchRequest, LaunchBackendRequest, LaunchResolution } from './types'
+import { getCapabilitiesForTemplate } from './capability'
 
 /**
  * Placeholder token regex – ES-DE uses uppercase with dashes (e.g. XENIA-EDGE, OS-SHELL)
@@ -158,6 +159,20 @@ export function resolveLaunchRequest(config: MachineConfig, request: LaunchReque
     }
   }
 
+  // Capability gating – recognized && !runtimeSupported blocks launch (INJECT, OS-SHELL)
+  const capabilities = getCapabilitiesForTemplate(command.template)
+  const blocking = capabilities.filter(c => c.recognized && !c.runtimeSupported)
+  if (blocking.length > 0) {
+    const blockingTokens = blocking.map(c => c.token).join(', ')
+    const reasons = blocking.map(c => `${c.token}: ${c.reason}`).join(' | ')
+    return {
+      ok: false,
+      reason: `Launch blocked – template "${command.template}" contains unsupported runtime capability ${blockingTokens}: ${reasons}. Preserved verbatim, no fallback.`,
+      unsupported: blocking[0]?.token,
+      systemId,
+    }
+  }
+
   if (command.workingDirectoryTemplate) {
     const wdPlaceholders = extractPlaceholders(command.workingDirectoryTemplate)
     for (const ph of wdPlaceholders) {
@@ -168,6 +183,16 @@ export function resolveLaunchRequest(config: MachineConfig, request: LaunchReque
           unsupported: ph,
           systemId,
         }
+      }
+    }
+    const wdCaps = getCapabilitiesForTemplate(command.workingDirectoryTemplate)
+    const wdBlocking = wdCaps.filter(c => c.recognized && !c.runtimeSupported)
+    if (wdBlocking.length > 0) {
+      return {
+        ok: false,
+        reason: `Launch blocked – workingDirectoryTemplate "${command.workingDirectoryTemplate}" contains unsupported runtime capability ${wdBlocking.map(c=>c.token).join(', ')}`,
+        unsupported: wdBlocking[0]?.token,
+        systemId,
       }
     }
   }

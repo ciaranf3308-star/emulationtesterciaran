@@ -102,7 +102,7 @@
           }
         },
         {
-          "label": "PCSX2",
+          "label": "PCSX2 (Standalone)",
           "template": "%EMULATOR_RETROARCH% -L %CORE_RETROARCH%\\pcsx2_libretro.dll %ROM%",
           "workingDirectoryTemplate": null,
           "isFirstConfiguredCommand": false,
@@ -872,6 +872,6 @@
       }
     }
   ],
-  "_note": "SANITIZED EXAMPLE - does NOT represent ROG Ally X, no personal paths, no C:/Users/ciara, structurally realistic only for dev browser mode. Real config is machine-local and ignored by Git.",
+  "_note": "SANITIZED EXAMPLE - does NOT represent ROG Ally X, no personal paths, no personal UserProfile subpath, structurally realistic only for dev browser mode. Real config is machine-local and ignored by Git.",
   "_devFlag": "exampleData"
 }

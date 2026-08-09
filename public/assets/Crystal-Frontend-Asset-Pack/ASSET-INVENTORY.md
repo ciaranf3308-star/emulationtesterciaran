@@ -1,6 +1,6 @@
 # Crystal Frontend Asset Inventory
 
-- Source stable theme: `C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE\themes\fullscreen-my-theme-es-de`
+- Source stable theme: `%USERPROFILE%\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE\themes\fullscreen-my-theme-es-de (original ROG Ally X stable theme, sanitized to %USERPROFILE%)`
 - Light backgrounds: 22
 - Dark backgrounds: 22
 - Light logos: 21

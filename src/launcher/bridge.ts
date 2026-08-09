@@ -1,43 +1,41 @@
 import type { LaunchBackendRequest, LauncherBridge } from './types'
+import { isTauriEnvironment } from '../runtime/environment'
+import { getTauriInvokerSync, type TauriInvokeFn } from '../runtime/tauri'
 
-type TauriInvokeFn = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>
+// Re-export canonical detection for consumers that previously imported from bridge
+export { isTauriEnvironment as isTauri }
 
-interface TauriCore {
-  invoke: TauriInvokeFn
+type LocalInvoker = TauriInvokeFn
+
+function resolveInvoker(): LocalInvoker | null {
+  return getTauriInvokerSync()
 }
 
-interface TauriGlobal {
-  __TAURI__?: {
-    core?: TauriCore
-    invoke?: TauriInvokeFn
-    tauri?: TauriCore
-  }
+function getInvokerSafe(): LocalInvoker | null {
+  return resolveInvoker()
 }
 
-declare global {
-  interface Window extends TauriGlobal {}
+// Backward compat export – async variant delegates to canonical runtime
+export async function getTauriInvokerAsync(): Promise<LocalInvoker | null> {
+  const { getTauriInvoker } = await import('../runtime/tauri')
+  return getTauriInvoker()
 }
 
-function getTauriInvoker(): TauriInvokeFn | null {
-  if (typeof window === 'undefined') return null
-  const w = window as unknown as TauriGlobal
-  const api = w.__TAURI__
-  if (!api) return null
-  if (api.core?.invoke) return api.core.invoke
-  if (api.invoke) return api.invoke
-  if (api.tauri?.invoke) return api.tauri.invoke
-  return null
+// Sync accessor required by launcher internals – safe, no throw on window undefined
+export function getTauriInvoker(): LocalInvoker | null {
+  return getInvokerSafe()
 }
 
 function isTauri(): boolean {
-  return getTauriInvoker() !== null
+  // Use canonical detection; also ensure invoker present for launch capability
+  return isTauriEnvironment() && getInvokerSafe() !== null
 }
 
-export { isTauri, getTauriInvoker }
+export { isTauri as isTauriEnvironmentCheck }
 
 class BrowserMockBridge implements LauncherBridge {
   async launch(request: LaunchBackendRequest): Promise<void> {
-    console.warn('[Launcher] Browser mock launch blocked – real launch requires Tauri desktop build.')
+    console.warn('[Launcher] Browser simulated launch blocked – real launch requires Tauri desktop build.')
     console.info('[Launcher] Would launch', {
       systemId: request.systemId,
       systemFullName: request.systemFullName,
@@ -64,9 +62,9 @@ class BrowserMockBridge implements LauncherBridge {
 }
 
 class TauriBridge implements LauncherBridge {
-  private invokeFn: TauriInvokeFn
+  private invokeFn: LocalInvoker
 
-  constructor(invokeFn: TauriInvokeFn) {
+  constructor(invokeFn: LocalInvoker) {
     this.invokeFn = invokeFn
   }
 
@@ -100,8 +98,11 @@ let cachedBridge: LauncherBridge | null = null
 
 export function getLauncherBridge(): LauncherBridge {
   if (cachedBridge) return cachedBridge
-  const invoker = getTauriInvoker()
+  const invoker = getInvokerSafe()
   if (invoker && isTauri()) {
+    cachedBridge = new TauriBridge(invoker)
+  } else if (invoker && isTauriEnvironment()) {
+    // Edge: invoker present but detection earlier returned false due to timing – still use Tauri bridge
     cachedBridge = new TauriBridge(invoker)
   } else {
     cachedBridge = new BrowserMockBridge()

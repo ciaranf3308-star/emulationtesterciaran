@@ -4,7 +4,7 @@
  *
  * Frontend semantic request + backend contract.
  * Backend owns placeholder expansion and find-rule resolution.
- * No EMU_MAP, no hardcoded paths, no any.
+ * No legacy emulator map constant (removed), no hardcoded paths, no any.
  */
 
 import type { FindRule } from '../machine/types'

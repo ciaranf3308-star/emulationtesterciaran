@@ -1,8 +1,8 @@
 /**
- * Asset resolver — composable multi-provider merging
+ * Asset resolver — composable multi-provider merging with provider-specific roots
  *
- * Primary source: /assets/Crystal-Frontend-Asset-Pack/manifest.json
- * Secondary sources (future): hardware fg / screen mask / slot mask packs
+ * Primary source: /assets/Crystal-Frontend-Asset-Pack/manifest.json  base /assets/Crystal-Frontend-Asset-Pack
+ * Secondary sources (future): hardware fg / screen mask / slot mask packs – e.g. /assets/hardware/
  *
  * Key rules:
  * - Preserve Crystal URLs exactly: `/assets/Crystal-Frontend-Asset-Pack/<rel>`
@@ -11,9 +11,11 @@
  * - Missing artwork returns undefined, never throws.
  * - Theme fallback: light -> dark, dark -> light, then _default.
  * - steam light fallback to dark logo is supported explicitly via same rule.
+ * - V4 provider roots: each provider owns baseRoot; per-field override wins but url uses provider's root.
  */
 
-import type { Theme, ThemeAsset, ThemeAssetSet, ResolvedThemeAssets } from './types'
+import type { Theme, ThemeAsset, ThemeAssetSet, ResolvedThemeAssets, ResolvedAsset } from './types'
+import { resolveAssetUrl as resolveUrlWithRoot } from './types'
 
 const CRYSTAL_BASE = '/assets/Crystal-Frontend-Asset-Pack'
 const CRYSTAL_MANIFEST_URL = `${CRYSTAL_BASE}/manifest.json`
@@ -25,6 +27,14 @@ export function getAssetUrl(rel?: string): string | undefined {
     return rel
   }
   return `${CRYSTAL_BASE}/${rel}`
+}
+
+export function resolveAssetUrl(baseRoot: string, rel: string): string | undefined {
+  if (!rel) return undefined
+  if (rel.startsWith('/') || rel.startsWith('http://') || rel.startsWith('https://') || rel.startsWith('data:')) {
+    return rel
+  }
+  return resolveUrlWithRoot(baseRoot, rel)
 }
 
 /** Merge N ThemeAssetSets composably per-field (later sets override earlier per field). */
@@ -86,92 +96,174 @@ export function getRawAsset(manifest: ThemeAssetSet, systemId: string): ThemeAss
   return manifest[systemId]
 }
 
-/**
- * Resolve themed background/logo with fallback chain:
- *  primary: manifest[systemId][themeKey]
- *  secondary: manifest[systemId][oppositeThemeKey]
- *  tertiary: manifest[_default][themeKey]
- *  quaternary: manifest[_default][oppositeThemeKey]
- *  else undefined (graceful, never throws)
- */
-export function getThemeAssetsForSystem(
-  manifest: ThemeAssetSet,
+/** Internal provider entry with root tracking */
+interface ProviderEntry {
+  id: string
+  baseRoot: string
+  set: ThemeAssetSet
+}
+
+/** Core resolution with provider-aware roots */
+function resolveThemeAssetsWithProviders(
+  providers: ProviderEntry[],
   systemId: string,
   theme: Theme
 ): ResolvedThemeAssets {
-  const rawSystem = getRawAsset(manifest, systemId) || {}
-  const def = manifest?._default || {}
+  // Build per-system field map tracking latest provider that defined each field
+  const fieldMap = new Map<string, { rel: string; providerId: string; baseRoot: string }>()
 
-  // merge default as base, system overrides (but keep raw separate for debugging)
-  const mergedRaw = mergeAssetSets({ _tmp: def } as ThemeAssetSet, { _tmp: rawSystem } as ThemeAssetSet)._tmp as ThemeAsset
+  // Also track _default field maps similarly
+  const defaultFieldMap = new Map<string, { rel: string; providerId: string; baseRoot: string }>()
+
+  // Providers iterated in order – later overrides earlier per field
+  for (const prov of providers) {
+    const set = prov.set
+    if (!set) continue
+    const sys = set[systemId]
+    if (sys) {
+      for (const [field, rel] of Object.entries(sys)) {
+        if (rel !== undefined) {
+          fieldMap.set(field, { rel: rel as string, providerId: prov.id, baseRoot: prov.baseRoot })
+        }
+      }
+    }
+    const def = set._default
+    if (def) {
+      for (const [field, rel] of Object.entries(def)) {
+        if (rel !== undefined) {
+          defaultFieldMap.set(field, { rel: rel as string, providerId: prov.id, baseRoot: prov.baseRoot })
+        }
+      }
+    }
+  }
 
   const bgThemeKey = theme === 'light' ? 'backgroundLight' : 'backgroundDark'
   const bgAltKey = theme === 'light' ? 'backgroundDark' : 'backgroundLight'
   const logoThemeKey = theme === 'light' ? 'logoLight' : 'logoDark'
   const logoAltKey = theme === 'light' ? 'logoDark' : 'logoLight'
 
-  function resolveField(primaryKey: string, altKey: string): string | undefined {
-    // explicit order: system primary -> system alt -> default primary -> default alt
-    const chain = [
-      rawSystem[primaryKey],
-      rawSystem[altKey],
-      def[primaryKey],
-      def[altKey],
+  const origins: Record<string, ResolvedAsset> = {}
+
+  function resolveField(primaryKey: string, altKey: string, friendly: string): string | undefined {
+    // chain: system primary -> system alt -> default primary -> default alt
+    const candidates = [
+      fieldMap.get(primaryKey),
+      fieldMap.get(altKey),
+      defaultFieldMap.get(primaryKey),
+      defaultFieldMap.get(altKey),
     ]
-    for (const rel of chain) {
-      if (rel) {
-        const url = getAssetUrl(rel)
-        if (url) return url
+    for (const c of candidates) {
+      if (c?.rel) {
+        const url = resolveUrlWithRoot(c.baseRoot, c.rel)
+        origins[friendly] = { url, providerId: c.providerId, relativePath: c.rel, baseRoot: c.baseRoot }
+        origins[primaryKey] = origins[friendly]
+        origins[altKey] = origins[friendly]
+        return url
       }
     }
     return undefined
   }
 
-  const background = resolveField(bgThemeKey, bgAltKey)
-  const logo = resolveField(logoThemeKey, logoAltKey)
+  // Resolve carouselIcon – no theme, system first then default
+  function resolveDirect(field: string, friendly?: string): string | undefined {
+    const fromSystem = fieldMap.get(field)
+    const fromDef = defaultFieldMap.get(field)
+    const chosen = fromSystem ?? fromDef
+    const outKey = friendly || field
+    if (chosen?.rel) {
+      const url = resolveUrlWithRoot(chosen.baseRoot, chosen.rel)
+      origins[outKey] = { url, providerId: chosen.providerId, relativePath: chosen.rel, baseRoot: chosen.baseRoot }
+      origins[field] = origins[outKey]
+      return url
+    }
+    return undefined
+  }
 
-  // carouselIcon has no theme — direct + default fallback
-  const carouselRel = rawSystem.carouselIcon || def.carouselIcon
-  const carouselIcon = carouselRel ? getAssetUrl(carouselRel) : undefined
+  const background = resolveField(bgThemeKey, bgAltKey, 'background')
+  const logo = resolveField(logoThemeKey, logoAltKey, 'logo')
 
-  // future providers
-  const hwRel = rawSystem.hardwareForeground || def.hardwareForeground
-  const maskRel = rawSystem.screenMask || def.screenMask
-  const slotRel = rawSystem.slotMask || def.slotMask
+  const carouselIcon = resolveDirect('carouselIcon')
+  const hardwareForeground = resolveDirect('hardwareForeground')
+  const screenMask = resolveDirect('screenMask')
+  const slotMask = resolveDirect('slotMask')
+
+  // Build merged raw (theme-agnostic) – for compat, include fields from fieldMap + defaultFieldMap merged
+  const mergedRaw: ThemeAsset = {}
+  for (const [k, v] of defaultFieldMap.entries()) {
+    mergedRaw[k] = v.rel
+  }
+  for (const [k, v] of fieldMap.entries()) {
+    mergedRaw[k] = v.rel
+  }
 
   return {
     systemId,
     theme,
-    raw: mergedRaw || {},
+    raw: mergedRaw,
     background,
     logo,
     carouselIcon,
-    hardwareForeground: hwRel ? getAssetUrl(hwRel) : undefined,
-    screenMask: maskRel ? getAssetUrl(maskRel) : undefined,
-    slotMask: slotRel ? getAssetUrl(slotRel) : undefined,
+    hardwareForeground,
+    screenMask,
+    slotMask,
+    origins,
   }
+}
+
+/** Legacy single-manifest resolver delegating to provider-aware logic with crystal root */
+export function getThemeAssetsForSystem(
+  manifest: ThemeAssetSet,
+  systemId: string,
+  theme: Theme
+): ResolvedThemeAssets {
+  // legacy path: single provider = crystal
+  const prov: ProviderEntry = { id: 'crystal', baseRoot: CRYSTAL_BASE, set: manifest }
+  return resolveThemeAssetsWithProviders([prov], systemId, theme)
 }
 
 /** Imperative resolver class for App/use-cases needing composition */
 export class ComposableAssetResolver {
-  private manifest: ThemeAssetSet
+  private providers: ProviderEntry[] = []
 
   constructor(initial: ThemeAssetSet = {} as ThemeAssetSet) {
-    this.manifest = initial
+    if (initial && Object.keys(initial).length > 0) {
+      this.providers.push({ id: 'crystal', baseRoot: CRYSTAL_BASE, set: initial })
+    }
   }
 
   setManifest(m: ThemeAssetSet) {
-    this.manifest = m
+    // replace crystal provider, keep others after
+    const idx = this.providers.findIndex(p => p.id === 'crystal')
+    if (idx >= 0) {
+      this.providers[idx] = { id: 'crystal', baseRoot: CRYSTAL_BASE, set: m }
+    } else {
+      this.providers.unshift({ id: 'crystal', baseRoot: CRYSTAL_BASE, set: m })
+    }
   }
 
-  mergeProvider(set: ThemeAssetSet) {
-    this.manifest = mergeAssetSets(this.manifest, set)
+  mergeProvider(set: ThemeAssetSet, providerId?: string, baseRoot?: string) {
+    const pid = providerId || `provider-${this.providers.length}`
+    const root = baseRoot || CRYSTAL_BASE
+    // if same providerId exists, merge per-field inside provider's set, latest wins but keep root
+    const existingIdx = this.providers.findIndex(p => p.id === pid)
+    if (existingIdx >= 0) {
+      const existing = this.providers[existingIdx].set
+      const merged = mergeAssetSets(existing as ThemeAssetSet, set)
+      this.providers[existingIdx] = { id: pid, baseRoot: root, set: merged }
+    } else {
+      this.providers.push({ id: pid, baseRoot: root, set })
+    }
   }
 
-  getAssetUrl = getAssetUrl
+  getAssetUrl = (rel?: string) => getAssetUrl(rel)
+
+  resolveAssetUrl = (baseRoot: string, rel: string) => resolveAssetUrl(baseRoot, rel)
 
   getThemeAssetsForSystem(systemId: string, theme: Theme) {
-    return getThemeAssetsForSystem(this.manifest, systemId, theme)
+    if (this.providers.length === 0) {
+      return resolveThemeAssetsWithProviders([{ id:'crystal', baseRoot:CRYSTAL_BASE, set:{} as any }], systemId, theme)
+    }
+    return resolveThemeAssetsWithProviders(this.providers, systemId, theme)
   }
 
   getBackground(systemId: string, theme: Theme): string | undefined {
@@ -183,31 +275,28 @@ export class ComposableAssetResolver {
   }
 
   getCarouselIcon(systemId: string): string | undefined {
-    const raw = getRawAsset(this.manifest, systemId) || this.manifest._default
-    if (!raw?.carouselIcon) return undefined
-    return getAssetUrl(raw.carouselIcon)
+    // direct field lookup to avoid theme messing – use same logic as provider-aware
+    const all = this.getThemeAssetsForSystem(systemId, 'dark') // theme irrelevant for carouselIcon
+    return all.carouselIcon
   }
 
   getHardwareForeground(systemId: string, _theme: Theme): string | undefined {
-    const raw = getRawAsset(this.manifest, systemId)
-    const def = this.manifest._default
-    const rel = raw?.hardwareForeground || def?.hardwareForeground
-    return rel ? getAssetUrl(rel) : undefined
+    const res = this.getThemeAssetsForSystem(systemId, _theme || 'dark')
+    return res.hardwareForeground
   }
 
   getScreenMask(systemId: string): string | undefined {
-    const raw = getRawAsset(this.manifest, systemId)
-    const def = this.manifest._default
-    const rel = raw?.screenMask || def?.screenMask
-    return rel ? getAssetUrl(rel) : undefined
+    const res = this.getThemeAssetsForSystem(systemId, 'dark')
+    return res.screenMask
   }
 
   getSlotMask(systemId: string): string | undefined {
-    const raw = getRawAsset(this.manifest, systemId)
-    const def = this.manifest._default
-    const rel = raw?.slotMask || def?.slotMask
-    return rel ? getAssetUrl(rel) : undefined
+    const res = this.getThemeAssetsForSystem(systemId, 'dark')
+    return res.slotMask
   }
+
+  /** Expose providers for testing */
+  __getProviders() { return this.providers }
 }
 
 /** Shared singleton (optional) */

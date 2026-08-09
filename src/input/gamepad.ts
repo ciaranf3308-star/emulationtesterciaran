@@ -86,21 +86,34 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
   }
 
   stop() {
+    if (!this.running && this.rafId === null) {
+      // idempotent: already stopped – still ensure listeners removed safely (noop if never added)
+      if (typeof window !== 'undefined') {
+        try { window.removeEventListener('gamepadconnected', this.onConnect) } catch {}
+        try { window.removeEventListener('gamepaddisconnected', this.onDisconnect) } catch {}
+      }
+      return
+    }
     this.running = false
     if (typeof window !== 'undefined') {
-      window.removeEventListener('gamepadconnected', this.onConnect)
-      window.removeEventListener('gamepaddisconnected', this.onDisconnect)
+      try { window.removeEventListener('gamepadconnected', this.onConnect) } catch {}
+      try { window.removeEventListener('gamepaddisconnected', this.onDisconnect) } catch {}
     }
     if (this.rafId !== null) {
-      cancelAnimationFrame(this.rafId)
+      try { cancelAnimationFrame(this.rafId) } catch {}
       this.rafId = null
     }
     for (const [, st] of this.actionState) {
-      if (st.repeatTimeoutId !== null) window.clearTimeout(st.repeatTimeoutId)
-      if (st.repeatIntervalId !== null) window.clearInterval(st.repeatIntervalId)
+      if (st.repeatTimeoutId !== null) {
+        try { window.clearTimeout(st.repeatTimeoutId) } catch {}
+      }
+      if (st.repeatIntervalId !== null) {
+        try { window.clearInterval(st.repeatIntervalId) } catch {}
+      }
       st.repeatTimeoutId = null
       st.repeatIntervalId = null
       st.pressed = false
+      st.firstPressAt = null
     }
   }
 
