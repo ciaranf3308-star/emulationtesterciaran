@@ -1,4 +1,4 @@
-export type NavigationAction = 'up'|'down'|'left'|'right'|'confirm'|'back'|'menu'|'favorite'|'search'|'nextSystem'|'previousSystem'
+export type NavigationAction = 'up'|'down'|'left'|'right'|'confirm'|'back'|'menu'|'favorite'|'search'|'nextSystem'|'previousSystem'|'media'
 
 export type InputSource = 'keyboard'|'gamepad'|'mouse'
 

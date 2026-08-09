@@ -165,26 +165,84 @@ export function SystemStage({
   const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null)
 
-  const measure = useCallback(() => {
+  /**
+   * Hardware frame invariant:
+   * Outer `.hardware-showroom-wrapper` is presentation-only – it is scaled via `transform: scale(...)`
+   * for storefront hero offset. CSS transforms DO NOT affect layout box size – ResizeObserver's
+   * `contentRect` and `clientWidth/clientHeight` report the untransformed layout dimensions.
+   * `getBoundingClientRect()` DOES include transforms (scale causes larger rect) and must NOT be used
+   * for computing inner calibrated `frame.width/height`, otherwise we get geometry dependency loop:
+   * outer scale changes -> bounding rect changes -> frame resizes -> visual drift.
+   *
+   * Correct invariant: measure via ResizeObserver entry.contentRect (or contentBoxSize.inlineSize/blockSize)
+   * which stays stable across outer scale. Fallback to element.clientWidth/clientHeight – also untransformed.
+   *
+   * This guarantees frame computation from naturalSize + containerSize is independent of placementScale.
+   *
+   * Numeric test notes (validate no drift when placementScale varies):
+   *  - container 1254×1254 square: aImg = iw/ih drives fw=fh mapping, frame stays 1254×1254 scaled contain
+   *  - container 1024×1536 portrait: if iw/ih < cw/ch, fw = ch*aImg, centered horizontally – invariant under outer scale
+   *  - container 1536×1024 landscape: if iw/ih > cw/ch, fh = cw/aImg, centered vertically – invariant under outer scale
+   * Changing showroomPlacement.scale from 0.8..1.6 must not alter frame.width/height, only wrapper visual scale.
+   */
+  const measureUntransformed = useCallback((entry?: ResizeObserverEntry) => {
     const el = showroomRef.current || stageRef.current
     if (!el) return
-    const r = el.getBoundingClientRect()
-    if (r.width > 0 && r.height > 0) setContainerSize({ w: r.width, h: r.height })
+    let w = 0
+    let h = 0
+
+    if (entry) {
+      const cr = entry.contentRect
+      if (cr && cr.width > 0 && cr.height > 0) {
+        w = cr.width
+        h = cr.height
+      }
+      // contentBoxSize spec – newer browsers return array [ { inlineSize, blockSize } ]
+      if ((!w || !h) && (entry as any).contentBoxSize) {
+        const cb = (entry as any).contentBoxSize
+        const box = Array.isArray(cb) ? cb[0] : cb
+        if (box && box.inlineSize > 0 && box.blockSize > 0) {
+          // inlineSize ~ width (horizontal writing mode), blockSize ~ height
+          w = box.inlineSize
+          h = box.blockSize
+        }
+      }
+    }
+
+    if (!w || !h) {
+      // clientWidth/clientHeight are untransformed layout box – NOT affected by CSS transform scale
+      // Outer wrapper scaling does not change these values – perfect for inner calibrated frame.
+      w = el.clientWidth
+      h = el.clientHeight
+    }
+
+    if (w > 0 && h > 0) {
+      setContainerSize(prev => {
+        if (prev && Math.abs(prev.w - w) < 0.5 && Math.abs(prev.h - h) < 0.5) return prev
+        return { w, h }
+      })
+    }
   }, [])
+
+  const measureFallback = useCallback(() => measureUntransformed(), [measureUntransformed])
 
   useLayoutEffect(() => {
     if (!showroomRef.current && !stageRef.current) return
-    measure()
+    // initial sync measure – uses clientWidth fallback (untransformed)
+    measureFallback()
     if (typeof ResizeObserver !== 'undefined') {
       const target = showroomRef.current || stageRef.current!
-      const ro = new ResizeObserver(() => measure())
+      const ro = new ResizeObserver((entries) => {
+        const e = entries[0]
+        measureUntransformed(e)
+      })
       ro.observe(target)
       return () => ro.disconnect()
     } else if (typeof window !== 'undefined') {
-      window.addEventListener('resize', measure)
-      return () => window.removeEventListener('resize', measure)
+      window.addEventListener('resize', measureFallback)
+      return () => window.removeEventListener('resize', measureFallback)
     }
-  }, [measure, entered, showroomPlacement?.scale, showroomPlacement?.maxWidth])
+  }, [measureUntransformed, measureFallback, entered, showroomPlacement?.scale, showroomPlacement?.maxWidth])
 
   useEffect(() => {
     if (!hwDisplayUrl) {
