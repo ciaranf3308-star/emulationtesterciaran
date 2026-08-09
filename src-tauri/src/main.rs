@@ -1,5 +1,8 @@
 #![allow(unused)]
 
+mod safety;
+
+use safety::{crystal_writable_root, ensure_writable_dirs, init_safe_mode_from_env, is_safe_mode, log_event};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -169,51 +172,83 @@ fn candidate_config_paths() -> Vec<PathBuf> {
 fn load_machine_config_json() -> Result<serde_json::Value, String> {
     let candidates = candidate_config_paths();
     let mut tried: Vec<String> = Vec::new();
-    for path in candidates {
+    for path in &candidates {
         tried.push(path.display().to_string());
         if path.exists() {
             match std::fs::read_to_string(&path) {
                 Ok(content) => {
                     match serde_json::from_str::<serde_json::Value>(&content) {
                         Ok(v) => {
-                            // minimal validation
                             if v.get("schemaVersion").is_none() {
-                                return Err(format!("Config at {} missing schemaVersion", path.display()));
+                                let msg = format!("Config at {} missing schemaVersion", path.display());
+                                log_event("warn", &format!("machine_config discovery invalid: {}", msg));
+                                return Err(msg);
                             }
                             if v.get("systems").and_then(|s| s.as_array()).is_none() {
-                                return Err(format!("Config at {} missing systems array", path.display()));
+                                let msg = format!("Config at {} missing systems array", path.display());
+                                log_event("warn", &format!("machine_config discovery invalid: {}", msg));
+                                return Err(msg);
                             }
                             let sv = v.get("schemaVersion").and_then(|s| s.as_u64()).unwrap_or(0);
                             if sv != 1 {
-                                return Err(format!("Unsupported schemaVersion {} at {}", sv, path.display()));
+                                let msg = format!("Unsupported schemaVersion {} at {}", sv, path.display());
+                                log_event("warn", &msg);
+                                return Err(msg);
                             }
+                            let sys_count = v.get("systems").and_then(|s| s.as_array()).map(|a| a.len()).unwrap_or(0);
+                            log_event(
+                                "info",
+                                &format!(
+                                    "machine_config loaded ok from '{}' schemaVersion={} systems={} writable_root='{}' safe_mode={}",
+                                    path.display(),
+                                    sv,
+                                    sys_count,
+                                    crystal_writable_root().display(),
+                                    is_safe_mode()
+                                ),
+                            );
                             return Ok(v);
                         }
-                        Err(e) => return Err(format!("Failed to parse JSON at {}: {}", path.display(), e)),
+                        Err(e) => {
+                            let msg = format!("Failed to parse JSON at {}: {}", path.display(), e);
+                            log_event("error", &msg);
+                            return Err(msg);
+                        }
                     }
                 }
-                Err(e) => {
-                    // continue to next candidate but record error
+                Err(_e) => {
                     continue;
                 }
             }
         }
     }
-    Err(format!(
+    let msg = format!(
         "Real machine configuration failed to load – frontend cannot start with example data in installed mode. No machine-local config found. Tried: {}. Place crystal-machine-config.json next to executable, in current directory, in %LOCALAPPDATA%/CrystalFrontend/, or set CRYSTAL_MACHINE_CONFIG env var.",
         tried.join(", ")
-    ))
+    );
+    log_event("error", &format!("machine_config discovery failed: {}", msg));
+    Err(msg)
 }
 
 #[tauri::command]
 fn get_machine_config() -> Result<serde_json::Value, String> {
-    load_machine_config_json()
+    // get_machine_config must work in safe mode (read-only)
+    let res = load_machine_config_json();
+    match &res {
+        Ok(v) => {
+            let sys_len = v.get("systems").and_then(|s| s.as_array()).map(|a| a.len()).unwrap_or(0);
+            log_event("info", &format!("get_machine_config success systems={} safe_mode={}", sys_len, is_safe_mode()));
+        }
+        Err(e) => {
+            log_event("warn", &format!("get_machine_config failed: {}", e));
+        }
+    }
+    res
 }
 
 // ---------- ROM enumeration ----------
 
 fn normalize_windows_path(p: &str) -> String {
-    // Preserve original for return but for OS operations convert slashes
     p.to_string()
 }
 
@@ -232,7 +267,6 @@ fn list_files_in_dir(dir: &Path, valid_exts: &[String]) -> Vec<PathBuf> {
             ext_lower_set.insert(e);
         }
     }
-    // If empty, accept all
     let accept_all = ext_lower_set.is_empty();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -246,8 +280,6 @@ fn list_files_in_dir(dir: &Path, valid_exts: &[String]) -> Vec<PathBuf> {
                             if ext_lower_set.contains(&ext_os.to_lowercase()) {
                                 files.push(path);
                             }
-                        } else {
-                            // no extension – skip unless accept_all
                         }
                     }
                 }
@@ -287,7 +319,7 @@ fn get_roots_from_config(config: &serde_json::Value) -> (String, String, String)
     (gamelists, scraped, rom)
 }
 
-fn parse_gamelist_xml(path: &Path, system_id: &str) -> HashMap<String, GamelistMeta> {
+fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, GamelistMeta> {
     let mut map: HashMap<String, GamelistMeta> = HashMap::new();
     if !path.exists() {
         return map;
@@ -296,7 +328,6 @@ fn parse_gamelist_xml(path: &Path, system_id: &str) -> HashMap<String, GamelistM
         Ok(c) => c,
         Err(_) => return map,
     };
-    // Use quick-xml minimal event parser
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -305,7 +336,6 @@ fn parse_gamelist_xml(path: &Path, system_id: &str) -> HashMap<String, GamelistM
 
     let mut current_game: Option<GamelistMeta> = None;
     let mut current_tag: String = String::new();
-    let mut collecting_game_path: String = String::new();
     let mut buf = Vec::new();
 
     loop {
@@ -339,11 +369,8 @@ fn parse_gamelist_xml(path: &Path, system_id: &str) -> HashMap<String, GamelistM
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if name == "game" {
                     if let Some(g) = current_game.take() {
-                        // key by path basename or name
                         let key = if let Some(p) = &g.path {
-                            // extract basename without dir/prefix ./
                             let clean = p.trim_start_matches("./").trim_start_matches(".\\");
-                            // strip extension? Use file name
                             let pb = Path::new(clean);
                             pb.file_stem().and_then(|s| s.to_str()).unwrap_or(clean).to_lowercase()
                         } else if let Some(n) = &g.name {
@@ -378,10 +405,8 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
 
     let rom_dir_path = PathBuf::from(rom_dir_str.clone());
 
-    // Enumerate
     let files = list_files_in_dir(&rom_dir_path, &valid_exts);
 
-    // Gamelist join
     let gamelist_path = if !roots_gamelists.is_empty() {
         let sep = if roots_gamelists.contains('\\') { "\\" } else { "/" };
         let clean_root = roots_gamelists.trim_end_matches(|c| c == '/' || c == '\\').to_string();
@@ -397,27 +422,20 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
         let basename = basename_without_ext(&fpath);
         let key = basename.to_lowercase();
         let meta = gamelist_map.get(&key);
-
-        // Prefer gamelist path basename matching also check filename with extension variant
         let meta2 = if meta.is_none() {
-            // try case where gamelist stores with extension like My Game.zip truncated? Use filename
             let file_name = fpath.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
             gamelist_map.get(&file_name)
         } else { None };
-
         let final_meta = meta.or(meta2);
-
         let name = final_meta.and_then(|m| m.name.clone()).unwrap_or_else(|| basename.clone());
         let file_size = std::fs::metadata(&fpath).ok().map(|m| m.len());
-
         let id = format!("{}/{}", system_id, basename);
-
         entries.push(GameEntry {
             id,
             system_id: system_id.clone(),
             system_full_name: system_full.clone(),
             name,
-            rom_path: fpath.to_string_lossy().to_string(), // preserve exact OS path
+            rom_path: fpath.to_string_lossy().to_string(),
             rom_basename: basename.clone(),
             extension: extension_of(&fpath),
             file_size,
@@ -431,8 +449,6 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
             has_media: false,
         });
     }
-
-    // Sort alphabetically by name truthful
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     entries
 }
@@ -442,7 +458,9 @@ fn list_games(system_id: String) -> Result<Vec<GameEntry>, String> {
     let config = load_machine_config_json()?;
     let system = find_system_in_config(&config, &system_id).ok_or_else(|| format!("System '{}' not found in MachineConfig", system_id))?;
     let (gamelists_root, scraped_root, _rom_root) = get_roots_from_config(&config);
-    Ok(enumerate_games_for_system(&system, &gamelists_root, &scraped_root))
+    let games = enumerate_games_for_system(&system, &gamelists_root, &scraped_root);
+    log_event("info", &format!("list_games system='{}' count={} safe_mode={}", system_id, games.len(), is_safe_mode()));
+    Ok(games)
 }
 
 #[tauri::command]
@@ -455,8 +473,8 @@ fn list_all_games() -> Result<Vec<GameEntry>, String> {
         let mut games = enumerate_games_for_system(&sys, &gamelists_root, &scraped_root);
         all.append(&mut games);
     }
-    // limit? No, return all sorted by name globally
     all.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    log_event("info", &format!("list_all_games total={} safe_mode={}", all.len(), is_safe_mode()));
     Ok(all)
 }
 
@@ -464,7 +482,6 @@ fn list_all_games() -> Result<Vec<GameEntry>, String> {
 fn get_favorites() -> Result<Vec<GameEntry>, String> {
     let config = load_machine_config_json()?;
     let (gamelists_root, _scraped, _rom) = get_roots_from_config(&config);
-    // Need full enumeration plus favorite filter via gamelist
     let systems = get_systems_from_config(&config);
     let mut favs = Vec::new();
     for sys in &systems {
@@ -475,8 +492,6 @@ fn get_favorites() -> Result<Vec<GameEntry>, String> {
             PathBuf::from(format!("{}{}{}/gamelist.xml", clean, sep, sys_id))
         };
         let map = parse_gamelist_xml(&gamelist_path, &sys_id);
-        // For each game in map where favorite true, find actual file? But truth-only requires file exists.
-        // So enumerate files and check favorite
         let games = enumerate_games_for_system(sys, &gamelists_root, "");
         for g in games {
             if let Some(fav) = g.favorite {
@@ -484,7 +499,6 @@ fn get_favorites() -> Result<Vec<GameEntry>, String> {
                     favs.push(g);
                 }
             } else {
-                // also check map by basename
                 let key = g.rom_basename.to_lowercase();
                 if let Some(meta) = map.get(&key) {
                     if meta.favorite == Some(true) {
@@ -495,6 +509,7 @@ fn get_favorites() -> Result<Vec<GameEntry>, String> {
         }
     }
     favs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    log_event("info", &format!("get_favorites count={} safe_mode={}", favs.len(), is_safe_mode()));
     Ok(favs)
 }
 
@@ -512,12 +527,11 @@ fn get_recently_played() -> Result<Vec<GameEntry>, String> {
             }
         }
     }
-    // sort descending by last_played string (ISO-ish)
     recents.sort_by(|a, b| {
         b.last_played.as_ref().unwrap_or(&String::new()).cmp(a.last_played.as_ref().unwrap_or(&String::new()))
     });
-    // limit 50
     recents.truncate(50);
+    log_event("info", &format!("get_recently_played count={} safe_mode={}", recents.len(), is_safe_mode()));
     Ok(recents)
 }
 
@@ -587,7 +601,6 @@ fn contains_blocked_placeholder(template: &str) -> Option<(String, String)> {
     if upper.contains("%EMULATOR_OS-SHELL%") || upper.contains("%OS-SHELL%") {
         return Some(("%EMULATOR_OS-SHELL%".to_string(), "OS-SHELL requires OS shell execution semantics (Steam) not in launch contract V6".to_string()));
     }
-    // Also token containing OS-SHELL pattern via regex
     if upper.contains("OS-SHELL") {
         return Some(("%OS-SHELL%".to_string(), "OS-SHELL token detected – blocked until backend implements os_shell".to_string()));
     }
@@ -622,7 +635,6 @@ fn is_known_placeholder(ph: &str) -> bool {
 }
 
 fn derive_espath(config: &serde_json::Value) -> Option<PathBuf> {
-    // From roots.rom parent
     let (_, _, rom_root) = get_roots_from_config(config);
     if !rom_root.is_empty() {
         let p = PathBuf::from(&rom_root);
@@ -647,7 +659,6 @@ fn expand_path_entry(entry: &str, espath: &Option<PathBuf>, gamedir: &Path) -> S
     out = out.replace("%GAMEDIR%", &gamedir.to_string_lossy().to_string());
     out = out.replace("%ROMPATH%", &gamedir.to_string_lossy().to_string());
     out = out.replace("%STARTDIR%", &gamedir.to_string_lossy().to_string());
-    // leave %EMULATOR_ etc for later – not in staticpath entries typically
     out
 }
 
@@ -661,7 +672,6 @@ fn resolve_find_rule_path(rule: &FindRule, espath: &Option<PathBuf>, gamedir: &P
             }
         }
     }
-    // fallback: first entry expanded even if not exist (for dry-run)
     for entry_rule in &rule.rules {
         if let Some(first) = entry_rule.entries.first() {
             let expanded = expand_path_entry(first, espath, gamedir);
@@ -678,7 +688,6 @@ fn resolve_emulator_paths(req: &LaunchBackendRequest, espath: &Option<PathBuf>, 
             map.insert(fr.identifier.clone(), resolved);
         }
     }
-    // also consider generic findRules kind emulator
     for fr in &req.findRules {
         if fr.kind == "emulator" && !map.contains_key(&fr.identifier) {
             if let Some(resolved) = resolve_find_rule_path(fr, espath, gamedir) {
@@ -707,7 +716,6 @@ fn resolve_core_paths(req: &LaunchBackendRequest, espath: &Option<PathBuf>, game
 }
 
 fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
-    // Very simple Windows-aware splitter: respects double-quoted substrings
     let mut args: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut in_quote = false;
@@ -715,7 +723,7 @@ fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
     while let Some(c) = chars.next() {
         if c == '"' {
             in_quote = !in_quote;
-            current.push(c); // keep for later? We'll keep raw and later trim
+            current.push(c);
             continue;
         }
         if c == ' ' && !in_quote {
@@ -733,10 +741,8 @@ fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
     if args.is_empty() {
         return (String::new(), vec![]);
     }
-    // First arg is program – strip surrounding quotes
     let prog_raw = args.remove(0);
     let prog = prog_raw.trim_matches('"').to_string();
-    // Clean args: strip surrounding quotes for passing to Command (Command handles them)
     let cleaned_args = args.into_iter().map(|a| {
         let t = a.trim();
         if t.starts_with('"') && t.ends_with('"') && t.len() >= 2 {
@@ -750,7 +756,24 @@ fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
 
 #[tauri::command]
 fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
-    // 1. Blocked placeholders
+    // SAFE MODE guard – must be first
+    if is_safe_mode() {
+        let msg = format!(
+            "SAFE_MODE_BLOCKED_LAUNCH: Crystal SAFE MODE active – launch blocked for '{}' (rom '{}'). Disable CRYSTAL_SAFE_MODE to allow launching.",
+            request.systemId, request.romBasename
+        );
+        log_event("warn", &msg);
+        return Err("SAFE_MODE_BLOCKED_LAUNCH: Crystal SAFE MODE active – launch blocked. Disable CRYSTAL_SAFE_MODE to allow launching.".to_string());
+    }
+
+    log_event(
+        "info",
+        &format!(
+            "launch_attempt system='{}' rom='{}' label='{}' template='{}'",
+            request.systemId, request.romBasename, request.commandLabel, request.commandTemplate
+        ),
+    );
+
     if let Some((tok, reason)) = contains_blocked_placeholder(&request.commandTemplate) {
         return Err(format!("Launch blocked – template \"{}\" contains unsupported runtime capability {}: {}. Preserved verbatim, no fallback.", request.commandTemplate, tok, reason));
     }
@@ -760,16 +783,12 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         }
     }
 
-    // 2. Validate known placeholders
     for ph in &request.placeholdersPresent {
         if !is_known_placeholder(ph) {
             return Err(format!("Unsupported placeholder \"{}\" in template \"{}\" for command \"{}\". Known: %EMULATOR_*%, %CORE_*%, %ROM%, %BASENAME%, %GAMEDIR%, %EMUDIR%, %ESPATH%, %STARTDIR%, %INJECT%, %HIDEWINDOW%, %ESCAPESPECIALS%, %RUNINBACKGROUND%.", ph, request.commandTemplate, request.commandLabel));
         }
     }
 
-    // 3. Capability gating for modifiers combined? Already blocked INJECT/OS-SHELL. Allow others.
-
-    // 4. Derive ESPATH from MachineConfig (load if possible, else env)
     let config_opt = load_machine_config_json().ok();
     let espath = config_opt.as_ref().and_then(|c| derive_espath(c)).or_else(|| {
         std::env::var("ESPATH").ok().map(PathBuf::from)
@@ -777,34 +796,26 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
 
     let gamedir = PathBuf::from(&request.romDirectory);
 
-    // 5. Resolve emulator/core paths
     let emu_map = resolve_emulator_paths(&request, &espath, &gamedir);
     let core_map = resolve_core_paths(&request, &espath, &gamedir);
 
-    // 6. Build placeholder substitution map
     let mut subs: HashMap<String, String> = request.placeholders.clone();
 
-    // ESPATH
     if let Some(es) = &espath {
         subs.insert("%ESPATH%".to_string(), es.to_string_lossy().to_string());
     }
-    // GAMEDIR etc already in placeholders but ensure
     subs.insert("%GAMEDIR%".to_string(), gamedir.to_string_lossy().to_string());
     subs.insert("%ROMPATH%".to_string(), gamedir.to_string_lossy().to_string());
     subs.insert("%STARTDIR%".to_string(), gamedir.to_string_lossy().to_string());
 
-    // EMULATOR bare
     if let Some(first_emu) = emu_map.values().next() {
         let first_str = first_emu.to_string_lossy().to_string();
         subs.insert("%EMULATOR%".to_string(), first_str.clone());
-        // EMUDIR / EMUPATH derived from first emu
         if let Some(parent) = first_emu.parent() {
             subs.insert("%EMUDIR%".to_string(), parent.to_string_lossy().to_string());
             subs.insert("%EMUPATH%".to_string(), parent.to_string_lossy().to_string());
         }
     } else {
-        // fallback: if identifiers provided but no file, use first candidate raw expanded (best effort)
-        // try to find rule's first entry
         if let Some(fr) = request.emulatorFindRules.first().or_else(|| request.findRules.iter().find(|r| r.kind=="emulator")) {
             if let Some(first_entry) = fr.rules.first().and_then(|er| er.entries.first()) {
                 let expanded = expand_path_entry(first_entry, &espath, &gamedir);
@@ -816,16 +827,13 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         }
     }
 
-    // %EMULATOR_<ID>%
     for (ident, path) in &emu_map {
         let key = format!("%EMULATOR_{}%", ident.to_uppercase());
         subs.insert(key, path.to_string_lossy().to_string());
-        // also lowercase variant not needed but ensure upper
         let key2 = format!("%EMULATOR_{}%", ident);
         subs.insert(key2, path.to_string_lossy().to_string());
     }
 
-    // %CORE_<ID>%
     for (ident, path) in &core_map {
         let key = format!("%CORE_{}%", ident.to_uppercase());
         subs.insert(key, path.to_string_lossy().to_string());
@@ -833,14 +841,11 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         subs.insert(key2, path.to_string_lossy().to_string());
     }
 
-    // Modifiers as empty (pass-through no-arg)
     subs.insert("%HIDEWINDOW%".to_string(), "".to_string());
     subs.insert("%ESCAPESPECIALS%".to_string(), "".to_string());
     subs.insert("%RUNINBACKGROUND%".to_string(), "".to_string());
 
-    // 7. Substitute into template
     let mut expanded = request.commandTemplate.clone();
-    // Replace longest keys first to avoid partial overlap (e.g. %EMULATOR_RETROARCH% before %EMULATOR%)
     let mut keys: Vec<String> = subs.keys().cloned().collect();
     keys.sort_by(|a, b| b.len().cmp(&a.len()));
     for k in keys {
@@ -849,7 +854,6 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         }
     }
 
-    // 8. Handle STARTDIR="..."; prefix semantics (Xbox360)
     let mut working_dir_override: Option<PathBuf> = None;
     let trimmed = expanded.trim_start().to_string();
     let startdir_prefix = regex::Regex::new(r#"(?i)^STARTDIR\s*=\s*"?([^";]+)"?\s*;\s*"#).unwrap();
@@ -858,13 +862,11 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         if let Some(m) = cap.get(1) {
             working_dir_override = Some(PathBuf::from(m.as_str().trim_matches('"')));
         }
-        // strip prefix
         if let Some(mat) = startdir_prefix.find(&trimmed) {
             command_to_run = trimmed[mat.end()..].trim_start().to_string();
         }
     }
 
-    // 9. Working directory resolution
     let working_dir: Option<PathBuf> = if let Some(over) = working_dir_override {
         Some(over)
     } else if let Some(wdt) = &request.workingDirectoryTemplate {
@@ -881,7 +883,6 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         None
     };
 
-    // Default working dir: emulator dir or gamedir
     let default_wd = if let Some(wd) = working_dir {
         wd
     } else if let Some(parent) = emu_map.values().next().and_then(|p| p.parent()) {
@@ -890,66 +891,56 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         gamedir.clone()
     };
 
-    // 10. Split command into program + args
     let (program, args) = split_command_respecting_quotes(&command_to_run);
     if program.is_empty() {
-        return Err(format!("Failed to parse executable from expanded command: '{}'", expanded));
+        let err = format!("Failed to parse executable from expanded command: '{}'", expanded);
+        log_event("error", &err);
+        return Err(err);
     }
 
-    // Verify program exists (warn but continue for dry-run)
     let prog_path = PathBuf::from(&program);
     if !prog_path.exists() {
-        // On Linux CI, Windows exe won't exist – allow dry-run error messaging but still report?
-        // For real Windows, existence check helps early error.
-        // We will still attempt spawn; if fails, return detailed error.
-        // For launch readiness tests, we can return Ok if file doesn't exist but path looks plausible (dry-run mode).
         let is_windows_path = program.contains(":\\") || program.to_lowercase().ends_with(".exe");
         if is_windows_path && cfg!(target_os = "windows") {
-            // On Windows, fail if not exist
-            return Err(format!("Emulator executable not found at '{}' (resolved from command '{}'). Check EmuDeck installation and findRules.", program, request.commandTemplate));
+            let err = format!("Emulator executable not found at '{}' (resolved from command '{}'). Check EmuDeck installation and findRules.", program, request.commandTemplate);
+            log_event("error", &err);
+            return Err(err);
         }
-        // On non-Windows (CI), allow but log
-        // Check if env var CRYSTAL_ALLOW_DRYRUN
         if std::env::var("CRYSTAL_DRYRUN").is_err() {
-            // In CI we still want to return Ok for friendly build? No, we should allow spawn attempt to fail gracefully but not block CI build.
-            // We'll return Ok with warning for dry-run detection: only when not on Windows and path is Windows-style, treat as readiness ok.
-            // The launch_game API is expected to actually spawn on real machine; on CI we simulate success if placeholder resolution succeeded.
             if cfg!(not(target_os = "windows")) {
-                // Dry-run success – do not actually spawn
+                log_event("info", &format!("dry-run launch ok (non-windows) program='{}' args={:?}", program, args));
                 return Ok(());
             }
         }
     }
 
-    // 11. Spawn detached
     use std::process::Command;
     let mut cmd = Command::new(&program);
     cmd.args(&args);
     if default_wd.exists() {
         cmd.current_dir(&default_wd);
     } else {
-        // still set to gamedir if exists, else skip
         if gamedir.exists() {
             cmd.current_dir(&gamedir);
         }
     }
 
-    // Windows creation flags to not block frontend: DETACHED_PROCESS etc – using default spawn is detached enough for Tauri.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // 0x00000008 = DETACHED_PROCESS, 0x00000010 = CREATE_NEW_CONSOLE? We use CREATE_NO_WINDOW 0x08000000 to avoid console flash
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     match cmd.spawn() {
         Ok(_child) => {
-            // Do NOT wait – return immediately, frontend remains alive
+            log_event("info", &format!("launch_success program='{}' wd='{}' safe_mode={}", program, default_wd.display(), is_safe_mode()));
             Ok(())
         }
         Err(e) => {
-            Err(format!("Failed to launch '{}' args {:?} wd {:?}: {}", program, args, default_wd, e))
+            let err = format!("Failed to launch '{}' args {:?} wd {:?}: {}", program, args, default_wd, e);
+            log_event("error", &err);
+            Err(err)
         }
     }
 }
@@ -958,6 +949,30 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Init SAFE MODE before anything else – sets static from env var
+    let safe = init_safe_mode_from_env();
+    // Ensure writable dirs exist early; this is inside allowed root only
+    match ensure_writable_dirs() {
+        Ok(root) => {
+            // Best effort log startup
+            log_event(
+                "info",
+                &format!(
+                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.0.0",
+                    safe,
+                    root.display()
+                ),
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to ensure writable dirs: {}", e);
+        }
+    }
+
+    if safe {
+        log_event("warn", "SAFE MODE is active – emulator launching disabled");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -969,7 +984,9 @@ pub fn run() {
             get_favorites,
             get_recently_played,
             verify_media,
-            launch_game
+            launch_game,
+            safety::get_safe_mode,
+            safety::get_crystal_writable_root
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

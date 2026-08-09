@@ -19,6 +19,7 @@ import { getSystemMeta } from './presentation/systemMeta'
 import { deriveSystemSummary, getRecent, getMostPlayed, getSurprise } from './presentation/systemSummary'
 import { useSemanticInput } from './hooks/useSemanticInput'
 import type { NavigationAction } from './input/types'
+import { getTauriInvoker } from './runtime/tauri'
 
 type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings'
 
@@ -56,6 +57,8 @@ function AppInner() {
   const [view, setView] = useState<View>('system')
   const [showGuides, setShowGuides] = useState(false)
   const [devMode, setDevMode] = useState(false)
+  const [safeMode, setSafeMode] = useState(false)
+  const [safeModeToast, setSafeModeToast] = useState<string | null>(null)
 
   const [gameCache, setGameCache] = useState<Map<string, GameEntry[]>>(() => new Map())
   const [cacheLoading, setCacheLoading] = useState<Set<string>>(() => new Set())
@@ -228,6 +231,12 @@ function AppInner() {
 
   const handleLaunchGame = useCallback(
     async (game: GameEntry) => {
+      if (safeMode) {
+        console.warn('[SAFE MODE] launch blocked –', game?.system_id, game?.rom_path)
+        setSafeModeToast('SAFE MODE – launch blocked')
+        setTimeout(() => setSafeModeToast(null), 2400)
+        return
+      }
       if (!config) return
       const sys = (config as MachineConfig).systems.find(s => s.id === game.system_id)
       if (!sys) return
@@ -241,7 +250,7 @@ function AppInner() {
         await getLauncherBridge().launch(req.backendRequest)
       } catch {}
     },
-    [config]
+    [config, safeMode]
   )
 
   const handleSelectGame = useCallback(
@@ -354,6 +363,12 @@ function AppInner() {
             return list[nextIdx].id
           })
         } else if (action === 'confirm') {
+          if (safeMode) {
+            console.warn('[SAFE MODE] controller launch blocked')
+            setSafeModeToast('SAFE MODE – launch blocked')
+            setTimeout(() => setSafeModeToast(null), 2400)
+            return
+          }
           const g = selectedGameEntry
           if (!g || !config) return
           const sys = (config as MachineConfig).systems.find(s => s.id === g.system_id)
@@ -370,7 +385,7 @@ function AppInner() {
         if (action === 'back') setView('system')
       }
     },
-    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config]
+    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode]
   )
 
   // Effects – must be unconditional and before any early returns
@@ -380,6 +395,65 @@ function AppInner() {
       const ls = typeof window !== 'undefined' ? window.localStorage.getItem('crystal-dev') : null
       if (qp.includes('dev') || ls === '1') setDevMode(true)
     } catch {}
+  }, [])
+
+  // SAFE MODE query – frontend mirrors backend state (backend ultimately enforces)
+  useEffect(() => {
+    let cancelled = false
+    async function querySafeMode() {
+      try {
+        if (!isTauriEnvironment()) {
+          // browser dev – safe mode off unless explicitly flagged via localStorage
+          try {
+            const flag = typeof window !== 'undefined' ? window.localStorage.getItem('crystal-safe-mode') : null
+            if (flag === '1') {
+              if (!cancelled) setSafeMode(true)
+            }
+          } catch {}
+          return
+        }
+        const invoke = await getTauriInvoker()
+        if (!invoke) return
+        try {
+          const res = await invoke('get_safe_mode')
+          let active = false
+          if (typeof res === 'boolean') active = res
+          else if (res && typeof res === 'object') {
+            // support { safe_mode: bool } or { safeMode: bool } or { active: bool }
+            const o = res as any
+            if (typeof o.safe_mode === 'boolean') active = o.safe_mode
+            else if (typeof o.safeMode === 'boolean') active = o.safeMode
+            else if (typeof o.active === 'boolean') active = o.active
+            else if (typeof o.enabled === 'boolean') active = o.enabled
+          } else if (typeof res === 'string') {
+            // some impl may return JSON string
+            try {
+              const j = JSON.parse(res as any)
+              if (typeof j === 'boolean') active = j
+              else if (j && typeof j === 'object') {
+                if (typeof j.safe_mode === 'boolean') active = j.safe_mode
+                else if (typeof j.safeMode === 'boolean') active = j.safeMode
+              }
+            } catch {}
+          }
+          if (!cancelled) setSafeMode(!!active)
+          if (active) {
+            console.info('[SAFE MODE] active – frontend launch blocked, backend will also enforce')
+          }
+        } catch (e) {
+          // command not yet implemented or error – treat as not safe
+          // do not throw, keep safeMode false
+          if ((e as any)?.message?.includes?.('not found') || String(e).includes('not registered')) {
+            // backend does not yet have get_safe_mode – expected during rollout
+            return
+          }
+          // log for visibility but don't block UI
+          console.debug('[SAFE MODE] query failed (fallback false):', e)
+        }
+      } catch {}
+    }
+    querySafeMode()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -664,8 +738,35 @@ function AppInner() {
             ◐
           </button>
 
+          {safeMode && (
+            <div
+              data-testid="safe-mode-badge"
+              style={{
+                position: 'absolute',
+                top: 14,
+                right: devMode ? 148 : 54,
+                zIndex: 8,
+                pointerEvents: 'none',
+                background: theme === 'dark' ? 'rgba(8,10,14,0.56)' : 'rgba(255,255,255,0.72)',
+                border: `1px solid ${theme === 'dark' ? 'rgba(255,120,120,0.24)' : 'rgba(255,90,90,0.22)'}`,
+                color: theme === 'dark' ? 'rgba(255,180,180,0.92)' : 'rgba(170,40,40,0.92)',
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontFamily: 'var(--crystal-mono)',
+                fontSize: 10.5,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
+              }}
+            >
+              SAFE MODE
+            </div>
+          )}
+
           {devMode && (
-            <div style={{ position: 'absolute', top: 10, right: 54, display: 'flex', gap: 8, zIndex: 8, pointerEvents: 'auto' }}>
+            <div style={{ position: 'absolute', top: 10, right: safeMode ? 208 : 54, display: 'flex', gap: 8, zIndex: 8, pointerEvents: 'auto' }}>
               <button onClick={() => setShowGuides(v => !v)} style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(255,255,255,0.12)', backdropFilter: 'blur(12px)', color: '#e8f2ff', padding: '5px 10px', borderRadius: 999, fontSize: 10, fontFamily: 'var(--crystal-mono)' }}>
                 {showGuides ? 'Hide guides' : 'Guides'}
               </button>
@@ -698,6 +799,12 @@ function AppInner() {
             games={carouselGames}
             selectedId={selectedGameId || (activeGames[0]?.id ?? '')}
             selectedGame={librarySelectedDetail}
+            safeMode={safeMode}
+            onSafeModeBlocked={() => {
+              console.warn('[SAFE MODE] blocked launch via LibraryView')
+              setSafeModeToast('SAFE MODE – launch blocked')
+              setTimeout(() => setSafeModeToast(null), 2400)
+            }}
             onSelect={id => setSelectedGameId(id)}
             onLaunch={g => {
               const real = activeGames.find(ag => ag.id === g.id)
@@ -787,6 +894,59 @@ function AppInner() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Global SAFE MODE indicator for non-system views – subtle dev-only pill */}
+      {safeMode && view !== 'system' && (
+        <div
+          data-testid="safe-mode-badge-global"
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 14,
+            zIndex: 9,
+            pointerEvents: 'none',
+            background: theme === 'dark' ? 'rgba(8,10,14,0.56)' : 'rgba(255,255,255,0.72)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(255,120,120,0.24)' : 'rgba(255,90,90,0.22)'}`,
+            color: theme === 'dark' ? 'rgba(255,180,180,0.92)' : 'rgba(170,40,40,0.92)',
+            padding: '4px 10px',
+            borderRadius: 999,
+            fontFamily: 'var(--crystal-mono)',
+            fontSize: 10.5,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+          }}
+        >
+          SAFE MODE
+        </div>
+      )}
+
+      {/* SAFE MODE toast – frontend block feedback */}
+      {safeModeToast && (
+        <div
+          role="alert"
+          style={{
+            position: 'absolute',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 20,
+            background: theme === 'dark' ? 'rgba(20,12,12,0.92)' : 'rgba(255,240,240,0.96)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(255,120,120,0.30)' : 'rgba(255,90,90,0.28)'}`,
+            color: theme === 'dark' ? '#ffd0d0' : '#7a2020',
+            padding: '10px 16px',
+            borderRadius: 10,
+            fontFamily: 'var(--crystal-mono)',
+            fontSize: 11,
+            letterSpacing: '0.04em',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.22)',
+            pointerEvents: 'none',
+          }}
+        >
+          {safeModeToast}
         </div>
       )}
     </div>

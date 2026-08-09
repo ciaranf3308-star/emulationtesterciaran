@@ -49,6 +49,8 @@ export type LibraryViewProps = {
   mediaResolving?: boolean
   logoUrl?: string | null
   stageNode?: React.ReactNode // RIGHT 60-66% hardware stage from SystemStage
+  safeMode?: boolean
+  onSafeModeBlocked?: () => void
 }
 
 function pickYear(g?: LibraryGameDetail | null): string | null {
@@ -89,6 +91,8 @@ export function LibraryView({
   mediaResolving,
   logoUrl,
   stageNode,
+  safeMode,
+  onSafeModeBlocked,
 }: LibraryViewProps) {
   const isDark = theme === 'dark'
   const year = pickYear(selectedGame ?? null)
@@ -238,15 +242,28 @@ export function LibraryView({
 
               {/* Primary A PLAY */}
               <button
-                onClick={() => onLaunch(selectedGame)}
+                onClick={() => {
+                  if (safeMode) {
+                    console.warn('[SAFE MODE] LibraryView PLAY blocked – frontend safe guard')
+                    onSafeModeBlocked?.()
+                    return
+                  }
+                  onLaunch(selectedGame)
+                }}
                 data-action="play"
+                disabled={!!safeMode}
+                title={safeMode ? 'SAFE MODE – launch blocked' : undefined}
                 style={{
                   marginTop: 8,
                   appearance: 'none',
-                  background: isDark
+                  background: safeMode
+                    ? isDark
+                      ? 'linear-gradient(100deg, rgba(90,90,90,0.22), rgba(80,80,80,0.12))'
+                      : 'linear-gradient(100deg, rgba(180,180,180,0.32), rgba(200,200,200,0.22))'
+                    : isDark
                     ? 'linear-gradient(100deg, #7df9ff 0%, #8eeaff 60%, #a9f4ff 100%)'
                     : 'linear-gradient(100deg, #4a86ff 0%, #6a9cff 60%, #8ab4ff 100%)',
-                  color: isDark ? '#041018' : '#fff',
+                  color: safeMode ? (isDark ? 'rgba(230,244,255,0.46)' : 'rgba(18,26,44,0.42)') : isDark ? '#041018' : '#fff',
                   border: 'none',
                   borderRadius: 999,
                   padding: '12px 18px',
@@ -257,13 +274,14 @@ export function LibraryView({
                   display: 'flex',
                   alignItems: 'center',
                   gap: 12,
-                  cursor: 'pointer',
-                  boxShadow: isDark ? '0 10px 26px rgba(125,249,255,0.28), 0 0 0 1px rgba(125,249,255,0.22) inset' : '0 10px 24px rgba(70,130,255,0.24), inset 0 1px 0 rgba(255,255,255,0.8)',
-                  transition: 'transform 180ms cubic-bezier(0.16,1,0.3,1)',
+                  cursor: safeMode ? 'not-allowed' : 'pointer',
+                  opacity: safeMode ? 0.64 : 1,
+                  boxShadow: safeMode ? 'none' : isDark ? '0 10px 26px rgba(125,249,255,0.28), 0 0 0 1px rgba(125,249,255,0.22) inset' : '0 10px 24px rgba(70,130,255,0.24), inset 0 1px 0 rgba(255,255,255,0.8)',
+                  transition: 'transform 180ms cubic-bezier(0.16,1,0.3,1), opacity 180ms ease',
                 }}
               >
                 <span style={{ width: 26, height: 26, borderRadius: '50%', background: isDark ? 'rgba(4,16,24,0.16)' : 'rgba(255,255,255,0.22)', display: 'grid', placeItems: 'center', fontWeight: 800 }}>A</span>
-                <span>PLAY</span>
+                <span>{safeMode ? 'SAFE MODE – launch blocked' : 'PLAY'}</span>
               </button>
 
               {(onMedia || onToggleFavorite) && (
