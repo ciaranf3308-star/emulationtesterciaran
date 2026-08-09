@@ -133,7 +133,7 @@ function AppInner() {
 
   return (
     <div className={`fullscreen-root ${theme}-theme`} style={{ width:'100vw', height:'100vh', overflow:'hidden', position:'relative', background:'#0a0a0f' }}>
-      <SystemStage config={{ ...stageConfig, background: { url:bgUrl }}} theme={theme} showGuides={showGuides} backgroundUrl={bgUrl}>
+      <SystemStage config={{ ...stageConfig, background: { url:bgUrl }}} theme={theme} showGuides={showGuides} backgroundUrl={bgUrl} isEntered={view==='library'} mode={view==='library' ? 'library' : 'storefront'}>
         <div className="top-bar" style={{ position:'absolute', top:0, left:0, right:0, zIndex:20, display:'flex', justifyContent:'space-between', padding:'18px 22px', pointerEvents:'auto' }}>
           <div className="wordmark" style={{ fontFamily:'var(--crystal-display)', fontSize:18, letterSpacing:'-0.02em', color:'var(--crystal-ink)' }}>
             crystal <span style={{ fontWeight:400, letterSpacing:'-0.01em', opacity:0.9 }}>frontend</span>

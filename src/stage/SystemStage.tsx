@@ -1,24 +1,20 @@
 import { useMemo, useEffect, useRef, useState, useLayoutEffect } from 'react'
-import type { SystemStageProps, GameplaySource, PhysicalMediaTransform } from './types'
+import type { SystemStageProps, GameplaySource } from './types'
 
 /**
- * SystemStage — V7.1 hardened
- * 5 independent layers but with shared hardware-frame coordinate system:
- * 1. environment/background – full viewport cover
- * 2. gameplay video/screenshot – per-region calibrated inside hardware-frame
- * 3. physical media – calibrated inside hardware-frame
- * 4. hardware foreground – transparent PNG inside hardware-frame (bounds = contain)
- * 5. UI chrome – full viewport floating
+ * SystemStage — V7.2 visual-hierarchy hardened
+ * Two distinct visual states share the same Crystal artwork:
+ * - STOREFRONT (systems): background sharp, logo/system hero, hardware hidden / subtle
+ * - LIBRARY (entered console): background cinematic defocus (blur+dim+desat+scale),
+ *   hardware razor sharp hero, gameplay + physical media sharp inside hardware
  *
- * BEFORE: gameplay-region percentages were defined from source hardware PNG
- * but rendered relative to viewport while hardware PNG was object-fit:contain,
- * creating drift at different aspect ratios.
+ * Shared hardware-frame coordinate system remains from V7.1:
+ * hardware PNG rendered with object-fit:contain → compute exact frame bounds,
+ * then render gameplay regions / physical / hardware inside same frame.
+ * No drift at different resolutions.
  *
- * NOW: we compute the exact rendered bounds of the contain hardware image
- * (frame) and render regions/media/masks/foreground inside that same frame,
- * preserving source-image % calibration but making it resolution-safe.
- *
- * Visual regression target: PS2 1920x1080 – must not look worse.
+ * Blur only background layer – never entire SystemStage.
+ * Transition: sharp → defocus 300-500ms when confirming system, reverse cleanly.
  */
 
 function normalizeMediaSources(
@@ -28,62 +24,49 @@ function normalizeMediaSources(
 ): Map<string, GameplaySource | undefined> {
   const map = new Map<string, GameplaySource | undefined>()
   if (gameplaySources && gameplaySources.length > 0) {
-    for (const r of regions) {
-      const found = gameplaySources.find(s => s.regionId === r.id)
-      map.set(r.id, found)
+    for (const src of gameplaySources) {
+      if (src?.regionId) map.set(src.regionId, src)
+    }
+    // fill missing regions with first legacy if needed
+    if (map.size < regions.length && legacyMedia && (legacyMedia as any).url) {
+      const fallback = legacyMedia as any as GameplaySource
+      for (const r of regions) {
+        if (!map.has(r.id)) map.set(r.id, { ...fallback, regionId: r.id } as any)
+      }
     }
     return map
   }
-
   if (legacyMedia) {
-    const raw: any = legacyMedia as any
-    const video = raw.videoUrl || raw.video || undefined
-    const screenshot = raw.screenshotUrl || raw.screenshot || raw.cover || raw.coverUrl || raw.posterUrl || undefined
-    const poster = raw.posterUrl || raw.cover || undefined
-    const primary = regions[0]
-    if (primary) {
-      if (video) {
-        map.set(primary.id, { regionId: primary.id, url: video, posterUrl: poster, mediaType: 'video' })
-      } else if (screenshot) {
-        map.set(primary.id, { regionId: primary.id, url: screenshot, posterUrl: poster, mediaType: 'screenshot' })
-      }
-      for (let i = 1; i < regions.length; i++) {
-        if (!map.has(regions[i].id)) map.set(regions[i].id, undefined)
+    const legacy = Array.isArray(legacyMedia) ? (legacyMedia as any)[0] : legacyMedia
+    if (legacy?.url) {
+      // assign same url to all regions
+      for (const r of regions) {
+        map.set(r.id, { regionId: r.id, url: legacy.url, mediaType: legacy.mediaType || 'image', posterUrl: legacy.posterUrl, alt: legacy.alt } as GameplaySource)
       }
     }
-    return map
   }
-
-  for (const r of regions) map.set(r.id, undefined)
   return map
 }
 
-function resolvePhysicalMediaTransform(
-  transform: PhysicalMediaTransform | undefined,
-  restOverride?: { x?: number; y?: number; scale?: number }
-): React.CSSProperties {
-  if (!transform) {
-    return {
-      position: 'absolute',
-      left: '50%',
-      top: '70%',
-      transform: 'translate(-50%,-50%) translateZ(0) scale(0.9)',
-      maxWidth: '18%',
-      maxHeight: '22%',
-    }
-  }
-  const rest = transform.rest
-  const x = restOverride?.x ?? rest.x
-  const y = restOverride?.y ?? rest.y
-  const scale = restOverride?.scale ?? rest.scale
-  const rotation = (rest as any).rotation ?? 0
-  return {
+function resolvePhysicalMediaTransform(transform?: any): React.CSSProperties {
+  if (!transform) return { position: 'absolute', left: '58%', top: '42%', width: '18%', transform: 'translateZ(0) rotate(-8deg)' }
+  const s: React.CSSProperties = {
     position: 'absolute',
-    left: `${x}%`,
-    top: `${y}%`,
-    transform: `translate(-50%,-50%) translateZ(0) scale(${scale}) rotate(${rotation}deg)`,
-    transformOrigin: 'center',
+    left: transform.x != null ? `${transform.x}%` : transform.left != null ? `${transform.left}%` : '58%',
+    top: transform.y != null ? `${transform.y}%` : transform.top != null ? `${transform.top}%` : '42%',
+    width: transform.scale != null ? `${18 * transform.scale}%` : transform.width != null ? `${transform.width}%` : '18%',
+    transform: `translateZ(0) ${transform.rotateZ != null ? `rotate(${transform.rotateZ}deg)` : transform.rotation != null ? `rotate(${transform.rotation}deg)` : 'rotate(-8deg)'} ${transform.scale ? '' : ''}`,
   }
+  if (transform.rotateZ != null && transform.scale != null) {
+    s.transform = `translateZ(0) rotate(${transform.rotateZ}deg) scale(${transform.scale})`
+  } else if (transform.rotateZ != null) {
+    s.transform = `translateZ(0) rotate(${transform.rotateZ}deg)`
+  } else if (transform.scale != null) {
+    s.transform = `translateZ(0) rotate(-8deg) scale(${transform.scale})`
+  } else if (transform.rotation != null) {
+    s.transform = `translateZ(0) rotate(${transform.rotation}deg)`
+  }
+  return s
 }
 
 function fitToObjectFit(fit?: string): 'contain' | 'cover' | 'fill' {
@@ -120,7 +103,12 @@ export function SystemStage({
   children,
   className,
   style,
-}: SystemStageProps) {
+  isEntered,
+  mode,
+}: SystemStageProps & { isEntered?: boolean; mode?: 'storefront' | 'library' }) {
+  // --- visual hierarchy ---
+  const entered = mode ? mode === 'library' : !!isEntered
+
   const bg = useMemo(() => {
     const explicit = backgroundUrl
     if (explicit) return explicit
@@ -178,7 +166,6 @@ export function SystemStage({
     const el = stageRef.current
     const update = () => {
       const r = el.getBoundingClientRect()
-      // avoid 0
       if (r.width > 0 && r.height > 0) setContainerSize({ w: r.width, h: r.height })
     }
     update()
@@ -208,7 +195,6 @@ export function SystemStage({
     img.onerror = () => {
       if (!cancelled) setNaturalSize(null)
     }
-    // async decode hint
     ;(img as any).decoding = 'async'
     img.src = hwDisplayUrl
     return () => {
@@ -253,32 +239,98 @@ export function SystemStage({
     preloaded.current.add(hwDisplayUrl)
   }, [hwDisplayUrl])
 
+  // reduced-motion
+  const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : false
+  const durFilter = prefersReducedMotion ? '120ms' : '420ms'
+  const durTrans = prefersReducedMotion ? '160ms' : '560ms'
+  const durHw = prefersReducedMotion ? '140ms' : '480ms'
+  const durFade = prefersReducedMotion ? '120ms' : '380ms'
+
   return (
     <div
       ref={stageRef}
-      className={`system-stage ${className || ''}`}
+      className={`system-stage ${className || ''} ${entered ? 'is-entered' : 'is-storefront'}`}
       style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#0a0a0f', ...style }}
       data-system-id={config.systemId}
       data-presentation-type={(config as any).presentationType || 'tv'}
       data-hw-ready={frame.ready ? '1' : '0'}
-      data-hw-full={frame.isFull ? '1':'0'}
+      data-hw-full={frame.isFull ? '1' : '0'}
+      data-visual={entered ? 'library' : 'storefront'}
     >
-      {/* 1. environment/background – full viewport */}
-      <div className="layer layer-background" style={{ position: 'absolute', inset: 0, zIndex: 1, overflow: 'hidden', transform: 'translateZ(0)' }}>
+      {/* 1. environment/background – full viewport – blur ONLY here when entered */}
+      <div
+        className="layer layer-background"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 1,
+          overflow: 'hidden',
+          transform: `translateZ(0) ${entered ? (theme === 'dark' ? 'scale(1.08)' : 'scale(1.06)') : 'scale(1)'}`,
+          transformOrigin: 'center',
+          transition: `transform ${durTrans} cubic-bezier(0.16,1,0.3,1)`,
+          willChange: 'transform',
+        }}
+      >
         {bg ? (
           <img
             src={bg}
             alt=""
             className="stage-bg-image"
-            style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'translateZ(0)', filter: 'saturate(1.05) brightness(0.92)' }}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              transform: 'translateZ(0)',
+              // cinematic defocus – blur only background, keep razor sharp elsewhere
+              filter: entered
+                ? theme === 'dark'
+                  ? 'blur(32px) brightness(0.68) saturate(0.82)'
+                  : 'blur(26px) brightness(0.84) saturate(0.88)'
+                : 'saturate(1.05) brightness(0.92)',
+              transition: `filter ${durFilter} cubic-bezier(0.16,1,0.3,1)`,
+              willChange: 'filter',
+            }}
             decoding="async"
             loading="eager"
           />
         ) : (
           <div style={{ width: '100%', height: '100%', background: 'var(--bg,#121214)' }} />
         )}
-        <div className="bg-vignette" style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.62) 100%)' }} />
-        <div className="bg-cool-wash" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(125,249,255,0.04), transparent 40%, rgba(10,10,15,0.3))', pointerEvents: 'none' }} />
+        <div
+          className="bg-vignette"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.62) 100%)',
+            opacity: entered ? 0.92 : 1,
+            transition: `opacity ${durFade} ease`,
+          }}
+        />
+        <div
+          className="bg-cool-wash"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: entered
+              ? theme === 'dark'
+                ? 'linear-gradient(180deg, rgba(0,0,0,0.32), rgba(0,0,0,0.44) 60%, rgba(0,0,0,0.56))'
+                : 'linear-gradient(180deg, rgba(10,12,20,0.18), rgba(10,12,20,0.26) 60%, rgba(10,12,20,0.34))'
+              : 'linear-gradient(180deg, rgba(125,249,255,0.04), transparent 40%, rgba(10,10,15,0.3))',
+            pointerEvents: 'none',
+            transition: `background ${durFilter} ease, opacity ${durFade} ease`,
+          }}
+        />
+        <div
+          className="bg-library-dim"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: theme === 'dark' ? 'rgba(6,8,14,0.24)' : 'rgba(10,12,18,0.14)',
+            opacity: entered ? 1 : 0,
+            transition: `opacity ${durFilter} cubic-bezier(0.16,1,0.3,1)`,
+            pointerEvents: 'none',
+          }}
+        />
       </div>
 
       {/* HARDWARE FRAME – shared coordinate system exactly matching contain hardware image */}
@@ -292,15 +344,29 @@ export function SystemStage({
             top: frame.top,
             width: frame.width,
             height: frame.height,
-            zIndex: 2, // stacking parent for layers 2-4; actual z inside still respects declared
-            transform: 'translateZ(0)',
-            // visible overflow so drop-shadow isn't clipped, but gameplay clips via regions
+            zIndex: 2,
+            transform: `translateZ(0) ${entered ? 'scale(1) translateY(0px)' : showGuides ? 'scale(0.94) translateY(6px)' : 'scale(0.92) translateY(14px)'}`,
+            transformOrigin: 'center',
+            opacity: entered ? 1 : showGuides ? 0.22 : 0,
+            transition: `opacity ${durFade} cubic-bezier(0.16,1,0.3,1), transform ${durHw} cubic-bezier(0.16,1,0.3,1)`,
+            willChange: 'opacity, transform',
             overflow: 'visible',
             pointerEvents: 'none',
           }}
         >
-          {/* 2. gameplay regions – inside frame */}
-          <div className="layer layer-gameplay" style={{ position: 'absolute', inset: 0, zIndex: mediaZ, pointerEvents: 'none', transform: 'translateZ(0)' }}>
+          {/* 2. gameplay regions – inside frame – razor sharp when entered */}
+          <div
+            className="layer layer-gameplay"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: mediaZ,
+              pointerEvents: 'none',
+              transform: 'translateZ(0)',
+              // stays sharp – no blur
+              filter: 'none',
+            }}
+          >
             {config.gameplayRegions.map(region => {
               const src = sourceMap.get(region.id)
               const maskUrl = screenMaskForRegion(region.id)
@@ -370,9 +436,9 @@ export function SystemStage({
             })}
           </div>
 
-          {/* 3. physical media – inside frame */}
+          {/* 3. physical media – inside frame – sharp */}
           {physicalUrl && (physicalConfig as any) && (
-            <div className="layer layer-physical" style={{ position: 'absolute', inset: 0, zIndex: physicalZ, pointerEvents: 'none', transform: 'translateZ(0)' }}>
+            <div className="layer layer-physical" style={{ position: 'absolute', inset: 0, zIndex: physicalZ, pointerEvents: 'none', transform: 'translateZ(0)', filter: 'none' }}>
               <img
                 src={physicalUrl}
                 alt=""
@@ -394,9 +460,9 @@ export function SystemStage({
             </div>
           )}
 
-          {/* 4. hardware foreground – inside frame, exactly fills frame */}
+          {/* 4. hardware foreground – inside frame, exactly fills frame – razor sharp */}
           {hwDisplayUrl ? (
-            <div className="layer layer-hardware" style={{ position: 'absolute', inset: 0, zIndex: foregroundZ, pointerEvents: 'none', transform: 'translateZ(0)' }}>
+            <div className="layer layer-hardware" style={{ position: 'absolute', inset: 0, zIndex: foregroundZ, pointerEvents: 'none', transform: 'translateZ(0)', filter: 'none' }}>
               <img
                 src={hwDisplayUrl}
                 alt=""
@@ -451,7 +517,7 @@ export function SystemStage({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {`frame ${frame.width.toFixed(0)}×${frame.height.toFixed(0)} • ${frame.isFull ? 'full (no hw)' : `${naturalSize ? `${naturalSize.w}×${naturalSize.h} src` : 'contain'}`} • ${config.systemId}`}
+                {`frame ${frame.width.toFixed(0)}×${frame.height.toFixed(0)} • ${frame.isFull ? 'full (no hw)' : `${naturalSize ? `${naturalSize.w}×${naturalSize.h} src` : 'contain'}`} • ${config.systemId} • ${entered ? 'library sharp' : 'storefront hidden'}`}
               </div>
             </>
           )}

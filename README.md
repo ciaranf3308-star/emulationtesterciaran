@@ -8,7 +8,7 @@ Premium fullscreen Windows gaming frontend (React + TypeScript + Vite → Tauri)
 
 V1 = initial standalone frontend, V2 = Crystal asset/refactor (asset pack preserved), V3 = machine-truth architecture (typed machine domain, validation, composable asset resolver genesis≠megadrive, 5-layer SystemStage with multiple DS/3DS regions, launch/media/metadata/input, privacy), V4 = Crystal product rule firewall from Beirt, contamination removal, Crystal-native design tokens (graphite/silver/cyan glass), truth-only UI (no fake game placeholders), real-config blocking error in Tauri, V5 = hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI, V6 = real Tauri v2 app – `get_machine_config` real machine-local no fallback, real ROM enumeration respecting validExtensions, gamelist.xml join, real media FS verification, All Games/Favorites/Recently Played wired, launch backend owning find-rule resolution + placeholder substitution + working dir + quoting + spawn detached, INJECT/OS-SHELL blocked, GBA/mGBA PS2/PCSX2 3DS/Azahar prioritized, V7 = hardware-calibrated presentation – downloaded `Crystal-Hardware-Foregrounds.zip` (Drive id 19559hDcaWP2KtCDhZy5cYxsrcsgVj7P9) 44 MB, curated 22 PNGs (19 systems) into `public/assets/hardware/` preserving 1024–1536 px + RGBA alpha, per-system calibrated configs `src/stage/config/` with 5-layer SystemStage upgrade supporting per-region fit contain/cover, cornerRadius, mask, zIndex, dual-screen NDS/n3ds distinct regions, wii/wiiu hybrid, steam desktop, physical media cart/disc/umd placement + insertion axis/path/slotTarget/z, alternates (wii 2 variants, steam transparent monitor primary), graceful background-only fallback, memoized preload, GPU-friendly translateZ(0), 82 modules 231 kB gzip 67.7 kB, 77 tests pass.
 
-> **Versioning note:** `package.json` version (`3.4.0`) is internal semver independent of milestone (`V7`). Milestone tracks product gating; semver tracks code compatibility/build. Do not conflate them; `version.json` is source of durable metadata.
+> **Versioning note:** `package.json` version (`3.5.0`) is internal semver independent of milestone (`V7.2`). Milestone tracks product gating; semver tracks code compatibility/build. Do not conflate them; `version.json` is source of durable metadata.
 
 ### Machine-Local Truth (Never Committed)
 Generated read-only from ROG Ally X:
@@ -164,13 +164,34 @@ Browser = dev fallback loads sanitized example `config/machine-config.example.js
 
 ## Tauri App (V6 completed)
 
-`src-tauri/tauri.conf.json` 632 B productName Crystal Frontend 3.4.0 identifier com.crystal.frontend build frontendDist ../dist devUrl http://localhost:1420 bundle msi/nsis windows centered undecorated 1920×1080, capabilities `default.json` permissions core:default fs:default shell:default dialog:default, Cargo.toml tauri 2 + plugins fs/dialog/shell + dirs/walkdir/quick-xml/regex/glob edition 2021 rust-version 1.77, main.rs 38,607 B 7 commands.
+`src-tauri/tauri.conf.json` 632 B productName Crystal Frontend 3.5.0 identifier com.crystal.frontend build frontendDist ../dist devUrl http://localhost:1420 bundle msi/nsis windows centered undecorated 1920×1080, capabilities `default.json` permissions core:default fs:default shell:default dialog:default, Cargo.toml tauri 2 + plugins fs/dialog/shell + dirs/walkdir/quick-xml/regex/glob edition 2021 rust-version 1.77, main.rs 38,607 B 7 commands.
 
 `cargo` not available in web VM – `cargo check` requires Windows host. Integration documented `TAURI-INTEGRATION.md` 396 lines. Frontend `src/runtime/backend.ts` wired to real Tauri invokers.
 
 ## Performance Notes
 
-Avoid mounting many videos – Library paginates (40), dual-screen only 2 videos max, SystemStage memoizes `sourceMap` + `bg`, single hardware preload via `useRef<Set<string>>`, decodes 22 large PNGs on demand not all at once (only selected system), `loading="lazy"` carousel icons (28×28), `loading="eager"` hardware foreground, GPU transforms `translateZ(0)` on bg/logo/carousel, reduced-motion + `visibilitychange` pause ready. Build 82 modules 231 kB JS gzip 67.7 kB feasible for 8–12 MB exe.
+Avoid mounting many videos – Library paginates (40), dual-screen only 2 videos max, SystemStage memoizes `sourceMap` + `bg`, single hardware preload via `useRef<Set<string>>`, decodes 22 large PNGs on demand not all at once (only selected system), `loading="lazy"` carousel icons (28×28), `loading="eager"` hardware foreground, GPU transforms `translateZ(0)` on bg/logo/carousel, reduced-motion + `visibilitychange` pause ready. Build 82 modules 235 kB JS gzip 69 kB feasible for 8–12 MB exe.
+
+Visual hierarchy V7.2 reuses same Crystal background – no new plain artwork needed. Blur is GPU compositor filter on isolated background layer only, not whole stage – hardware, gameplay, physical stay `filter:none` razor sharp.
+
+## Visual Hierarchy – Storefront vs Library (V7.2)
+
+**STOREFRONT / SYSTEMS** – browsing:
+- Crystal system background **sharp**, saturate(1.05) brightness(0.92)
+- Logo / system identity is hero, carousel lightly translucent
+- Transparent hardware PNG **hidden** (`opacity 0`, `scale 0.92`) so giant hardware does not dominate scan. Guides toggle shows 22% preview for QA, not normal UI.
+- Physical media absent (no selected game)
+- Fast scroll, no blur cost – background is single cover img
+
+**LIBRARY / ENTERED-CONSOLE** – confirmed system feels like ENTERING:
+- **Reuses SAME existing Crystal background** (no new plain bg required)
+- Cinematic defocus: dark `blur(32px) brightness(0.68) saturate(0.82) scale(1.08)`, light `blur(26px) brightness(0.84) saturate(0.88) scale(1.06)` – scale prevents blurred edges
+- Extra `bg-library-dim` + `bg-cool-wash` (dark rgba 0.24/0.44/0.56, light rgba 0.18/0.26/0.34) tuned per theme independently
+- Transparent hardware foreground **main hero**: opacity 1, scale 1, `drop-shadow(0 20px 60px rgba(0,0,0,0.65))`, razor sharp
+- Selected-game video/screenshot **remains sharp** inside hardware screen (`filter:none`) – no double-blur
+- Physical media **remains sharp** inside frame
+- Transition 380 ms opacity + 480 ms transform + 420 ms filter `cubic-bezier(0.16,1,0.3,1)` (cinematic), reduced-motion 120-160 ms, reverses cleanly on Back (Esc/back/Circle)
+- Implementation preserves V7.1 shared `hardware-frame` contain math: tracked via `ResizeObserver` + `naturalWidth`, deterministic 1920×1080 `frame 1080×1080 left 420` for PS2 square, 1280×720 `fw 720 left 280`
 
 ## Creative Rule (Crystal – always)
 
@@ -180,9 +201,11 @@ Crystal bar = premium next-gen gaming OS. Think cinematic hardware reveal:
 - translucent glass/crystal/acrylic depth, graphite/black/silver structure, cool electric cyan focus
 - studio-lit console hardware, cartridge/disc interaction, sharp premium presentation
 - controller-first, hardware-led, screen breaks overlay edge with shadow (stage), not clipped
+- storefront browsing stays light and system-art-led, library feels like entering hardware – background falls away, hardware comes forward
 
 No orange legacy terminal (#FF6B26 generic leftover), no fake counts, no generic SaaS admin. See `docs/CRYSTAL-PRODUCT-RULE.md` for permanent product firewall – Crystal is a gaming OS, not hospitality / editorial / boutique lifestyle. Never transfer Beirt references into Crystal.
 
 ---
 
-*V3 machine-truth 2026-08-09 347 files 19 systems, V4 Crystal product-rule firewall graphite/silver/cyan, V5 hardening 77 tests tolerant slash, V6 Tauri v2 real runtime 7 commands 38.6kB main.rs 210kB build, V7 hardware-calibrated 2026-08-09 – Drive pack 44M 22 PNGs curated 19 systems 1024-1536px RGBA, per-system calibrated configs, SystemStage 5-layer upgrade contain→cover fit cornerRadius mask zIndex dual-screen NDS/n3ds distinct wii/steam alternates cart/disc/umd placement insertionAxis/path/slotTarget, 82 modules 231.57kB gzip 67.74kB 2.68s typecheck 0 tests 77 pass transparency 742k-974k pixels steam-01 transparent monitor primary, no ZIP committed, no fake ROM data.*
+*V3 machine-truth 2026-08-09 347 files 19 systems, V4 Crystal product-rule firewall graphite/silver/cyan, V5 hardening 77 tests tolerant slash, V6 Tauri v2 real runtime 7 commands 38.6kB main.rs 210kB build, V7 hardware-calibrated 2026-08-09 – Drive pack 44M 22 PNGs curated 19 systems 1024-1536px RGBA, per-system calibrated configs, SystemStage 5-layer upgrade contain→cover fit cornerRadius mask zIndex dual-screen NDS/n3ds distinct wii/steam alternates cart/disc/umd placement insertionAxis/path/slotTarget, 82 modules 231.57kB gzip 67.74kB 2.68s typecheck 0 tests 77 pass transparency 742k-974k pixels steam-01 transparent monitor primary, no ZIP committed, no fake ROM data, V7.1 hardened 2026-08-09 – shared contain hardware-frame ResizeObserver naturalWidth FrameBounds left/top/width/height ready/isFull fallback, deterministic resolution-safe 1920×1080 frame 1080×1080 left 420 1280×720 fw 720 left 280 PS2 calibrated 17.9%/10.8%/64%/45.5% preserved 82 mods 233.76kB gzip 68.55kB typecheck 0 screenshot crystal-v71-ps2.png 2.7M, V7.2 visual-hierarchy 2026-08-10 – storefront sharp background logo hero hardware hidden opacity 0 scale 0.92 guides 0.22, library cinematic blur 32px/26px brightness 0.68-0.84 saturate 0.82-0.88 scale 1.06-1.08 library-dim 0.24/0.14 vignette 0.92 cool-wash dark/light tuned hardware razor hero gameplay/physical sharp filter:none 82 mods 235.66kB gzip 69.07kB 1.85s typecheck 0 tests 77 pass.*
+

@@ -227,6 +227,9 @@ export interface SystemStageProps {
   children?: React.ReactNode
   className?: string
   style?: React.CSSProperties
+  /** Visual hierarchy – storefront (browsing) vs library (entered console) */
+  isEntered?: boolean
+  mode?: 'storefront' | 'library'
 }
 
 /* Re-export for external consumers */
