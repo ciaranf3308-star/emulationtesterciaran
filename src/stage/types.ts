@@ -27,6 +27,16 @@ export type Theme = 'light' | 'dark'
  * Geometry
  * -----------------------------------------------------------------------*/
 
+export type MediaFitMode = 'contain' | 'cover' | 'stretch' | 'calibrated'
+export type PresentationType = 'handheld' | 'tv' | 'hybrid' | 'desktop' | 'board'
+
+export interface UISafeRegion {
+  top?: number
+  bottom?: number
+  left?: number
+  right?: number
+}
+
 export interface GameplayRegion {
   id: string
   /** Position in % (0-100) relative to stage */
@@ -38,6 +48,12 @@ export interface GameplayRegion {
   maskId?: string
   /** Optional label for dev guides */
   label?: string
+  // V7 calibrated extensions
+  fit?: MediaFitMode
+  cornerRadius?: number | string // e.g. 8 or "6%"
+  maskUrl?: string
+  zIndex?: number
+  mediaTransform?: MediaTransform
 }
 
 /** Alias for presentation contract – same shape */
@@ -151,11 +167,14 @@ export interface SystemStageConfig {
   physicalMediaConfig?: PhysicalMediaConfig
   /** Legacy field – still read but physicalMediaConfig takes precedence */
   physicalMedia?: {
-    type: 'cart' | 'disc' | 'board'
+    type: 'cart' | 'disc' | 'board' | 'umd' | 'none'
     url?: string
     transform?: PhysicalMediaTransform
   }
   hardwareForeground?: string
+  /** Optional alternate hardware foreground asset (e.g. Wii red vs white, Steam transparent vs fallback) */
+  hardwareForegroundAlternate?: string
+  hardwareForegroundAlternates?: string[]
   /** Single mask applied to all gameplay regions (simple consoles) */
   screenMask?: string
   /** Slot occlusion mask for physical media */
@@ -165,6 +184,23 @@ export interface SystemStageConfig {
   slotMasks?: Record<string, string>
   mediaTransform?: MediaTransform
   animation?: AnimationConfig
+
+  // V7 calibration extensions
+  presentationType?: PresentationType
+  foregroundZIndex?: number
+  mediaZIndex?: number
+  uiSafe?: UISafeRegion
+  /** V7 canonical physical media placement (new) – preferred over legacy physicalMediaConfig */
+  physicalMediaPlacement?: {
+    type: 'cart' | 'disc' | 'umd' | 'none'
+    transform: PhysicalMediaTransform
+    slotTarget?: { x: number; y: number; scale?: number; rotation?: number }
+    insertionAxis?: 'x' | 'y' | 'z' | 'xy' | 'arc' | 'vertical' | 'horizontal'
+    insertionPath?: 'straight' | 'arc' | 'vertical' | 'horizontal' | 'slot'
+    zIndex?: number
+    slotMask?: string
+  }
+  insertionAnimation?: InsertionAnimationConfig
 }
 
 /* -------------------------------------------------------------------------

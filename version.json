@@ -1,15 +1,16 @@
 {
-  "project": "Crystal Frontend",
-  "projectMilestone": "V6",
-  "previousMilestone": "V5 – V5 hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI",
-  "milestoneDefinition": {
-    "V1": "initial standalone frontend",
-    "V2": "Crystal asset/refactor stage (asset pack preserved, React+TS+Vite)",
-    "V3": "machine-truth architecture – typed machine domain, validation, composable assets, 5-layer SystemStage, launch/media/metadata/input, privacy",
-    "V4": "Crystal product rule split from Beirt, cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error",
-    "V5": "V5 hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI",
-    "V6": "V6 real desktop runtime: Tauri v2 app with src-tauri main.rs implementing get_machine_config (real machine-local, no fallback), real ROM enumeration per system respecting validExtensions, gamelist.xml join, real media FS verification, All Games/Favorites/Recently Played wired to real runtime, launch_game backend owning find-rule resolution, placeholder substitution, working dir, quoting, spawn detached, INJECT/OS-SHELL blocked, GBA/mGBA PS2/PCSX2 3DS/Azahar prioritized, return flow safe, controller flow end-to-end, hardware presentation contract untouched"
-  },
-  "semver": "3.3.0",
-  "packageVersion": "3.3.0"
+    "milestoneDefinition": {
+        "V1": "initial standalone frontend",
+        "V2": "Crystal asset/refactor stage (asset pack preserved, React+TS+Vite)",
+        "V3": "machine-truth architecture \u2013 typed machine domain, validation, composable assets, 5-layer SystemStage, launch/media/metadata/input, privacy",
+        "V4": "Crystal product rule split from Beirt, cross-contamination removal, Crystal design tokens (graphite/silver/cyan glass), truth-only UI, real-config blocking error",
+        "V5": "V5 hardening: path validation tolerant both slash forms, legacy desktop bridge removal, canonical runtime boundary, Tauri v2 contract rewrite, launch capability/placeholder readiness, SystemStage asset-ready contract, hardware presentation contract, provider-specific asset roots, input StrictMode lifecycle, view-aware navigation, truth-only machine source, contamination cleanup, truthful versioning, CI",
+        "V6": "V6 real desktop runtime: Tauri v2 app with src-tauri main.rs implementing get_machine_config (real machine-local, no fallback), real ROM enumeration per system respecting validExtensions, gamelist.xml join, real media FS verification, All Games/Favorites/Recently Played wired to real runtime, launch_game backend owning find-rule resolution, placeholder substitution, working dir, quoting, spawn detached, INJECT/OS-SHELL blocked, GBA/mGBA PS2/PCSX2 3DS/Azahar prioritized, return flow safe, controller flow end-to-end, hardware presentation contract untouched",
+        "V7": "V7 hardware-calibrated presentation: downloaded Crystal-Hardware-Foregrounds.zip from Drive, curated 22 PNGs (19 systems) into public/assets/hardware/ preserving 1024-1536px resolution + RGBA alpha (steam transparent monitor primary), per-system calibrated configs src/stage/config/ with 5-layer SystemStage upgrade supporting per-region fit contain/cover, cornerRadius, mask, zIndex, dual-screen NDS/n3ds distinct regions, wii/wiiu hybrid, steam desktop, physical media cart/disc/umd placement + insertion axis/path/slotTarget/z, alternates (wii 2 variants, steam 2+transparent), graceful background-only fallback, memoized preload, GPU-friendly translateZ(0), 82 modules 231kB gzip 67.7kB, 77 tests pass, typecheck 0, no fake ROM data, no ZIP committed"
+    },
+    "packageVersion": "3.4.0",
+    "previousMilestone": "V6 \u2013 V6 real desktop runtime: Tauri v2 app with src-tauri main.rs implementing get_machine_config (real machine-local, no fallback), real ROM enumeration per system respecting validExtensions, gamelist.xml join, real media FS verification, All Games/Favorites/Recently Played wired to real runtime, launch_game backend owning find-rule resolution, placeholder substitution, working dir, quoting, spawn detached, INJECT/OS-SHELL blocked, GBA/mGBA PS2/PCSX2 3DS/Azahar prioritized, return flow safe, controller flow end-to-end, hardware presentation contract untouched",
+    "project": "Crystal Frontend",
+    "projectMilestone": "V7",
+    "semver": "3.4.0"
 }
