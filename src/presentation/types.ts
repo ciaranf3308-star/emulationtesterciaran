@@ -99,6 +99,36 @@ export interface PhysicalMediaPlacement {
   slotMask?: string
 }
 
+/**
+ * Showroom placement – V7.3
+ * Defines how calibrated hardware-frame is presented in storefront showroom vs library.
+ * All values are typed and composable – no hardcoded CSS in SystemStage per-system.
+ *
+ * The calibrated hardware-frame itself is NEVER moved – only this outer wrapper moves.
+ */
+export interface ShowroomPlacement {
+  /** Horizontal offset of showroom wrapper centre – % of viewport width (0-100). Undefined = default right hero ~62-68% */
+  x?: number
+  /** Vertical offset % of viewport height – undefined = centre 50% */
+  y?: number
+  /** Showroom hero scale – 1 = canonical library size, 1.08-1.18 typical for showroom large hero */
+  scale?: number
+  /** Max width constraint for wrapper – e.g. '72vw' | '840px' | number px */
+  maxWidth?: string | number
+  /** Max height constraint */
+  maxHeight?: string | number
+  /** Anchor for positioning – centre of wrapper relative to its own box */
+  anchor?: 'center' | 'right-center' | 'center-right' | 'top-center'
+  /** Slight translateY for tall handhelds to sit lower/higher visually */
+  translateY?: number | string
+  /** Library position override – where hardware moves when entering console (default centre) */
+  library?: {
+    x?: number
+    y?: number
+    scale?: number
+  }
+}
+
 export interface SystemPresentationConfig {
   systemId: string
   fullName?: string
@@ -136,4 +166,7 @@ export interface SystemPresentationConfig {
   uiSafe?: UISafeRegion
   /** Optional tags for future insertion animation */
   insertionAnimation?: InsertionAnimationConfig
+
+  // ── V7.3 showroom ──
+  showroomPlacement?: ShowroomPlacement
 }

@@ -6,6 +6,7 @@
 import type { SystemStageConfig } from './types'
 import { getPresentationForSystem } from '../presentation/resolver'
 import type { SystemPresentationConfig } from '../presentation/types'
+import { resolveShowroomPlacement } from './config/showroomDefaults'
 
 function presentationToStageConfig(pres: SystemPresentationConfig, fullNameOverride?: string): SystemStageConfig {
   const hw = pres.hardwareForeground as any
@@ -45,6 +46,10 @@ function presentationToStageConfig(pres: SystemPresentationConfig, fullNameOverr
   const foregroundZIndex = (pres as any).foregroundZIndex
   const mediaZIndex = (pres as any).mediaZIndex
   const uiSafe = (pres as any).uiSafe
+
+  // V7.3 showroom – resolve category defaults + overrides + explicit if present
+  const explicitShowroom = (pres as any).showroomPlacement as SystemStageConfig['showroomPlacement'] | undefined
+  const showroomPlacement = resolveShowroomPlacement(pres.systemId, presentationType, explicitShowroom as any)
 
   // Physical media legacy mapping
   let physicalMediaConfig: SystemStageConfig['physicalMediaConfig'] | undefined
@@ -87,6 +92,7 @@ function presentationToStageConfig(pres: SystemPresentationConfig, fullNameOverr
     uiSafe,
     physicalMediaPlacement: placement as any,
     insertionAnimation: insertionAnimation as any,
+    showroomPlacement: showroomPlacement as any,
   } as SystemStageConfig
 }
 

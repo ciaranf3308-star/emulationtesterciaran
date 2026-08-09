@@ -149,6 +149,21 @@ export interface GameplaySource {
 }
 
 /* -------------------------------------------------------------------------
+ * Showroom outer transform – V7.3 – category defaults + per-system tuning
+ * -----------------------------------------------------------------------*/
+
+export interface ShowroomPlacement {
+  x?: number
+  y?: number
+  scale?: number
+  maxWidth?: string | number
+  maxHeight?: string | number
+  anchor?: 'center' | 'right-center' | 'center-right' | 'top-center'
+  translateY?: number | string
+  library?: { x?: number; y?: number; scale?: number }
+}
+
+/* -------------------------------------------------------------------------
  * SystemStageConfig – stage-time geometry (no runtime URLs for physical media)
  * -----------------------------------------------------------------------*/
 
@@ -201,6 +216,18 @@ export interface SystemStageConfig {
     slotMask?: string
   }
   insertionAnimation?: InsertionAnimationConfig
+
+  /** V7.3 showroom outer transform – does NOT affect inner calibrated frame */
+  showroomPlacement?: {
+    x?: number
+    y?: number
+    scale?: number
+    maxWidth?: string | number
+    maxHeight?: string | number
+    anchor?: 'center' | 'right-center' | 'center-right' | 'top-center'
+    translateY?: number | string
+    library?: { x?: number; y?: number; scale?: number }
+  }
 }
 
 /* -------------------------------------------------------------------------

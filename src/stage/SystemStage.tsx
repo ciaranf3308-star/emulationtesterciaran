@@ -1,20 +1,16 @@
-import { useMemo, useEffect, useRef, useState, useLayoutEffect } from 'react'
+import { useMemo, useEffect, useRef, useState, useLayoutEffect, useCallback } from 'react'
 import type { SystemStageProps, GameplaySource } from './types'
 
 /**
- * SystemStage — V7.2 visual-hierarchy hardened
- * Two distinct visual states share the same Crystal artwork:
- * - STOREFRONT (systems): background sharp, logo/system hero, hardware hidden / subtle
- * - LIBRARY (entered console): background cinematic defocus (blur+dim+desat+scale),
- *   hardware razor sharp hero, gameplay + physical media sharp inside hardware
+ * SystemStage — V7.3 showroom STORE hero
  *
- * Shared hardware-frame coordinate system remains from V7.1:
- * hardware PNG rendered with object-fit:contain → compute exact frame bounds,
- * then render gameplay regions / physical / hardware inside same frame.
- * No drift at different resolutions.
- *
- * Blur only background layer – never entire SystemStage.
- * Transition: sharp → defocus 300-500ms when confirming system, reverse cleanly.
+ * - V7.1 shared hardware-frame coordinate system preserved
+ * - V7.2 background defocus remains library-only
+ * - V7.3 adds outer showroom-wrapper transform so calibrated inner frame NEVER breaks
+ * - Storefront hardware visible large right hero (not hidden)
+ * - Storefront idle glass treatment when no selected game media
+ * - Background remains sharp storefront, blurred/dimmed library
+ * - All filters isolated – never blur hardware/gameplay/physical
  */
 
 function normalizeMediaSources(
@@ -27,7 +23,6 @@ function normalizeMediaSources(
     for (const src of gameplaySources) {
       if (src?.regionId) map.set(src.regionId, src)
     }
-    // fill missing regions with first legacy if needed
     if (map.size < regions.length && legacyMedia && (legacyMedia as any).url) {
       const fallback = legacyMedia as any as GameplaySource
       for (const r of regions) {
@@ -39,7 +34,6 @@ function normalizeMediaSources(
   if (legacyMedia) {
     const legacy = Array.isArray(legacyMedia) ? (legacyMedia as any)[0] : legacyMedia
     if (legacy?.url) {
-      // assign same url to all regions
       for (const r of regions) {
         map.set(r.id, { regionId: r.id, url: legacy.url, mediaType: legacy.mediaType || 'image', posterUrl: legacy.posterUrl, alt: legacy.alt } as GameplaySource)
       }
@@ -106,7 +100,6 @@ export function SystemStage({
   isEntered,
   mode,
 }: SystemStageProps & { isEntered?: boolean; mode?: 'storefront' | 'library' }) {
-  // --- visual hierarchy ---
   const entered = mode ? mode === 'library' : !!isEntered
 
   const bg = useMemo(() => {
@@ -136,6 +129,17 @@ export function SystemStage({
   const physicalZ = (physicalConfig as any)?.zIndex ?? 3
   const uiSafe = (config as any).uiSafe as { top?: number; bottom?: number; left?: number; right?: number } | undefined
 
+  const showroomPlacement = (config as any).showroomPlacement as {
+    x?: number
+    y?: number
+    scale?: number
+    maxWidth?: string | number
+    maxHeight?: string | number
+    anchor?: string
+    translateY?: number | string
+    library?: { x?: number; y?: number; scale?: number }
+  } | undefined
+
   const screenMaskForRegion = (regionId: string): string | undefined => {
     if (config.screenMasks && config.screenMasks[regionId]) return config.screenMasks[regionId]
     const regions = config.gameplayRegions as any[]
@@ -157,31 +161,31 @@ export function SystemStage({
   const hwDisplayUrl = hwUrl
 
   const stageRef = useRef<HTMLDivElement>(null)
+  const showroomRef = useRef<HTMLDivElement>(null)
   const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null)
 
-  // track stage size
-  useLayoutEffect(() => {
-    if (!stageRef.current) return
-    const el = stageRef.current
-    const update = () => {
-      const r = el.getBoundingClientRect()
-      if (r.width > 0 && r.height > 0) setContainerSize({ w: r.width, h: r.height })
-    }
-    update()
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(() => update())
-      ro.observe(el)
-      return () => ro.disconnect()
-    } else {
-      if (typeof window !== 'undefined') {
-        window.addEventListener('resize', update)
-        return () => window.removeEventListener('resize', update)
-      }
-    }
+  const measure = useCallback(() => {
+    const el = showroomRef.current || stageRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    if (r.width > 0 && r.height > 0) setContainerSize({ w: r.width, h: r.height })
   }, [])
 
-  // load natural size of hardware PNG
+  useLayoutEffect(() => {
+    if (!showroomRef.current && !stageRef.current) return
+    measure()
+    if (typeof ResizeObserver !== 'undefined') {
+      const target = showroomRef.current || stageRef.current!
+      const ro = new ResizeObserver(() => measure())
+      ro.observe(target)
+      return () => ro.disconnect()
+    } else if (typeof window !== 'undefined') {
+      window.addEventListener('resize', measure)
+      return () => window.removeEventListener('resize', measure)
+    }
+  }, [measure, entered, showroomPlacement?.scale, showroomPlacement?.maxWidth])
+
   useEffect(() => {
     if (!hwDisplayUrl) {
       setNaturalSize(null)
@@ -239,12 +243,30 @@ export function SystemStage({
     preloaded.current.add(hwDisplayUrl)
   }, [hwDisplayUrl])
 
-  // reduced-motion
   const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : false
   const durFilter = prefersReducedMotion ? '120ms' : '420ms'
   const durTrans = prefersReducedMotion ? '160ms' : '560ms'
   const durHw = prefersReducedMotion ? '140ms' : '480ms'
   const durFade = prefersReducedMotion ? '120ms' : '380ms'
+
+  const placementX = showroomPlacement?.x ?? 66
+  const placementY = showroomPlacement?.y ?? 52
+  const placementScale = showroomPlacement?.scale ?? 1.16
+  const placementMaxW = showroomPlacement?.maxWidth ?? '72vw'
+  const placementMaxH = showroomPlacement?.maxHeight ?? '74vh'
+  const placementTY = showroomPlacement?.translateY ?? 0
+  const libX = showroomPlacement?.library?.x ?? 50
+  const libY = showroomPlacement?.library?.y ?? 50
+  const libScale = showroomPlacement?.library?.scale ?? 1
+
+  const wrapperLeft = entered ? `${libX}%` : `${placementX}%`
+  const wrapperTop = entered ? `${libY}%` : `${placementY}%`
+  const wrapperTransform = entered
+    ? `translate(-50%, -50%) scale(${libScale})`
+    : `translate(-50%, -50%) ${typeof placementTY === 'number' ? `translateY(${placementTY}px)` : placementTY ? `translateY(${placementTY})` : ''} scale(${placementScale})`
+
+  const wrapperMaxW = typeof placementMaxW === 'number' ? `${placementMaxW}px` : placementMaxW
+  const wrapperMaxH = typeof placementMaxH === 'number' ? `${placementMaxH}px` : placementMaxH
 
   return (
     <div
@@ -256,6 +278,8 @@ export function SystemStage({
       data-hw-ready={frame.ready ? '1' : '0'}
       data-hw-full={frame.isFull ? '1' : '0'}
       data-visual={entered ? 'library' : 'storefront'}
+      data-showroom-x={placementX}
+      data-showroom-scale={placementScale}
     >
       {/* 1. environment/background – full viewport – blur ONLY here when entered */}
       <div
@@ -281,7 +305,6 @@ export function SystemStage({
               height: '100%',
               objectFit: 'cover',
               transform: 'translateZ(0)',
-              // cinematic defocus – blur only background, keep razor sharp elsewhere
               filter: entered
                 ? theme === 'dark'
                   ? 'blur(32px) brightness(0.68) saturate(0.82)'
@@ -304,6 +327,19 @@ export function SystemStage({
             background: 'radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.62) 100%)',
             opacity: entered ? 0.92 : 1,
             transition: `opacity ${durFade} ease`,
+          }}
+        />
+        <div
+          className="bg-hw-radial"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: entered
+              ? 'transparent'
+              : `radial-gradient(ellipse 42% 54% at ${placementX}% ${placementY}%, rgba(125,249,255,0.08) 0%, rgba(125,249,255,0.04) 22%, transparent 62%)`,
+            opacity: entered ? 0 : 1,
+            transition: `opacity ${durFade} ease`,
+            pointerEvents: 'none',
           }}
         />
         <div
@@ -333,198 +369,258 @@ export function SystemStage({
         />
       </div>
 
-      {/* HARDWARE FRAME – shared coordinate system exactly matching contain hardware image */}
-      {frame.ready && (
-        <div
-          className="hardware-frame"
-          data-frame="true"
-          style={{
-            position: 'absolute',
-            left: frame.left,
-            top: frame.top,
-            width: frame.width,
-            height: frame.height,
-            zIndex: 2,
-            transform: `translateZ(0) ${entered ? 'scale(1) translateY(0px)' : showGuides ? 'scale(0.94) translateY(6px)' : 'scale(0.92) translateY(14px)'}`,
-            transformOrigin: 'center',
-            opacity: entered ? 1 : showGuides ? 0.22 : 0,
-            transition: `opacity ${durFade} cubic-bezier(0.16,1,0.3,1), transform ${durHw} cubic-bezier(0.16,1,0.3,1)`,
-            willChange: 'opacity, transform',
-            overflow: 'visible',
-            pointerEvents: 'none',
-          }}
-        >
-          {/* 2. gameplay regions – inside frame – razor sharp when entered */}
+      {/* SHOWROOM WRAPPER – outer presentation transform preserves inner calibration */}
+      <div
+        ref={showroomRef}
+        className="hardware-showroom-wrapper"
+        data-entered={entered ? '1' : '0'}
+        style={{
+          position: 'absolute',
+          left: wrapperLeft,
+          top: wrapperTop,
+          width: entered ? '92vw' : wrapperMaxW,
+          height: entered ? '88vh' : wrapperMaxH,
+          maxWidth: entered ? '92vw' : wrapperMaxW,
+          maxHeight: entered ? '88vh' : wrapperMaxH,
+          transform: wrapperTransform,
+          transformOrigin: 'center',
+          zIndex: 2,
+          transition: `left ${durTrans} cubic-bezier(0.16,1,0.3,1), top ${durTrans} cubic-bezier(0.16,1,0.3,1), transform ${durHw} cubic-bezier(0.16,1,0.3,1), width ${durTrans} cubic-bezier(0.16,1,0.3,1), height ${durTrans} cubic-bezier(0.16,1,0.3,1)`,
+          willChange: 'transform, left, top',
+          overflow: 'visible',
+          pointerEvents: 'none',
+        }}
+      >
+        {frame.ready && (
           <div
-            className="layer layer-gameplay"
+            className="hardware-frame"
+            data-frame="true"
             style={{
               position: 'absolute',
-              inset: 0,
-              zIndex: mediaZ,
+              left: frame.left,
+              top: frame.top,
+              width: frame.width,
+              height: frame.height,
+              zIndex: 2,
+              transform: `translateZ(0) scale(1) translateY(0px)`,
+              transformOrigin: 'center',
+              opacity: 1,
+              transition: `opacity ${durFade} cubic-bezier(0.16,1,0.3,1), transform ${durHw} cubic-bezier(0.16,1,0.3,1)`,
+              willChange: 'opacity, transform',
+              overflow: 'visible',
               pointerEvents: 'none',
-              transform: 'translateZ(0)',
-              // stays sharp – no blur
-              filter: 'none',
             }}
           >
-            {config.gameplayRegions.map(region => {
-              const src = sourceMap.get(region.id)
-              const maskUrl = screenMaskForRegion(region.id)
-              const fitMode = (region as any).fit as string | undefined
-              const objectFit = fitToObjectFit(fitMode)
-              const corner = cornerRadiusToCss((region as any).cornerRadius)
-              const rz = (region as any).zIndex ?? undefined
+            <div
+              className="layer layer-gameplay"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: mediaZ,
+                pointerEvents: 'none',
+                transform: 'translateZ(0)',
+                filter: 'none',
+              }}
+            >
+              {config.gameplayRegions.map(region => {
+                const src = sourceMap.get(region.id)
+                const maskUrl = screenMaskForRegion(region.id)
+                const fitMode = (region as any).fit as string | undefined
+                const objectFit = fitToObjectFit(fitMode)
+                const corner = cornerRadiusToCss((region as any).cornerRadius)
+                const rz = (region as any).zIndex ?? undefined
 
-              const maskStyle: React.CSSProperties = maskUrl
-                ? ({
-                    WebkitMaskImage: `url(${maskUrl})`,
-                    maskImage: `url(${maskUrl})`,
-                    WebkitMaskSize: 'cover',
-                    maskSize: 'cover',
-                    WebkitMaskRepeat: 'no-repeat',
-                    maskRepeat: 'no-repeat',
-                    WebkitMaskPosition: 'center',
-                    maskPosition: 'center',
-                  } as any)
-                : {}
+                const maskStyle: React.CSSProperties = maskUrl
+                  ? ({
+                      WebkitMaskImage: `url(${maskUrl})`,
+                      maskImage: `url(${maskUrl})`,
+                      WebkitMaskSize: 'cover',
+                      maskSize: 'cover',
+                      WebkitMaskRepeat: 'no-repeat',
+                      maskRepeat: 'no-repeat',
+                      WebkitMaskPosition: 'center',
+                      maskPosition: 'center',
+                    } as any)
+                  : {}
 
-              const isVideo = src?.mediaType === 'video'
+                const isVideo = src?.mediaType === 'video'
+                const hasRealMedia = !!src?.url
 
-              return (
+                return (
+                  <div
+                    key={region.id}
+                    className={`gameplay-region region-${region.id}`}
+                    style={{
+                      position: 'absolute',
+                      left: `${region.x}%`,
+                      top: `${region.y}%`,
+                      width: `${region.width}%`,
+                      height: `${region.height}%`,
+                      aspectRatio: region.aspectRatio ? `${region.aspectRatio}` : undefined,
+                      overflow: 'hidden',
+                      borderRadius: corner ?? 8,
+                      transform: 'translateZ(0)',
+                      zIndex: rz,
+                      border: showGuides ? '1px dashed rgba(125,249,255,0.45)' : undefined,
+                      background: showGuides ? 'rgba(125,249,255,0.06)' : 'transparent',
+                      boxShadow: showGuides ? '0 0 0 1px rgba(125,249,255,0.18) inset' : undefined,
+                      ...maskStyle,
+                    }}
+                    data-has-media={hasRealMedia ? '1' : '0'}
+                    data-storefront={!entered ? '1' : '0'}
+                  >
+                    {src?.url ? (
+                      isVideo ? (
+                        <video
+                          src={src.url}
+                          poster={src.posterUrl}
+                          muted
+                          loop
+                          playsInline
+                          autoPlay
+                          preload="metadata"
+                          style={{ width: '100%', height: '100%', objectFit, transform: 'translateZ(0)' }}
+                        />
+                      ) : (
+                        <img src={src.url} alt={src.alt || ''} style={{ width: '100%', height: '100%', objectFit, transform: 'translateZ(0)' }} decoding="async" loading="lazy" />
+                      )
+                    ) : showGuides ? (
+                      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', fontSize: 10, fontFamily: 'var(--crystal-mono, monospace)', color: 'rgba(125,249,255,0.7)', letterSpacing: '0.04em' }}>
+                        <span>{(region as any).label || region.id} • {fitMode || 'contain'} {region.width.toFixed(1)}%×{region.height.toFixed(1)}%</span>
+                      </div>
+                    ) : !entered ? (
+                      <div
+                        className="storefront-idle-glass"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          position: 'relative',
+                          overflow: 'hidden',
+                          borderRadius: corner ?? 8,
+                          background: theme === 'dark'
+                            ? 'linear-gradient(180deg, rgba(14,22,28,0.64) 0%, rgba(10,16,22,0.72) 52%, rgba(8,12,18,0.78) 100%)'
+                            : 'linear-gradient(180deg, rgba(242,248,255,0.72) 0%, rgba(228,236,250,0.78) 54%, rgba(216,228,244,0.82) 100%)',
+                          backdropFilter: 'blur(18px) brightness(0.92) saturate(1.06)',
+                          WebkitBackdropFilter: 'blur(18px) brightness(0.92) saturate(1.06)',
+                          border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.10)' : 'rgba(90,170,255,0.12)'}`,
+                          boxShadow: theme === 'dark'
+                            ? 'inset 0 1px 0 rgba(255,255,255,0.06), inset 0 0 40px rgba(125,249,255,0.06), 0 2px 16px rgba(0,0,0,0.28)'
+                            : 'inset 0 1px 0 rgba(255,255,255,0.72), inset 0 0 32px rgba(90,170,255,0.06), 0 2px 12px rgba(18,26,44,0.08)',
+                        }}
+                      >
+                        <div style={{ position: 'absolute', inset: 0, background: theme === 'dark' ? 'radial-gradient(ellipse 72% 48% at 32% 18%, rgba(125,249,255,0.14), transparent 62%)' : 'radial-gradient(ellipse 72% 48% at 32% 18%, rgba(90,170,255,0.12), transparent 64%)', opacity: 0.9 }} />
+                        <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 1, background: `linear-gradient(90deg, transparent, ${theme === 'dark' ? 'rgba(125,249,255,0.22)' : 'rgba(90,170,255,0.22)'}, transparent)`, opacity: 0.8 }} />
+                        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', opacity: 0.42 }}>
+                          <div style={{ width: 26, height: 26, borderRadius: '50%', border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.22)' : 'rgba(90,170,255,0.22)'}`, boxShadow: theme === 'dark' ? '0 0 18px rgba(125,249,255,0.18)' : '0 0 12px rgba(90,170,255,0.14)' }} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          display: 'grid',
+                          placeItems: 'center',
+                          background: theme === 'dark' ? 'rgba(8,12,18,0.52)' : 'rgba(242,246,255,0.66)',
+                          fontSize: 11,
+                          color: theme === 'dark' ? 'rgba(230,244,255,0.42)' : 'rgba(18,26,44,0.42)',
+                          fontFamily: 'var(--crystal-mono, monospace)',
+                        }}
+                      >
+                        <span>no media</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {physicalUrl && (physicalConfig as any) && (
+              <div className="layer layer-physical" style={{ position: 'absolute', inset: 0, zIndex: physicalZ, pointerEvents: 'none', transform: 'translateZ(0)', filter: 'none' }}>
+                <img
+                  src={physicalUrl}
+                  alt=""
+                  style={{
+                    ...resolvePhysicalMediaTransform((physicalConfig as any)?.transform),
+                    ...(slotMask
+                      ? ({
+                          WebkitMaskImage: `url(${slotMask})`,
+                          maskImage: `url(${slotMask})`,
+                          WebkitMaskSize: 'cover',
+                          maskSize: 'cover',
+                        } as any)
+                      : {}),
+                    filter: 'drop-shadow(0 12px 24px rgba(0,0,0,0.55))',
+                  }}
+                  loading="lazy"
+                  decoding="async"
+                />
+              </div>
+            )}
+
+            {hwDisplayUrl ? (
+              <div className="layer layer-hardware" style={{ position: 'absolute', inset: 0, zIndex: foregroundZ, pointerEvents: 'none', transform: 'translateZ(0)', filter: 'none' }}>
+                <img
+                  src={hwDisplayUrl}
+                  alt=""
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    display: 'block',
+                    transform: 'translateZ(0)',
+                    filter: 'drop-shadow(0 20px 60px rgba(0,0,0,0.65)) drop-shadow(0 0 0.5px rgba(255,255,255,0.15))',
+                  }}
+                  decoding="async"
+                  loading="eager"
+                />
+                {showGuides && hwAlt && (
+                  <div style={{ position: 'absolute', left: 12, top: 12, fontSize: 10, color: 'rgba(255,255,255,0.6)', background: 'rgba(0,0,0,0.5)', padding: '4px 8px', borderRadius: 6 }}>{'alt: ' + hwAlt.split('/').pop()}</div>
+                )}
+              </div>
+            ) : showGuides ? (
+              <div className="layer layer-hardware-empty" style={{ position: 'absolute', inset: 0, zIndex: foregroundZ, pointerEvents: 'none', display: 'grid', placeItems: 'center' }}>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--crystal-mono, monospace)', border: '1px dashed rgba(255,255,255,0.18)', padding: '10px 16px', borderRadius: 8, background: 'rgba(0,0,0,0.28)' }}>
+                  background-only • no hardware foreground calibrated for {(config as any).systemId}
+                </div>
+              </div>
+            ) : null}
+
+            {showGuides && (
+              <>
                 <div
-                  key={region.id}
-                  className={`gameplay-region region-${region.id}`}
+                  className="frame-guide"
                   style={{
                     position: 'absolute',
-                    left: `${region.x}%`,
-                    top: `${region.y}%`,
-                    width: `${region.width}%`,
-                    height: `${region.height}%`,
-                    aspectRatio: region.aspectRatio ? `${region.aspectRatio}` : undefined,
-                    overflow: 'hidden',
-                    borderRadius: corner ?? 8,
-                    transform: 'translateZ(0)',
-                    zIndex: rz,
-                    border: showGuides ? '1px dashed rgba(125,249,255,0.45)' : undefined,
-                    background: showGuides ? 'rgba(125,249,255,0.06)' : 'transparent',
-                    boxShadow: showGuides ? '0 0 0 1px rgba(125,249,255,0.18) inset' : undefined,
-                    ...maskStyle,
+                    inset: 0,
+                    border: '1px dashed rgba(125,249,255,0.35)',
+                    pointerEvents: 'none',
+                    borderRadius: 4,
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: -18,
+                    fontSize: 10,
+                    fontFamily: 'var(--crystal-mono, monospace)',
+                    color: 'rgba(125,249,255,0.7)',
+                    background: 'rgba(0,0,0,0.55)',
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  {src?.url ? (
-                    isVideo ? (
-                      <video
-                        src={src.url}
-                        poster={src.posterUrl}
-                        muted
-                        loop
-                        playsInline
-                        autoPlay
-                        preload="metadata"
-                        style={{ width: '100%', height: '100%', objectFit, transform: 'translateZ(0)' }}
-                      />
-                    ) : (
-                      <img src={src.url} alt={src.alt || ''} style={{ width: '100%', height: '100%', objectFit, transform: 'translateZ(0)' }} decoding="async" loading="lazy" />
-                    )
-                  ) : showGuides ? (
-                    <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', fontSize: 10, fontFamily: 'var(--crystal-mono, monospace)', color: 'rgba(125,249,255,0.7)', letterSpacing: '0.04em' }}>
-                      <span>{(region as any).label || region.id} • {fitMode || 'contain'} {region.width.toFixed(1)}%×{region.height.toFixed(1)}%</span>
-                    </div>
-                  ) : null}
+                  {`frame ${frame.width.toFixed(0)}×${frame.height.toFixed(0)} • ${frame.isFull ? 'full (no hw)' : `${naturalSize ? `${naturalSize.w}×${naturalSize.h} src` : 'contain'}`} • ${config.systemId} • showroom x${placementX}% s${placementScale} → lib • ${entered ? 'library sharp' : 'storefront showroom hero'}`}
                 </div>
-              )
-            })}
+              </>
+            )}
           </div>
+        )}
+      </div>
 
-          {/* 3. physical media – inside frame – sharp */}
-          {physicalUrl && (physicalConfig as any) && (
-            <div className="layer layer-physical" style={{ position: 'absolute', inset: 0, zIndex: physicalZ, pointerEvents: 'none', transform: 'translateZ(0)', filter: 'none' }}>
-              <img
-                src={physicalUrl}
-                alt=""
-                style={{
-                  ...resolvePhysicalMediaTransform((physicalConfig as any)?.transform),
-                  ...(slotMask
-                    ? ({
-                        WebkitMaskImage: `url(${slotMask})`,
-                        maskImage: `url(${slotMask})`,
-                        WebkitMaskSize: 'cover',
-                        maskSize: 'cover',
-                      } as any)
-                    : {}),
-                  filter: 'drop-shadow(0 12px 24px rgba(0,0,0,0.55))',
-                }}
-                loading="lazy"
-                decoding="async"
-              />
-            </div>
-          )}
-
-          {/* 4. hardware foreground – inside frame, exactly fills frame – razor sharp */}
-          {hwDisplayUrl ? (
-            <div className="layer layer-hardware" style={{ position: 'absolute', inset: 0, zIndex: foregroundZ, pointerEvents: 'none', transform: 'translateZ(0)', filter: 'none' }}>
-              <img
-                src={hwDisplayUrl}
-                alt=""
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'contain',
-                  display: 'block',
-                  transform: 'translateZ(0)',
-                  filter: 'drop-shadow(0 20px 60px rgba(0,0,0,0.65)) drop-shadow(0 0 0.5px rgba(255,255,255,0.15))',
-                }}
-                decoding="async"
-                loading="eager"
-              />
-              {showGuides && hwAlt && (
-                <div style={{ position: 'absolute', left: 12, top: 12, fontSize: 10, color: 'rgba(255,255,255,0.6)', background: 'rgba(0,0,0,0.5)', padding: '4px 8px', borderRadius: 6 }}>{'alt: ' + hwAlt.split('/').pop()}</div>
-              )}
-            </div>
-          ) : showGuides ? (
-            <div className="layer layer-hardware-empty" style={{ position: 'absolute', inset: 0, zIndex: foregroundZ, pointerEvents: 'none', display: 'grid', placeItems: 'center' }}>
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--crystal-mono, monospace)', border: '1px dashed rgba(255,255,255,0.18)', padding: '10px 16px', borderRadius: 8, background: 'rgba(0,0,0,0.28)' }}>
-                background-only • no hardware foreground calibrated for {(config as any).systemId}
-              </div>
-            </div>
-          ) : null}
-
-          {/* frame guide for QA */}
-          {showGuides && (
-            <>
-              <div
-                className="frame-guide"
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  border: '1px dashed rgba(125,249,255,0.35)',
-                  pointerEvents: 'none',
-                  borderRadius: 4,
-                }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  top: -18,
-                  fontSize: 10,
-                  fontFamily: 'var(--crystal-mono, monospace)',
-                  color: 'rgba(125,249,255,0.7)',
-                  background: 'rgba(0,0,0,0.55)',
-                  padding: '2px 6px',
-                  borderRadius: 4,
-                  pointerEvents: 'none',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {`frame ${frame.width.toFixed(0)}×${frame.height.toFixed(0)} • ${frame.isFull ? 'full (no hw)' : `${naturalSize ? `${naturalSize.w}×${naturalSize.h} src` : 'contain'}`} • ${config.systemId} • ${entered ? 'library sharp' : 'storefront hidden'}`}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* 5. UI chrome – full viewport floating */}
       <div
         className="layer layer-chrome"
         style={{
