@@ -137,10 +137,10 @@ describe("V8.6C3.1 – DiscoverView source ownership", () => {
     const openIdx = txt.indexOf('data-testid="open-vimm"')
     expect(openIdx).toBeGreaterThan(0)
     const surrounding = txt.slice(Math.max(0, openIdx - 600), openIdx + 1200)
-    expect(surrounding.includes("OPEN ON VIMM")).toBe(true)
+    expect(surrounding.includes("OPEN ON ROMSFUN")).toBe(true)
     // secondary button label must appear after data-testid
     const afterOpenIdx = txt.slice(openIdx, openIdx + 1200)
-    expect(afterOpenIdx.includes("OPEN ON VIMM")).toBe(true)
+    expect(afterOpenIdx.includes("OPEN ON ROMSFUN")).toBe(true)
     const getGameBadges = (txt.match(/GET GAME/g) || []).length
     expect(getGameBadges).toBeGreaterThanOrEqual(1)
   })

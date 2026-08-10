@@ -48,6 +48,11 @@ pub fn is_allowed_first_party_host(host: &str) -> bool {
     lower == "romsfun.com" || lower == "www.romsfun.com"
 }
 
+fn is_allowed_navigation_url(url: &Url) -> bool {
+    (url.scheme() == "about" && url.path() == "blank")
+        || url.host_str().is_some_and(is_allowed_first_party_host)
+}
+
 fn is_allowed_initial_url(url_str: &str) -> Result<Url, String> {
     // Strict pre-parse traversal check – raw string must not contain .. or backslash, Url crate normalizes ../
     if url_str.contains("..") {
@@ -349,7 +354,7 @@ pub struct ProviderSurfaceOpenRequest {
 }
 
 #[tauri::command]
-pub fn create_provider_surface(
+pub async fn create_provider_surface(
     app: AppHandle,
     request: ProviderSurfaceOpenRequest,
 ) -> Result<ProviderSurfaceOpenResult, String> {
@@ -453,8 +458,10 @@ pub fn create_provider_surface(
         WebviewUrl::External(initial_url_str.parse().map_err(|e| format!("URL_PARSE_FAILED: {}", e))?),
     )
     .on_navigation(move |url| {
-        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-        if is_allowed_first_party_host(&host) {
+        // WebView2 creates a child surface at about:blank before committing the
+        // requested external URL. Allow that single internal bootstrap page;
+        // otherwise the guard prevents the first real ROMsFun navigation.
+        if is_allowed_navigation_url(url) {
             let evt = ProviderSurfaceEvent {
                 type_: "NAVIGATED".to_string(),
                 session_id: nav_session.clone(),
@@ -1030,14 +1037,15 @@ pub fn create_provider_surface(
         }
     });
 
-    let add_res = main_window.add_child(builder, webview_position, webview_size);
-
-    if let Err(e) = add_res {
-        cleanup_session_dir(&session_id);
-        return Err(format!(
-            "WEBVIEW_CREATE_FAILED: {} – required 'unstable' feature must be enabled",
-            e
-        ));
+    match main_window.add_child(builder, webview_position, webview_size) {
+        Ok(_) => {}
+        Err(e) => {
+            cleanup_session_dir(&session_id);
+            return Err(format!(
+                "WEBVIEW_CREATE_FAILED: {} – required 'unstable' feature must be enabled",
+                e
+            ));
+        }
     }
 
     {
@@ -1202,6 +1210,22 @@ mod tests {
         assert!(!is_allowed_first_party_host("galaxylanesandgames.com"));
         assert!(!is_allowed_first_party_host("evilromsfun.com"));
         assert!(!is_allowed_first_party_host("romsfun.com.evil.com"));
+    }
+
+    #[test]
+    fn test_navigation_allows_only_bootstrap_or_first_party() {
+        assert!(is_allowed_navigation_url(
+            &Url::parse("about:blank").unwrap()
+        ));
+        assert!(is_allowed_navigation_url(
+            &Url::parse("https://romsfun.com/roms/test").unwrap()
+        ));
+        assert!(!is_allowed_navigation_url(
+            &Url::parse("about:srcdoc").unwrap()
+        ));
+        assert!(!is_allowed_navigation_url(
+            &Url::parse("https://galaxylanesandgames.com/").unwrap()
+        ));
     }
 
     #[test]

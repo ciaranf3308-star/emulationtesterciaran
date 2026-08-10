@@ -12,7 +12,7 @@
       {
         "center": true,
         "decorations": false,
-        "fullscreen": false,
+        "fullscreen": true,
         "height": 1080,
         "label": "main",
         "resizable": true,

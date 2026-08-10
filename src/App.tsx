@@ -2046,11 +2046,11 @@ function AppInner() {
             >
               <div>
                 <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 700, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  DISCOVER — VIMM'S LAIR CATALOG
-                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 8px', borderRadius: 999, background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)', border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.16)'}`, color: theme === 'dark' ? '#7df9ff' : '#295fdc' }}>CATALOG ONLY • NO ROM FETCH</span>
+                  DISCOVER — ROMSFUN
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 8px', borderRadius: 999, background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)', border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.16)'}`, color: theme === 'dark' ? '#7df9ff' : '#295fdc' }}>IN-APP PROVIDER • SAFE DOWNLOAD CAPTURE</span>
                 </div>
                 <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, lineHeight: 1.5, marginTop: 6, maxWidth: 560 }}>
-                  Catalog-only reference to Vimm's Lair Vault. No shop/cart/price, no file URLs handled inside Crystal. Opens externally via Tauri shell native validation (https://vimm.net/vault/{'{numericId}'}) only.
+                  Browse ROMsFun inside Crystal. The provider owns its pages and controls; Crystal captures only supported downloads into isolated staging before the existing safe importer runs.
                 </div>
               </div>
               <button

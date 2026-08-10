@@ -402,7 +402,7 @@ export function SystemLanding({
               </span>
               <span style={{ fontWeight: 600 }}>DISCOVER</span>
               <span aria-hidden style={{ width: 1, height: 9, background: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.10)' }} />
-              <span style={{ opacity: 0.62, fontWeight: 500 }}>VIMM CATALOG</span>
+              <span style={{ opacity: 0.62, fontWeight: 500 }}>ROMSFUN CATALOG</span>
             </button>
           )}
 

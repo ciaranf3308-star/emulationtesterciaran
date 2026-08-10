@@ -574,6 +574,14 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             })?;
             let name = file.name().to_string();
 
+            // Validate archive path components before Windows is asked to create
+            // them. Otherwise an invalid name such as `game<bad>.iso` fails later
+            // as a generic ZIP_WRITE_FAILED instead of our fail-closed error.
+            if let Err(e) = validate_windows_dest_rel(Path::new(&name)) {
+                cleanup_staging(&staging_dir);
+                return Err(e);
+            }
+
             if file.name().ends_with('/') || file.name().ends_with('\\') {
                 let out_path = staging_dir.join(&name);
                 ensure_inside_staging(&staging_dir, &out_path).map_err(|e| {
@@ -1203,6 +1211,10 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             cleanup_staging(&staging_dir);
             return Err(e);
         }
+
+        // Rebuild from parsed components so archive/CUE forward slashes become
+        // native Windows separators in returned exact destination paths.
+        let rel: PathBuf = rel.components().collect();
 
         let dest_path = rom_dir.join(&rel);
         if !dest_path.starts_with(&rom_dir) {

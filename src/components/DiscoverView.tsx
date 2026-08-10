@@ -1,5 +1,5 @@
 /**
- * Crystal Discovery – Vimm's Lair catalog reference
+ * Crystal Discovery – ROMsFun catalog reference
  * Premium gaming OS: graphite / silver / acrylic glass / cool electric cyan accent
  * Controller-first, collectible hardware culture presentation – NOT boutique-hotel hospitality
  *
@@ -490,7 +490,7 @@ export function DiscoverView({
                 border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
                 color: isDark ? 'rgba(230,244,255,0.88)' : 'rgba(18,26,44,0.78)',
                 fontWeight: 700,
-              }}>VIMM'S LAIR • CATALOG ONLY</span>
+              }}>ROMSFUN • IN-APP PROVIDER</span>
             </div>
           </div>
         </div>
@@ -526,7 +526,7 @@ export function DiscoverView({
           boxShadow: isDark ? '0 6px 18px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.06)' : '0 6px 16px rgba(18,26,44,0.06), inset 0 1px 0 rgba(255,255,255,0.9)',
         }}>
           <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.56, whiteSpace: 'nowrap' }}>
-            {systemFullName.toUpperCase()} — Search Vimm's Lair
+            {systemFullName.toUpperCase()} — Search ROMsFun
           </span>
           <input
             ref={searchInputRef}
@@ -563,13 +563,13 @@ export function DiscoverView({
             border: `1px solid ${isDark ? 'rgba(255,180,120,0.18)' : 'rgba(180,120,20,0.18)'}`,
             fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.5,
           }}>
-            <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>VIMM'S LAIR UNAVAILABLE</div>
-            <div style={{ opacity: 0.72, marginBottom: 10 }}>Network offline or Vimm's Lair unreachable. You can still open the vault in your browser.</div>
+            <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>ROMSFUN UNAVAILABLE</div>
+            <div style={{ opacity: 0.72, marginBottom: 10 }}>Network offline or ROMsFun is currently unreachable.</div>
             <button onClick={handleOpenVaultRoot} style={{
               padding: '8px 14px', borderRadius: 999, border: 'none',
               background: isDark ? '#7df9ff' : '#4a86ff', color: isDark ? '#041018' : '#fff',
               fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-            }}>OPEN VIMM'S LAIR IN BROWSER</button>
+            }}>OPEN ROMSFUN</button>
           </div>
         )}
         {schemaChanged && (
@@ -580,12 +580,12 @@ export function DiscoverView({
             fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.5,
           }}>
             <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>CATALOG FORMAT CHANGED</div>
-            <div style={{ opacity: 0.72, marginBottom: 10 }}>Crystal's catalog parser no longer matches Vimm's layout. Please update Crystal or open externally.</div>
+            <div style={{ opacity: 0.72, marginBottom: 10 }}>Crystal's catalog parser no longer matches ROMsFun. Please update Crystal or open the provider page.</div>
             <button onClick={handleOpenVaultRoot} style={{
               padding: '8px 14px', borderRadius: 999, border: 'none',
               background: isDark ? '#7df9ff' : '#4a86ff', color: isDark ? '#041018' : '#fff',
               fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-            }}>OPEN VIMM'S LAIR IN BROWSER</button>
+            }}>OPEN ROMSFUN</button>
           </div>
         )}
         {!offline && !schemaChanged && !searching && debounced && results.length === 0 && (
@@ -595,7 +595,7 @@ export function DiscoverView({
         )}
         {!offline && !schemaChanged && !searching && !debounced && (
           <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.42, padding: '24px 4px' }}>
-            Type to search {systemFullName} on Vimm's Lair – empty query returns empty locally (no network). Future browse-all will use verified letter route /vault/{'{SYSTEM}/{LETTER}'}.
+            Type to search {systemFullName} on ROMsFun. Enter a title to begin.
           </div>
         )}
         {!offline && !schemaChanged && results.map((r, idx) => {
@@ -736,7 +736,7 @@ export function DiscoverView({
 
                 {(detailFull?.description || detailFull?.title) && (
                   <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, lineHeight: 1.5, opacity: 0.82, maxWidth: '56ch' }}>
-                    {detailFull?.description || 'Catalog entry from Vimm\'s Lair – reference metadata preserved. Crystal remains catalog-only, no file fetch.'}
+                    {detailFull?.description || 'ROMsFun catalog entry. GET GAME opens the provider page securely inside Crystal.'}
                   </div>
                 )}
 
@@ -808,7 +808,7 @@ export function DiscoverView({
                       display: 'flex', alignItems: 'center', gap: 8,
                     }}
                   >
-                    OPEN ON VIMM'S LAIR
+                    OPEN ON ROMSFUN
                   </button>
                   <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.52, maxWidth: 220 }}>
                     {canonicalVaultUrl(selectedDetail.id)}
@@ -824,7 +824,7 @@ export function DiscoverView({
                     border: `1px solid ${isDark ? 'rgba(255,120,120,0.18)' : 'rgba(255,120,120,0.22)'}`,
                     fontFamily: 'var(--crystal-mono)', fontSize: 10.5,
                   }}>
-                    CATALOG ENTRY AVAILABLE • DOWNLOAD AVAILABILITY UNAVAILABLE — preserved for reference. Open externally to see Vimm's note.
+                    CATALOG ENTRY AVAILABLE • DOWNLOAD AVAILABILITY UNAVAILABLE — preserved for reference. Open ROMsFun to review the provider notice.
                   </div>
                 )}
               </div>
