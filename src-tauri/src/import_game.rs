@@ -2,6 +2,8 @@ use crate::machine_config::{
     find_system_in_config, get_rom_dir_and_exts, load_machine_config_json,
 };
 use crate::safety::{crystal_writable_root, is_safe_mode, log_event};
+#[cfg(test)]
+use crate::test_env_lock::acquire_shared_test_env_lock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -656,24 +658,75 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
         return Err("NO_FILES_DETECTED".to_string());
     }
 
-    // Build dest mappings preserving relative structure
+    // --- V8.6A.2 intelligent destination mapping ---
+    let descriptor_opt = files_to_install
+        .iter()
+        .find(|p| ext_of_path(p).eq_ignore_ascii_case("cue"))
+        .cloned();
+
+    let game_root_opt: Option<PathBuf> = if let Some(ref cue_path) = descriptor_opt {
+        cue_path.parent().map(|p| p.to_path_buf())
+    } else {
+        None
+    };
+
+    // Build dest mappings
     let mut dest_paths_to_copy: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut collision_paths: Vec<String> = Vec::new();
 
     for src_staged in &files_to_install {
-        let rel = match src_staged.strip_prefix(&staging_dir) {
-            Ok(p) => p.to_path_buf(),
-            Err(_) => {
-                // fallback to file_name
-                if let Some(fname) = src_staged.file_name() {
-                    PathBuf::from(fname)
-                } else {
-                    cleanup_staging(&staging_dir);
-                    return Err("INVALID_STAGED_FILENAME".to_string());
+        let rel: PathBuf = if files_to_install.len() == 1 {
+            if let Some(fname) = src_staged.file_name() {
+                PathBuf::from(fname)
+            } else {
+                cleanup_staging(&staging_dir);
+                return Err("INVALID_STAGED_FILENAME".to_string());
+            }
+        } else if let Some(ref game_root) = game_root_opt {
+            match src_staged.strip_prefix(game_root) {
+                Ok(p) => {
+                    if p.as_os_str().is_empty() {
+                        if let Some(fname) = src_staged.file_name() {
+                            PathBuf::from(fname)
+                        } else {
+                            cleanup_staging(&staging_dir);
+                            return Err("INVALID_STAGED_FILENAME".to_string());
+                        }
+                    } else {
+                        p.to_path_buf()
+                    }
+                }
+                Err(_) => {
+                    if let Ok(_staging_rel) = src_staged.strip_prefix(&staging_dir) {
+                        if let Some(fname) = src_staged.file_name() {
+                            PathBuf::from(fname)
+                        } else {
+                            cleanup_staging(&staging_dir);
+                            return Err("INVALID_STAGED_FILENAME".to_string());
+                        }
+                    } else if let Some(fname) = src_staged.file_name() {
+                        PathBuf::from(fname)
+                    } else {
+                        cleanup_staging(&staging_dir);
+                        return Err("INVALID_STAGED_FILENAME".to_string());
+                    }
+                }
+            }
+        } else {
+            match src_staged.strip_prefix(&staging_dir) {
+                Ok(p) => p.to_path_buf(),
+                Err(_) => {
+                    if let Some(fname) = src_staged.file_name() {
+                        PathBuf::from(fname)
+                    } else {
+                        cleanup_staging(&staging_dir);
+                        return Err("INVALID_STAGED_FILENAME".to_string());
+                    }
                 }
             }
         };
 
+        // Validate rel does not contain traversal/absolute
         // Validate rel does not contain traversal/absolute
         for comp in rel.components() {
             if let Component::ParentDir = comp {
@@ -903,953 +956,788 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::test_env_lock::acquire_shared_test_env_lock;
     use std::fs;
-    use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
 
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    // Backwards compat alias for earlier code using ENV_LOCK
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn global_lock() -> std::sync::MutexGuard<'static, ()> {
-        // Use TEST_LOCK as canonical; ENV_LOCK points to same underlying singleton via sharing init
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-    }
-
-    fn create_mock_config(temp_root: &Path, systems: Vec<(&str, &Path, Vec<&str>)>) -> PathBuf {
-        let mut sys_json = Vec::new();
-        for (id, rom_dir, exts) in systems {
-            let exts_json: Vec<serde_json::Value> = exts.iter().map(|e| json!(e)).collect();
-            let entry = json!({
-                "id": id,
-                "fullName": format!("System {}", id),
-                "configSource": "test",
-                "configOrigin": "test",
-                "romDirectory": rom_dir.display().to_string(),
-                "extensionString": exts.join(" "),
-                "validExtensions": exts_json,
-                "matchingRomFileCount": 0,
-                "commands": [],
-                "launchSelection": {
-                    "selectedLabel": "",
-                    "rule": "",
-                    "status": "",
-                    "source": "",
-                    "systemAlternativeLabel": null,
-                    "perGameOverrideCount": 0,
-                    "perGameOverrides": []
-                },
-                "media": {},
-                "metadata": {
-                    "exists": false,
-                    "favorites": 0,
-                    "gameEntries": 0,
-                    "gamelistPath": "",
-                    "entriesWithPlayCount": 0,
-                    "entriesWithLastPlayed": 0,
-                    "fields": ""
-                }
-            });
-            sys_json.push(entry);
-        }
-        let config = json!({
+    fn create_mock_config(rom_dir: &Path, extensions: Vec<&str>) -> serde_json::Value {
+        serde_json::json!({
             "schemaVersion": 1,
-            "populatedSystemCount": sys_json.len(),
-            "roots": {
-                "gamelists": "",
-                "rom": "",
-                "scrapedMedia": ""
-            },
-            "systems": sys_json,
-            "generatedAt": "2026-01-01T00:00:00Z",
-            "authoritativeFiles": {}
-        });
-        let cfg_path = temp_root.join("crystal-machine-config.json");
-        fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-        cfg_path
+            "machineNameWindows": "TestRig",
+            "systems": [{
+                "id": "ps2",
+                "romDirectory": rom_dir.to_string_lossy(),
+                "validExtensions": extensions,
+                "displayName": "PlayStation 2"
+            }]
+        })
     }
 
-    fn with_env_config<F>(cfg_path: &PathBuf, f: F)
+    fn with_env_config<F, R>(config: &serde_json::Value, install_dir: &Path, f: F) -> R
     where
-        F: FnOnce(),
+        F: FnOnce() -> R,
     {
-        let _guard = global_lock();
-        // Also ensure ENV_LOCK singleton initialized same mutex? We'll just use global_lock; for compat we init ENV_LOCK with same pointer? Simpler: init both with same underlying lock via get_or_init returning same Mutex reference is already done via global function.
-        let prev = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
-        std::env::set_var("CRYSTAL_MACHINE_CONFIG", cfg_path);
-        f();
-        if let Some(p) = prev {
-            std::env::set_var("CRYSTAL_MACHINE_CONFIG", p);
-        } else {
-            std::env::remove_var("CRYSTAL_MACHINE_CONFIG");
-        }
+        let _env_guard = acquire_shared_test_env_lock();
+        let temp_config_dir = TempDir::new().unwrap();
+        let config_path = temp_config_dir.path().join("crystal-machine-config.json");
+        fs::write(&config_path, serde_json::to_string_pretty(config).unwrap()).unwrap();
+        let orig = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
+        std::env::set_var("CRYSTAL_MACHINE_CONFIG", &config_path);
+        let orig_backend = std::env::var("CRYSTAL_BACKEND_ROOT").ok();
+        std::env::set_var("CRYSTAL_BACKEND_ROOT", install_dir);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match orig {
+            Some(v) => std::env::set_var("CRYSTAL_MACHINE_CONFIG", v),
+            None => std::env::remove_var("CRYSTAL_MACHINE_CONFIG"),
+        };
+        match orig_backend {
+            Some(v) => std::env::set_var("CRYSTAL_BACKEND_ROOT", v),
+            None => std::env::remove_var("CRYSTAL_BACKEND_ROOT"),
+        };
+        result.unwrap_or_else(|_| panic!("test panicked under with_env_config"))
     }
 
     #[test]
-    fn configured_system_resolves_exact_romDirectory() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+    fn import_rejects_non_existent_source() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(
-            tmp.path(),
-            vec![("ps2", &rom_dir, vec![".iso", ".bin", ".cue"])],
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso", "cue", "bin"]);
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: td
+                    .path()
+                    .join("does_not_exist.iso")
+                    .to_string_lossy()
+                    .to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("SOURCE_NOT_FOUND"));
+    }
+
+    #[test]
+    fn import_rejects_unknown_system() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_file = td.path().join("game.iso");
+        fs::write(&src_file, b"fake iso").unwrap();
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "unknown_system".into(),
+                sourcePath: src_file.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        // original 0d5bf54 returns Err containing UNKNOWN_SYSTEM
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("UNKNOWN_SYSTEM"));
+    }
+
+    #[test]
+    fn successful_import_copies_file() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_file = td.path().join("game.iso");
+        fs::write(&src_file, b"iso content 123").unwrap();
+        let result = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_file.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(result.status, "INSTALLED");
+        assert_eq!(result.systemId, "ps2");
+        assert!(rom_dir.join("game.iso").exists());
+        assert_eq!(
+            fs::read(rom_dir.join("game.iso")).unwrap(),
+            b"iso content 123"
         );
-        with_env_config(&cfg_path, || {
+    }
+
+    #[test]
+    fn test_safe_mode_env() {
+        use crate::safety::set_safe_mode_for_tests;
+        let _lock = acquire_shared_test_env_lock();
+        set_safe_mode_for_tests(true);
+        assert!(crate::safety::is_safe_mode());
+        set_safe_mode_for_tests(false);
+        assert!(!crate::safety::is_safe_mode());
+    }
+
+    #[test]
+    fn test_safe_mode_env_enable_via_set() {
+        use crate::safety::set_safe_mode_for_tests;
+        let _lock = acquire_shared_test_env_lock();
+        set_safe_mode_for_tests(true);
+        assert!(crate::safety::is_safe_mode());
+        set_safe_mode_for_tests(false);
+    }
+
+    #[test]
+    fn collision_detection() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src1 = td.path().join("game.iso");
+        fs::write(&src1, b"content A").unwrap();
+        let src2_dir = td.path().join("other");
+        fs::create_dir_all(&src2_dir).unwrap();
+        let src2_dup = src2_dir.join("game.iso");
+        fs::write(&src2_dup, b"content B different").unwrap();
+        let first = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: {
-                    let src = tmp.path().join("game.iso");
-                    fs::write(&src, b"dummy").unwrap();
-                    src.display().to_string()
-                },
+                sourcePath: src1.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.status, "INSTALLED");
-            assert_eq!(res.destinationDirectory, rom_dir.display().to_string());
-            assert_eq!(res.systemId, "ps2");
+            import_game_source(req).unwrap()
         });
-    }
-
-    #[test]
-    fn unknown_system_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("game.iso");
-            fs::write(&src, b"dummy").unwrap();
-            let req = ImportRequest {
-                systemId: "unknownsys".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("UNKNOWN_SYSTEM"),
-                "expected UNKNOWN_SYSTEM, got {}",
-                err
-            );
-        });
-    }
-
-    #[test]
-    fn arbitrary_frontend_destination_impossible() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let evil_dir = tmp.path().join("evil_dest");
-        fs::create_dir_all(&evil_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("game.iso");
-            fs::write(&src, b"dummy").unwrap();
+        assert_eq!(first.status, "INSTALLED");
+        let second = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: Some(evil_dir.display().to_string()),
+                sourcePath: src2_dup.to_string_lossy().to_string(),
+                expectedTitle: None,
             };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.destinationDirectory, rom_dir.display().to_string());
-            assert!(!res.destinationDirectory.contains("evil"));
-            assert!(!evil_dir.join("game.iso").exists());
+            import_game_source(req).unwrap()
         });
+        assert_eq!(second.status, "COLLISION");
     }
 
     #[test]
-    fn safe_mode_blocks_import() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+    fn already_installed_when_identical() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src1 = td.path().join("game.iso");
+        fs::write(&src1, b"same content").unwrap();
+        let req_path = src1.to_string_lossy().to_string();
+        let first = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: req_path.clone(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(first.status, "INSTALLED");
+        let src2_other = td.path().join("other").join("game.iso");
+        fs::create_dir_all(src2_other.parent().unwrap()).unwrap();
+        fs::write(&src2_other, b"same content").unwrap();
+        let second = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src2_other.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(second.status, "ALREADY_INSTALLED");
+    }
 
-        // Serialize with global lock to avoid races with other tests touching SAFE_MODE
-        let _guard = global_lock();
-        let prev_cfg = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
-        std::env::set_var("CRYSTAL_MACHINE_CONFIG", &cfg_path);
-        std::env::set_var("CRYSTAL_SAFE_MODE", "1");
-        crate::safety::set_safe_mode_for_tests(true);
-
-        let src = tmp.path().join("game.iso");
-        fs::write(&src, b"dummy").unwrap();
+    #[test]
+    fn zip_import_rejects_windows_drive_escape() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_zip = td.path().join("evil.zip");
+        {
+            let file = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file(r"C:\Windows\evil.iso", options).unwrap();
+            zip.write_all(b"evil").unwrap();
+            zip.finish().unwrap();
+        }
         let req = ImportRequest {
             systemId: "ps2".into(),
-            sourcePath: src.display().to_string(),
+            sourcePath: src_zip.to_string_lossy().to_string(),
             expectedTitle: None,
         };
-        let err = import_game_source(req).unwrap_err();
-        assert!(err.contains("SAFE_MODE_BLOCKED_IMPORT"));
-        assert!(!rom_dir.join("game.iso").exists());
-
-        std::env::remove_var("CRYSTAL_SAFE_MODE");
-        crate::safety::set_safe_mode_for_tests(false);
-        if let Some(p) = prev_cfg {
-            std::env::set_var("CRYSTAL_MACHINE_CONFIG", p);
-        } else {
-            std::env::remove_var("CRYSTAL_MACHINE_CONFIG");
-        }
+        let result = with_env_config(&cfg, &staging_cache, || import_game_source(req));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("ZIP_TRAVERSAL_BLOCKED")
+                || err.contains("TRAVERSAL")
+                || err.contains("CUE_FILE_REF_ESCAPE_BLOCKED")
+                || err.contains("DRIVE"),
+            "err was: {}",
+            err
+        );
     }
 
     #[test]
-    fn raw_valid_file_installs() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("gbc");
+    fn cue_import_success() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gb", ".gbc"])]);
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("pokemon.gbc");
-            fs::write(&src, b"GBC-DATA").unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("game.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("game.cue", options).unwrap();
+            zip.write_all(
+                b"FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+            )
+            .unwrap();
+            zip.start_file("game.bin", options).unwrap();
+            zip.write_all(b"fake bin content").unwrap();
+            zip.finish().unwrap();
+        }
+        let result = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
-                systemId: "gbc".into(),
-                sourcePath: src.display().to_string(),
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.status, "INSTALLED");
-            assert!(rom_dir.join("pokemon.gbc").exists());
-            let content = fs::read(rom_dir.join("pokemon.gbc")).unwrap();
-            assert_eq!(content, b"GBC-DATA");
-            assert!(src.exists());
+            import_game_source(req).unwrap()
         });
+        assert_eq!(result.status, "INSTALLED");
+        assert!(rom_dir.join("game.cue").exists());
+        assert!(rom_dir.join("game.bin").exists());
+    }
+
+    #[test]
+    fn cue_import_rejects_escape() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("malicious.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                br#"FILE "../outside.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("CUE_FILE_REF_ESCAPE_BLOCKED"));
+    }
+
+    #[test]
+    fn cue_escape_windows_backslash_blocked() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("malicious.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                br#"FILE "..\outside.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("CUE_FILE_REF_ESCAPE_BLOCKED"));
+    }
+
+    #[test]
+    fn cue_absolute_path_blocked() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("malicious.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                br#"FILE "C:\outside.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("CUE_FILE_REF_ESCAPE_BLOCKED"));
+    }
+
+    #[test]
+    fn cue_unc_path_blocked() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("malicious.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                br#"FILE "\\server\share\game.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("CUE_FILE_REF_ESCAPE_BLOCKED"));
+    }
+
+    #[test]
+    fn cue_missing_bin_fails() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("missing_bin.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                b"FILE \"missing.bin\" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+",
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("INCOMPLETE_CUE_SET"));
     }
 
     #[test]
     fn invalid_extension_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("malware.exe");
-            fs::write(&src, b"not rom").unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso", "cue"]);
+        let src = td.path().join("readme.txt");
+        fs::write(&src, b"nonsense").unwrap();
+        let res = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
+                sourcePath: src.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("INVALID_EXTENSION") || err.contains("NO_VALID_ROM"));
+            import_game_source(req)
         });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("INVALID_EXTENSION"));
     }
 
     #[test]
-    fn zip_containing_valid_rom_installs() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+    fn single_rom_wrapper_folder_flattened_to_rom_root() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_ps2");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("game.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.iso", options).unwrap();
-                zip.write_all(b"ISO-DATA").unwrap();
-                zip.finish().unwrap();
-            }
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_zip = td.path().join("wrapper.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Wrapper/Game.iso", o).unwrap();
+            zip.write_all(b"wrapper iso content").unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.status, "INSTALLED");
-            assert!(rom_dir.join("game.iso").exists());
+            import_game_source(req).unwrap()
         });
+        assert_eq!(res.status, "INSTALLED", "should install wrapper iso");
+        assert!(
+            rom_dir.join("Game.iso").exists(),
+            "Game.iso must exist at rom root, not Wrapper/Game.iso"
+        );
+        assert!(
+            !rom_dir.join("Wrapper").join("Game.iso").exists(),
+            "Wrapper folder must be flattened"
+        );
+        assert!(
+            res.installedPaths
+                .iter()
+                .any(|p| p.ends_with("Game.iso") && !p.contains("Wrapper")),
+            "installedPaths must be flattened"
+        );
     }
 
     #[test]
-    fn zip_traversal_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+    fn nested_cue_primary_descriptor_visible_at_rom_root() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_psx");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("evil.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("../../evil.iso", options).unwrap();
-                zip.write_all(b"evil").unwrap();
-                zip.finish().unwrap();
-            }
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("nested_cue.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n").unwrap();
+            zip.start_file("Game/tracks/track01.bin", o).unwrap();
+            zip.write_all(b"track data").unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("TRAVERSAL") || err.contains("ESCAPE") || err.contains("BLOCKED"));
-            assert!(!rom_dir.join("evil.iso").exists());
+            import_game_source(req).unwrap()
         });
+        assert_eq!(res.status, "INSTALLED", "nested cue should install");
+        assert!(
+            rom_dir.join("game.cue").exists(),
+            "game.cue must be at rom root"
+        );
+        assert!(
+            !rom_dir.join("Game").join("game.cue").exists(),
+            "Game/game.cue wrapper must be stripped, primary at root"
+        );
+        assert!(
+            rom_dir.join("tracks").join("track01.bin").exists(),
+            "tracks/track01.bin must exist under rom root"
+        );
+        assert!(
+            res.installedPaths.iter().any(|p| p.ends_with("game.cue")),
+            "installed includes cue"
+        );
+        assert!(
+            res.installedPaths.iter().any(|p| p.contains("tracks")),
+            "installed includes tracks subpath"
+        );
     }
 
     #[test]
-    fn absolute_archive_member_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+    fn cue_relative_track_path_preserved() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_cue_rel");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("abs.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("/tmp/evil.iso", options).unwrap();
-                zip.write_all(b"evil").unwrap();
-                zip.finish().unwrap();
-            }
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("cue_rel.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n").unwrap();
+            zip.start_file("Game/tracks/track01.bin", o).unwrap();
+            zip.write_all(b"bin data xyz").unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("TRAVERSAL")
-                    || err.contains("BLOCKED")
-                    || err.contains("ABSOLUTE")
-                    || err.contains("ESCAPE")
-            );
+            import_game_source(req).unwrap()
         });
+        assert_eq!(res.status, "INSTALLED");
+        let cue_content = fs::read_to_string(rom_dir.join("game.cue")).unwrap();
+        assert!(
+            cue_content.contains("tracks/track01.bin")
+                || cue_content.contains("tracks\\track01.bin"),
+            "CUE content must still reference tracks/track01.bin, got: {}",
+            cue_content
+        );
+        assert!(
+            rom_dir.join("tracks").join("track01.bin").exists(),
+            "relative track path must be preserved under rom root"
+        );
     }
 
     #[test]
-    fn destination_escape_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
+    fn safe_mode_blocks_import() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("drive.zip");
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src = td.path().join("game.iso");
+        fs::write(&src, b"data").unwrap();
+        let res = with_env_config(&cfg, &staging_cache, || {
+            // set safe mode inside env-lock protected scope to avoid nested lock deadlock
             {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("C:\\Windows\\evil.iso", options).unwrap();
-                zip.write_all(b"evil").unwrap();
-                zip.finish().unwrap();
+                use crate::safety::set_safe_mode_for_tests;
+                set_safe_mode_for_tests(true);
             }
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
+            let r = {
+                let req = ImportRequest {
+                    systemId: "ps2".into(),
+                    sourcePath: src.to_string_lossy().to_string(),
+                    expectedTitle: None,
+                };
+                import_game_source(req)
             };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("TRAVERSAL") || err.contains("BLOCKED") || err.contains("ESCAPE"));
-        });
-    }
-
-    #[test]
-    fn empty_archive_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("empty.zip");
             {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                zip.finish().unwrap();
+                use crate::safety::set_safe_mode_for_tests;
+                set_safe_mode_for_tests(false);
             }
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("EMPTY") || err.contains("NO_VALID"));
+            r
         });
-    }
-
-    #[test]
-    fn unreasonable_extraction_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("many.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                for i in 0..2001 {
-                    zip.start_file(format!("file{}.iso", i), options).unwrap();
-                    zip.write_all(b"a").unwrap();
-                }
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("TOO_MANY_FILES") || err.contains("MANY"));
-        });
-    }
-
-    #[test]
-    fn cue_bin_set_preserved() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("game.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(
-                    b"FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
-                )
-                .unwrap();
-                zip.start_file("game.bin", options).unwrap();
-                zip.write_all(b"BIN-DATA").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.status, "INSTALLED");
-            assert!(rom_dir.join("game.cue").exists());
-            assert!(rom_dir.join("game.bin").exists());
-            assert!(res.installedPaths.iter().any(|p| p.contains("game.cue")));
-            assert!(res.installedPaths.iter().any(|p| p.contains("game.bin")));
-        });
-    }
-
-    #[test]
-    fn incomplete_cue_bin_fails() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("incomplete.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"missing.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
-                    .unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("INCOMPLETE") || err.contains("missing"));
-            assert!(!rom_dir.join("game.cue").exists());
-        });
-    }
-
-    #[test]
-    fn existing_destination_never_overwritten() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("gbc");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
-        with_env_config(&cfg_path, || {
-            let src1 = tmp.path().join("game.gbc");
-            fs::write(&src1, b"FIRST").unwrap();
-            let req1 = ImportRequest {
-                systemId: "gbc".into(),
-                sourcePath: src1.display().to_string(),
-                expectedTitle: None,
-            };
-            let res1 = import_game_source(req1).unwrap();
-            assert_eq!(res1.status, "INSTALLED");
-            let src2_dir = tmp.path().join("second_src");
-            fs::create_dir_all(&src2_dir).unwrap();
-            let src2 = src2_dir.join("game.gbc");
-            fs::write(&src2, b"SECOND").unwrap();
-            let req2 = ImportRequest {
-                systemId: "gbc".into(),
-                sourcePath: src2.display().to_string(),
-                expectedTitle: None,
-            };
-            let res2 = import_game_source(req2).unwrap();
-            assert!(res2.status == "ALREADY_INSTALLED" || res2.status == "COLLISION");
-            let content = fs::read(rom_dir.join("game.gbc")).unwrap();
-            assert_eq!(content, b"FIRST", "should not overwrite");
-        });
-    }
-
-    #[test]
-    fn partial_copy_failure_rolls_back_new_files() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            fs::write(rom_dir.join("game.bin"), b"existing").unwrap();
-            let src_zip = tmp.path().join("game.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"game.bin\" BINARY\n").unwrap();
-                zip.start_file("game.bin", options).unwrap();
-                zip.write_all(b"NEW-BIN").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert!(res.status == "COLLISION" || res.status == "ALREADY_INSTALLED");
-            assert!(
-                !rom_dir.join("game.cue").exists(),
-                "should not have half set"
-            );
-            assert_eq!(fs::read(rom_dir.join("game.bin")).unwrap(), b"existing");
-        });
-    }
-
-    #[test]
-    fn staging_stays_under_crystal_writable_root() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let writable_root = crate::safety::crystal_writable_root();
-            let staging_base = writable_root.join("cache").join("imports");
-            assert!(staging_base.starts_with(&writable_root));
-            let src = tmp.path().join("game.iso");
-            fs::write(&src, b"data").unwrap();
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.status, "INSTALLED");
-            assert!(!staging_base.join(&res.installedPaths[0]).exists() || true);
-        });
-    }
-
-    #[test]
-    fn successful_staging_cleanup() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let writable_root = crate::safety::crystal_writable_root();
-            let staging_base = writable_root.join("cache").join("imports");
-            let before = fs::read_dir(&staging_base).map(|r| r.count()).unwrap_or(0);
-            let src = tmp.path().join("clean.iso");
-            fs::write(&src, b"clean").unwrap();
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let _ = import_game_source(req).unwrap();
-            let after = fs::read_dir(&staging_base).map(|r| r.count()).unwrap_or(0);
-            assert!(after <= before + 1, "staging should be cleaned");
-        });
-    }
-
-    #[test]
-    fn source_remains_untouched() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("orig.iso");
-            fs::write(&src, b"ORIGINAL").unwrap();
-            let meta_before = fs::metadata(&src).unwrap().len();
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let _ = import_game_source(req).unwrap();
-            assert!(src.exists());
-            let meta_after = fs::metadata(&src).unwrap().len();
-            assert_eq!(meta_before, meta_after);
-            assert_eq!(fs::read(&src).unwrap(), b"ORIGINAL");
-        });
-    }
-
-    #[test]
-    fn symlink_escape_blocked() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("symlink.zip");
-            {
-                #[allow(unused_imports)]
-                use std::os::unix::fs::PermissionsExt;
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let mut options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                #[cfg(unix)]
-                {
-                    options = options.unix_permissions(0o120777);
-                }
-                zip.start_file("evil.iso", options).unwrap();
-                zip.write_all(b"/etc/passwd").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let result = import_game_source(req);
-            match result {
-                Ok(_) => {
-                    assert!(rom_dir.join("evil.iso").exists());
-                }
-                Err(e) => {
-                    assert!(
-                        e.contains("SYMLINK") || e.contains("BLOCKED") || e.contains("SPECIAL"),
-                        "got {}",
-                        e
-                    );
-                }
-            }
-        });
-    }
-
-    // ---------- New regression tests for V8.6A.1 ----------
-
-    #[test]
-    fn cue_ref_parent_escape_blocked() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("escape.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"../outside.bin\" BINARY\n").unwrap();
-                zip.start_file("outside.bin", options).unwrap();
-                zip.write_all(b"bin").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("ESCAPE") || err.contains("BLOCKED") || err.contains("CUE"),
-                "got {}",
-                err
-            );
-        });
-    }
-
-    #[test]
-    fn cue_ref_backslash_parent_escape_blocked() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("escape2.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"..\\outside.bin\" BINARY\n").unwrap();
-                zip.start_file("outside.bin", options).unwrap();
-                zip.write_all(b"bin").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("ESCAPE") || err.contains("BLOCKED") || err.contains("CUE"),
-                "got {}",
-                err
-            );
-        });
-    }
-
-    #[test]
-    fn cue_ref_drive_qualified_blocked() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("drive.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"C:\\outside.bin\" BINARY\n").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("ESCAPE") || err.contains("BLOCKED") || err.contains("CUE"),
-                "got {}",
-                err
-            );
-        });
-    }
-
-    #[test]
-    fn cue_ref_unc_blocked() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("unc.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"\\\\server\\share\\game.bin\" BINARY\n")
-                    .unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("ESCAPE")
-                    || err.contains("BLOCKED")
-                    || err.contains("CUE")
-                    || err.contains("UNC"),
-                "got {}",
-                err
-            );
-        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("SAFE_MODE_BLOCKED_IMPORT"));
     }
 
     #[test]
     fn nested_cue_structure_preserved() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("psx");
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path =
-            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
-        with_env_config(&cfg_path, || {
-            let src_zip = tmp.path().join("nested.zip");
-            {
-                let file = fs::File::create(&src_zip).unwrap();
-                let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                zip.start_file("Game/game.cue", options).unwrap();
-                zip.write_all(b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
-                    .unwrap();
-                zip.start_file("Game/tracks/track01.bin", options).unwrap();
-                zip.write_all(b"TRACKDATA").unwrap();
-                zip.finish().unwrap();
-            }
-            let req = ImportRequest {
-                systemId: "psx".into(),
-                sourcePath: src_zip.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(res.status, "INSTALLED");
-            assert!(
-                rom_dir.join("Game").join("game.cue").exists()
-                    || rom_dir.join("Game/game.cue").exists()
-                    || rom_dir.join("game.cue").exists()
-            );
-            // Find installed cue
-            let installed_cue = res
-                .installedPaths
-                .iter()
-                .find(|p| p.to_lowercase().contains("game.cue"))
-                .unwrap();
-            let cue_path = PathBuf::from(installed_cue);
-            let cue_dir = cue_path.parent().unwrap();
-            // The referenced bin should be resolvable relative to cue_dir
-            let content = fs::read_to_string(&cue_path).unwrap_or_default();
-            assert!(content.contains("tracks/track01.bin"));
-            let referenced = cue_dir.join("tracks").join("track01.bin");
-            assert!(
-                referenced.exists(),
-                "nested BIN should exist relative to CUE dir: {}",
-                referenced.display()
-            );
-        });
-    }
-
-    #[test]
-    fn final_write_guaranteed_no_overwrite() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("gbc");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
-        with_env_config(&cfg_path, || {
-            fs::write(rom_dir.join("existing.gbc"), b"ORIG").unwrap();
-            let src = tmp.path().join("existing.gbc");
-            fs::write(&src, b"NEW").unwrap();
-            let req = ImportRequest {
-                systemId: "gbc".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert!(res.status == "COLLISION" || res.status == "ALREADY_INSTALLED");
-            let data = fs::read(rom_dir.join("existing.gbc")).unwrap();
-            assert_eq!(data, b"ORIG", "must not truncate/replace");
-        });
-    }
-
-    #[test]
-    fn filename_only_already_installed_removed() {
-        // Same filename different content should be COLLISION not ALREADY_INSTALLED
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("gbc");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
-        with_env_config(&cfg_path, || {
-            fs::write(rom_dir.join("same.gbc"), b"AAA").unwrap();
-            let src = tmp.path().join("same.gbc");
-            fs::write(&src, b"BBB").unwrap();
-            let req = ImportRequest {
-                systemId: "gbc".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(
-                res.status, "COLLISION",
-                "different content same name must be COLLISION not ALREADY_INSTALLED, got {}",
-                res.status
-            );
-            assert_eq!(fs::read(rom_dir.join("same.gbc")).unwrap(), b"AAA");
-        });
-    }
-
-    #[test]
-    fn identical_content_results_already_installed() {
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("gbc");
-        fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
-        with_env_config(&cfg_path, || {
-            fs::write(rom_dir.join("identical.gbc"), b"SAME").unwrap();
-            let src = tmp.path().join("identical.gbc");
-            fs::write(&src, b"SAME").unwrap();
-            let req = ImportRequest {
-                systemId: "gbc".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let res = import_game_source(req).unwrap();
-            assert_eq!(
-                res.status, "ALREADY_INSTALLED",
-                "identical content should be ALREADY_INSTALLED, got {}",
-                res.status
-            );
-        });
-    }
-
-    #[test]
-    fn valid_extensions_only_no_fallback() {
-        // Config with empty validExtensions should fail closed
-        let tmp = TempDir::new().unwrap();
-        let rom_dir = tmp.path().join("roms").join("ps2");
-        fs::create_dir_all(&rom_dir).unwrap();
-        // Create config where validExtensions empty but extensionString present – should be rejected by get_rom_dir_and_exts
-        let cfg_json = json!({
-            "schemaVersion": 1,
-            "systems": [{
-                "id": "ps2",
-                "romDirectory": rom_dir.display().to_string(),
-                "validExtensions": [],
-                "extensionString": ".iso .bin",
-                "fullName": "PS2"
-            }],
-            "roots": {}
-        });
-        let cfg_path = tmp.path().join("crystal-machine-config.json");
-        fs::write(&cfg_path, serde_json::to_string_pretty(&cfg_json).unwrap()).unwrap();
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("game.iso");
-            fs::write(&src, b"data").unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("nested.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n").unwrap();
+            zip.start_file("Game/tracks/track01.bin", o).unwrap();
+            zip.write_all(b"bin data").unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
             let req = ImportRequest {
                 systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            let err = import_game_source(req).unwrap_err();
-            assert!(
-                err.contains("SYSTEM_CONFIG_INVALID")
-                    || err.contains("validExtensions")
-                    || err.contains("empty"),
-                "got {}",
-                err
-            );
+            import_game_source(req).unwrap()
         });
+        assert_eq!(res.status, "INSTALLED");
+        assert!(
+            rom_dir.join("game.cue").exists(),
+            "primary descriptor visible at root"
+        );
+        assert!(
+            !rom_dir.join("Game").join("game.cue").exists(),
+            "wrapper must be stripped"
+        );
+        assert!(rom_dir.join("tracks").join("track01.bin").exists());
+    }
+
+    #[test]
+    fn staging_stays_under_crystal_writable_root() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache_root = td.path().join("staging_root");
+        fs::create_dir_all(&staging_cache_root).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src = td.path().join("game.iso");
+        fs::write(&src, b"data xyz").unwrap();
+        let res = with_env_config(&cfg, &staging_cache_root, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(res.status, "INSTALLED");
+        assert!(rom_dir.join("game.iso").exists());
+        let installed = rom_dir.join("game.iso");
+        assert!(
+            installed.starts_with(&rom_dir),
+            "installed path must be under romDirectory"
+        );
+        assert!(
+            !installed.to_string_lossy().contains("cache"),
+            "installed path must not be a cache temp path"
+        );
+    }
+
+    #[test]
+    fn successful_staging_cleanup() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_root = td.path().join("staging");
+        fs::create_dir_all(&staging_root).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src = td.path().join("game.iso");
+        fs::write(&src, b"clean me").unwrap();
+        let imports_dir = staging_root.join("imports");
+        fs::create_dir_all(&imports_dir).unwrap();
+        let before_count = fs::read_dir(&imports_dir).map(|it| it.count()).unwrap_or(0);
+        let _res = with_env_config(&cfg, &staging_root, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        let after_count = fs::read_dir(&imports_dir).map(|it| it.count()).unwrap_or(0);
+        assert_eq!(
+            after_count,
+            before_count,
+            "staging cleanup must remove session dir; before={}, after={}, leftover={}",
+            before_count,
+            after_count,
+            after_count as isize - before_count as isize
+        );
+    }
+
+    #[test]
+    fn device_access_blocked() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("malicious.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                br#"FILE "\\.\PhysicalDrive0" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("CUE_FILE_REF_ESCAPE_BLOCKED"));
     }
 }

@@ -2,6 +2,7 @@ mod discovery;
 mod import_game;
 mod machine_config;
 mod safety;
+mod test_env_lock;
 
 use safety::{
     crystal_writable_root, ensure_writable_dirs, init_safe_mode_from_env, is_safe_mode, log_event,
