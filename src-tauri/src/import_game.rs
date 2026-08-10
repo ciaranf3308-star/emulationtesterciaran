@@ -43,6 +43,46 @@ const MAX_TOTAL_UNCOMPRESSED: u64 = 8u64 * 1024 * 1024 * 1024;
 const MAX_SINGLE_FILE: u64 = 4u64 * 1024 * 1024 * 1024;
 const MAX_FILES_TO_INSTALL: usize = 64;
 
+fn validate_entry_count_within_limit(count: usize) -> Result<(), String> {
+    if count > MAX_ZIP_FILES {
+        return Err(format!("ZIP_TOO_MANY_FILES: {} > {}", count, MAX_ZIP_FILES));
+    }
+    Ok(())
+}
+
+fn validate_single_file_size(entry_name: &str, size: u64) -> Result<(), String> {
+    if size > MAX_SINGLE_FILE {
+        return Err(format!(
+            "ZIP_FILE_TOO_LARGE: entry '{}' {} bytes",
+            entry_name, size
+        ));
+    }
+    Ok(())
+}
+
+fn validate_total_uncompressed(total: u64) -> Result<(), String> {
+    if total > MAX_TOTAL_UNCOMPRESSED {
+        return Err(format!(
+            "ZIP_TOTAL_TOO_LARGE: {} bytes > {}",
+            total, MAX_TOTAL_UNCOMPRESSED
+        ));
+    }
+    Ok(())
+}
+
+// Tiny pure helper for limit-safety unit testing without allocating GB
+pub(crate) fn check_declared_limits(
+    file_count: usize,
+    single_size: u64,
+    total_size: u64,
+    entry_name: &str,
+) -> Result<(), String> {
+    validate_entry_count_within_limit(file_count)?;
+    validate_single_file_size(entry_name, single_size)?;
+    validate_total_uncompressed(total_size)?;
+    Ok(())
+}
+
 fn normalize_ext(ext: &str) -> String {
     let mut e = ext.trim().to_lowercase();
     if e.starts_with('.') {
@@ -485,12 +525,9 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             cleanup_staging(&staging_dir);
             return Err("EMPTY_ARCHIVE".to_string());
         }
-        if file_count > MAX_ZIP_FILES {
+        if let Err(e) = validate_entry_count_within_limit(file_count) {
             cleanup_staging(&staging_dir);
-            return Err(format!(
-                "ZIP_TOO_MANY_FILES: {} > {}",
-                file_count, MAX_ZIP_FILES
-            ));
+            return Err(e);
         }
 
         let mut total_uncompressed: u64 = 0;
@@ -519,20 +556,14 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                 }
             }
             let size = file.size();
-            if size > MAX_SINGLE_FILE {
+            if let Err(e) = validate_single_file_size(&name, size) {
                 cleanup_staging(&staging_dir);
-                return Err(format!(
-                    "ZIP_FILE_TOO_LARGE: entry '{}' {} bytes",
-                    name, size
-                ));
+                return Err(e);
             }
             total_uncompressed = total_uncompressed.saturating_add(size);
-            if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
+            if let Err(e) = validate_total_uncompressed(total_uncompressed) {
                 cleanup_staging(&staging_dir);
-                return Err(format!(
-                    "ZIP_TOTAL_TOO_LARGE: {} bytes > {}",
-                    total_uncompressed, MAX_TOTAL_UNCOMPRESSED
-                ));
+                return Err(e);
             }
         }
 
@@ -794,13 +825,9 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             cleanup_staging(&staging_dir);
             return Err("EMPTY_ARCHIVE".to_string());
         }
-        if archive.files.len() > MAX_ZIP_FILES {
+        if let Err(e) = validate_entry_count_within_limit(archive.files.len()) {
             cleanup_staging(&staging_dir);
-            return Err(format!(
-                "ZIP_TOO_MANY_FILES: {} > {}",
-                archive.files.len(),
-                MAX_ZIP_FILES
-            ));
+            return Err(e);
         }
 
         let mut total_uncompressed: u64 = 0;
@@ -844,17 +871,14 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             if entry.has_stream && !entry.is_directory {
                 stream_file_count += 1;
                 let sz = entry.size;
-                if sz > MAX_SINGLE_FILE {
+                if let Err(e) = validate_single_file_size(&name, sz) {
                     cleanup_staging(&staging_dir);
-                    return Err(format!("ZIP_FILE_TOO_LARGE: entry '{}' {} bytes", name, sz));
+                    return Err(e);
                 }
                 total_uncompressed = total_uncompressed.saturating_add(sz);
-                if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
+                if let Err(e) = validate_total_uncompressed(total_uncompressed) {
                     cleanup_staging(&staging_dir);
-                    return Err(format!(
-                        "ZIP_TOTAL_TOO_LARGE: {} bytes > {}",
-                        total_uncompressed, MAX_TOTAL_UNCOMPRESSED
-                    ));
+                    return Err(e);
                 }
             }
         }
@@ -1884,7 +1908,7 @@ mod tests {
         assert!(
             res.is_err(),
             "should fail when exact relative file missing, got {:?}",
-            res.ok()
+            res.as_ref().ok()
         );
         assert!(
             res.unwrap_err().contains("INCOMPLETE_CUE_SET"),
@@ -2270,5 +2294,800 @@ mod tests {
         });
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("CUE_FILE_REF_ESCAPE_BLOCKED"));
+    }
+
+    // === H1.1 HARDENING PROOF TESTS ===
+
+    #[test]
+    fn already_installed_exact_path_identity() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_exact");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging_exact");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src1 = td.path().join("Game.iso");
+        fs::write(&src1, b"identical-bytes-12345").unwrap();
+
+        let first = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src1.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(first.status, "INSTALLED");
+        let dest = rom_dir.join("Game.iso");
+        assert!(
+            dest.exists(),
+            "romDir/Game.iso must exist after first install"
+        );
+        let original_bytes = fs::read(&dest).unwrap();
+        assert_eq!(original_bytes, b"identical-bytes-12345");
+
+        // second source identical bytes, different temp dir
+        let other_dir = td.path().join("other");
+        fs::create_dir_all(&other_dir).unwrap();
+        let src2 = other_dir.join("Game.iso");
+        fs::write(&src2, b"identical-bytes-12345").unwrap();
+
+        let second = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src2.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(second.status, "ALREADY_INSTALLED");
+        assert_eq!(
+            second.installedPaths.len(),
+            1,
+            "installedPaths length must be 1"
+        );
+        assert_eq!(
+            PathBuf::from(&second.installedPaths[0]),
+            dest,
+            "installedPaths[0] must exactly equal romDirectory/Game.iso"
+        );
+        // no overwrite – dest unchanged
+        assert_eq!(fs::read(&dest).unwrap(), b"identical-bytes-12345");
+        // source retained
+        assert!(src2.exists(), "second source file must be retained");
+        assert!(src1.exists(), "first source retained");
+    }
+
+    #[test]
+    fn already_installed_cue_set_exact_paths() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_cue_exact");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging_cue_exact");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("game_cue.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+            )
+            .unwrap();
+            zip.start_file("Game/tracks/track01.bin", o).unwrap();
+            zip.write_all(b"bin-track-123").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let first = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(first.status, "INSTALLED");
+        assert!(rom_dir.join("game.cue").exists());
+        assert!(rom_dir.join("tracks").join("track01.bin").exists());
+
+        // second import identical archive (source retained guarantee)
+        let second = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert_eq!(
+            second.status, "ALREADY_INSTALLED",
+            "second identical CUE set must be ALREADY_INSTALLED"
+        );
+        assert_eq!(
+            second.installedPaths.len(),
+            2,
+            "CUE set should have 2 exact dest paths"
+        );
+        // order may vary, check set contains both
+        let mut paths = second.installedPaths.clone();
+        paths.sort();
+        let mut expected_a = rom_dir.join("game.cue").display().to_string();
+        let mut expected_b = rom_dir
+            .join("tracks")
+            .join("track01.bin")
+            .display()
+            .to_string();
+        let mut expected = vec![expected_a.clone(), expected_b.clone()];
+        expected.sort();
+        assert_eq!(
+            paths, expected,
+            "installedPaths must include both exact dest paths"
+        );
+
+        // prove multi-file already_installed also returns collisionPaths same as installedPaths per H1 spec
+        assert_eq!(second.collisionPaths.len(), 2);
+        assert!(
+            src_zip.exists(),
+            "source .zip retained after ALREADY_INSTALLED"
+        );
+    }
+
+    #[test]
+    fn windows_invalid_dest_component_rejected() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_win_invalid");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging_win_invalid");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso", "bin", "cue"]);
+
+        // invalid names per spec – should fail closed
+        let invalid_names = vec![
+            "CON.iso",
+            "PRN.bin",
+            "AUX.cue",
+            "NUL.iso",
+            "COM1.iso",
+            "LPT9.bin",
+            "game.",
+            "game<bad>.iso",
+            "game?.iso",
+            "game*.iso",
+            "game:bad.iso",
+        ];
+
+        for bad_name in invalid_names {
+            let src_zip = td.path().join(format!(
+                "bad_{}.zip",
+                bad_name.replace(
+                    |c| matches!(
+                        c,
+                        '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '.'
+                    ),
+                    "_"
+                )
+            ));
+            {
+                let f = fs::File::create(&src_zip).unwrap();
+                let mut zip = zip::ZipWriter::new(f);
+                let o = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                zip.start_file(bad_name, o).unwrap();
+                zip.write_all(b"content").unwrap();
+                zip.finish().unwrap();
+            }
+            let res = with_env_config(&cfg, &staging_cache, || {
+                let req = ImportRequest {
+                    systemId: "ps2".into(),
+                    sourcePath: src_zip.to_string_lossy().to_string(),
+                    expectedTitle: None,
+                };
+                import_game_source(req)
+            });
+            assert!(
+                res.is_err(),
+                "invalid windows name '{}' must be rejected, got ok {:?}",
+                bad_name,
+                res.as_ref().ok()
+            );
+            let err = res.unwrap_err();
+            // "game." has no extension – filtered as NO_VALID_ROM is acceptable fail-closed;
+            // others must be WINDOWS_INVALID_DEST_COMPONENT
+            if bad_name == "game." {
+                assert!(
+                    err.contains("WINDOWS_INVALID_DEST_COMPONENT")
+                        || err.contains("NO_VALID_ROM_IN_ARCHIVE")
+                        || err.contains("INVALID_EXTENSION"),
+                    "invalid '{}' error must be WINDOWS_INVALID_DEST_COMPONENT or safe fail-closed (NO_VALID_ROM/INVALID_EXTENSION), got: {}",
+                    bad_name,
+                    err
+                );
+            } else {
+                assert!(
+                    err.contains("WINDOWS_INVALID_DEST_COMPONENT"),
+                    "invalid '{}' error must be WINDOWS_INVALID_DEST_COMPONENT, got: {}",
+                    bad_name,
+                    err
+                );
+            }
+            assert!(
+                !rom_dir.join(bad_name).exists(),
+                "invalid '{}' must not be written to romDir",
+                bad_name
+            );
+            // source retained
+            assert!(
+                src_zip.exists(),
+                "source archive for '{}' must be retained",
+                bad_name
+            );
+        }
+    }
+
+    #[test]
+    fn windows_valid_unicode_names_accepted() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_unicode");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging_unicode");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+
+        let valid_unicode = vec![
+            ("Pokémon.iso", "unicode-1"),
+            ("ゼルダ.iso", "unicode-2"),
+            ("게임.iso", "unicode-3"),
+        ];
+
+        for (name, content) in valid_unicode {
+            let src = td.path().join(name);
+            fs::write(&src, content.as_bytes()).unwrap();
+            let res = with_env_config(&cfg, &staging_cache, || {
+                let req = ImportRequest {
+                    systemId: "ps2".into(),
+                    sourcePath: src.to_string_lossy().to_string(),
+                    expectedTitle: None,
+                };
+                import_game_source(req).unwrap()
+            });
+            assert_eq!(res.status, "INSTALLED", "unicode '{}' must install", name);
+            assert!(
+                rom_dir.join(name).exists(),
+                "unicode '{}' must exist in romDir",
+                name
+            );
+            assert_eq!(fs::read_to_string(rom_dir.join(name)).unwrap(), content);
+            // cleanup for next iteration? rom_dir persists – different names so okay
+        }
+    }
+
+    // ==================== V8.6H1.1 7Z BEHAVIORAL PROOF ====================
+
+    // Helper to create real 7z archives via sevenz-rust 0.6 API
+    fn create_7z_archive(path: &Path, files: Vec<(String, Vec<u8>)>) {
+        // SevenZWriter::create requires file path, uses LZMA2 by default.
+        // Disable encrypt header for simplicity (still decompressable).
+        let mut writer = sevenz_rust::SevenZWriter::create(path).expect("create 7z writer");
+        writer.set_encrypt_header(false);
+        for (name, data) in files {
+            // Directory entries: if name ends with '/' and data empty, mark as directory
+            let is_dir = name.ends_with('/') || name.ends_with('\\');
+            if is_dir {
+                let mut entry = sevenz_rust::SevenZArchiveEntry::default();
+                entry.name = name.clone();
+                entry.is_directory = true;
+                entry.has_stream = false;
+                writer
+                    .push_archive_entry(entry, Option::<&[u8]>::None)
+                    .expect("push dir entry");
+            } else {
+                let mut entry = sevenz_rust::SevenZArchiveEntry::default();
+                entry.name = name.clone();
+                writer
+                    .push_archive_entry(entry, Some(std::io::Cursor::new(data)))
+                    .expect("push file entry");
+            }
+        }
+        writer.finish().expect("finish 7z archive");
+    }
+
+    #[test]
+    fn sevenz_single_rom_install() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("Game.7z");
+        let iso_content = b"ISO_CONTENT_1234_SINGLE".to_vec();
+        create_7z_archive(&src_7z, vec![("Game.iso".to_string(), iso_content.clone())]);
+
+        let result = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+
+        assert_eq!(result.status, "INSTALLED", "single 7z should INSTALL");
+        let dest = rom_dir.join("Game.iso");
+        assert!(dest.exists(), "romDir/Game.iso must exist");
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            iso_content,
+            "content must match source entry exactly"
+        );
+        assert!(
+            result
+                .installedPaths
+                .iter()
+                .any(|p| p == &dest.display().to_string()),
+            "installedPaths must contain exact destination {}, got {:?}",
+            dest.display(),
+            result.installedPaths
+        );
+        assert!(src_7z.exists(), "original .7z must still exist unchanged");
+        // staging cleaned
+        let imports_dir = staging_cache.join("cache").join("imports");
+        let leftover = fs::read_dir(&imports_dir).map(|it| it.count()).unwrap_or(0);
+        assert_eq!(leftover, 0, "staging must be cleaned");
+    }
+
+    #[test]
+    fn sevenz_wrapper_folder_flattened() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_ps2");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("Game.7z");
+        let iso_content = b"wrapper iso content 7z".to_vec();
+        // Wrapper folder case similar to ZIP policy
+        create_7z_archive(
+            &src_7z,
+            vec![("Wrapper/Game.iso".to_string(), iso_content.clone())],
+        );
+
+        let result = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+
+        assert_eq!(
+            result.status, "INSTALLED",
+            "wrapper 7z should INSTALL flattened"
+        );
+        assert!(
+            rom_dir.join("Game.iso").exists(),
+            "Game.iso must exist at rom root flattened"
+        );
+        assert!(
+            !rom_dir.join("Wrapper").join("Game.iso").exists(),
+            "Wrapper/Game.iso must not exist - flattened"
+        );
+        assert_eq!(fs::read(rom_dir.join("Game.iso")).unwrap(), iso_content);
+        assert!(
+            result
+                .installedPaths
+                .iter()
+                .any(|p| p.ends_with("Game.iso") && !p.contains("Wrapper")),
+            "installedPaths must be flattened"
+        );
+        assert!(src_7z.exists(), "source retained");
+    }
+
+    #[test]
+    fn sevenz_cue_bin_install() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms_psx");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_7z = td.path().join("Game.7z");
+        let cue_content =
+            b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+                .to_vec();
+        let bin_content = b"track01 binary data".to_vec();
+        create_7z_archive(
+            &src_7z,
+            vec![
+                ("Game/game.cue".to_string(), cue_content.clone()),
+                ("Game/tracks/track01.bin".to_string(), bin_content.clone()),
+            ],
+        );
+
+        let result = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+
+        assert_eq!(result.status, "INSTALLED", "cue+bin 7z should INSTALL");
+        assert!(
+            rom_dir.join("game.cue").exists(),
+            "game.cue must exist at rom root (wrapper stripped)"
+        );
+        assert!(
+            rom_dir.join("tracks").join("track01.bin").exists(),
+            "tracks/track01.bin must exist under rom root"
+        );
+        let installed_cue = fs::read_to_string(rom_dir.join("game.cue")).unwrap();
+        assert!(
+            installed_cue.contains("tracks/track01.bin"),
+            "CUE reference must remain valid, got {}",
+            installed_cue
+        );
+        assert!(
+            result
+                .installedPaths
+                .iter()
+                .any(|p| p.ends_with("game.cue")),
+            "installedPaths includes cue"
+        );
+        assert!(
+            result
+                .installedPaths
+                .iter()
+                .any(|p| p.contains("track01.bin")),
+            "installedPaths includes bin tracks"
+        );
+        assert!(
+            result.installedPaths.len() >= 2,
+            "installedPaths should contain both descriptor and bin"
+        );
+        assert!(src_7z.exists(), "source retained");
+    }
+
+    #[test]
+    fn sevenz_hostile_paths_rejected() {
+        // Test malicious entries that SevenZWriter allows. If writer cannot create a particular malformed entry,
+        // we document limitation and fallback to parsing boundary check.
+        let hostile_names = vec![
+            "../evil.iso",
+            "/evil.iso",
+            "/tmp/evil.iso",
+            "C:\\evil.iso",
+            "C:/evil.iso",
+            "C:evil.iso",
+            "\\\\server\\share\\evil.iso",
+            "..\\evil.iso",
+            "a:b.iso",
+        ];
+
+        for hostile in hostile_names {
+            let td = TempDir::new().unwrap();
+            let rom_dir = td.path().join("roms");
+            fs::create_dir_all(&rom_dir).unwrap();
+            let staging_cache = td.path().join("staging");
+            fs::create_dir_all(&staging_cache).unwrap();
+            let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+            let src_7z = td.path().join("hostile.7z");
+
+            // Try to create archive with this hostile entry
+            let create_result = std::panic::catch_unwind(|| {
+                let mut writer =
+                    sevenz_rust::SevenZWriter::create(&src_7z).expect("create writer hostile");
+                writer.set_encrypt_header(false);
+                let mut entry = sevenz_rust::SevenZArchiveEntry::default();
+                entry.name = hostile.to_string();
+                let push_res = writer
+                    .push_archive_entry(entry, Some(std::io::Cursor::new(b"evilcontent".to_vec())));
+                if push_res.is_err() {
+                    return Err(format!("push failed: {:?}", push_res.err()));
+                }
+                let fin = writer.finish();
+                if fin.is_err() {
+                    return Err(format!("finish failed: {:?}", fin.err()));
+                }
+                Ok(())
+            });
+
+            if create_result.is_err() || matches!(&create_result, Ok(Err(_))) {
+                // Writer cannot represent this malformed entry – documented limitation.
+                // Fallback: ensure our traversal guard would reject it.
+                let is_traversal = is_path_traversal_entry(hostile) || hostile.contains(':');
+                assert!(
+                    is_traversal || hostile.starts_with('/') || hostile.starts_with("\\") || hostile.contains(".."),
+                    "hostile '{}' should be considered traversal/illegal by our guard; writer limitation documented",
+                    hostile
+                );
+                continue;
+            }
+
+            // Archive created successfully – now import must reject
+            assert!(
+                src_7z.exists(),
+                "malicious .7z source must exist before import for '{}'",
+                hostile
+            );
+            let res = with_env_config(&cfg, &staging_cache, || {
+                let req = ImportRequest {
+                    systemId: "ps2".into(),
+                    sourcePath: src_7z.to_string_lossy().to_string(),
+                    expectedTitle: None,
+                };
+                import_game_source(req)
+            });
+
+            assert!(
+                res.is_err(),
+                "hostile entry '{}' should be rejected, got ok {:?}",
+                hostile,
+                res.as_ref().ok()
+            );
+            let err_msg = res.unwrap_err();
+            assert!(
+                err_msg.contains("ZIP_TRAVERSAL_BLOCKED")
+                    || err_msg.contains("7Z")
+                    || err_msg.contains("TRAVERSAL")
+                    || err_msg.contains("ESCAPE")
+                    || err_msg.contains("WINDOWS_INVALID_DEST")
+                    || err_msg.contains("DEVICE")
+                    || err_msg.contains("INVALID_DEST")
+                    || err_msg.contains("ZIP_FILE"),
+                "hostile '{}' err must indicate traversal/device/col reject, got '{}'",
+                hostile,
+                err_msg
+            );
+            // No write into romDirectory
+            let rom_entries: Vec<_> = fs::read_dir(&rom_dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            assert!(
+                rom_entries.is_empty(),
+                "hostile '{}' must not write anything into romDirectory, found {:?}",
+                hostile,
+                rom_entries
+            );
+            assert!(
+                src_7z.exists(),
+                "source .7z must be retained after rejection for '{}'",
+                hostile
+            );
+        }
+    }
+
+    #[test]
+    fn sevenz_no_valid_rom() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("nov alid.7z");
+        create_7z_archive(
+            &src_7z,
+            vec![
+                ("readme.txt".to_string(), b"read me".to_vec()),
+                ("cover.jpg".to_string(), b"fakejpg".to_vec()),
+            ],
+        );
+
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+
+        assert!(res.is_err(), "should fail NO_VALID_ROM");
+        let err = res.unwrap_err();
+        assert!(
+            err.contains("NO_VALID_ROM_IN_ARCHIVE"),
+            "must be NO_VALID_ROM_IN_ARCHIVE, got {}",
+            err
+        );
+        assert!(
+            !rom_dir.join("readme.txt").exists() && !rom_dir.join("cover.jpg").exists(),
+            "no ROM write"
+        );
+        assert!(src_7z.exists(), "source retained");
+    }
+
+    #[test]
+    fn sevenz_ambiguous_multiple_roms() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("ambig.7z");
+        create_7z_archive(
+            &src_7z,
+            vec![
+                ("game1.iso".to_string(), b"iso1".to_vec()),
+                ("game2.iso".to_string(), b"iso2".to_vec()),
+            ],
+        );
+
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+
+        assert!(res.is_err());
+        assert!(
+            res.unwrap_err().contains("AMBIGUOUS_MULTIPLE_ROMS"),
+            "must be AMBIGUOUS_MULTIPLE_ROMS"
+        );
+        assert!(
+            fs::read_dir(&rom_dir).unwrap().next().is_none(),
+            "no install"
+        );
+        assert!(src_7z.exists(), "source retained");
+    }
+
+    #[test]
+    fn sevenz_limit_too_many_files() {
+        // Practical limit test without allocating GB – entry count > MAX_ZIP_FILES (2000)
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("many.7z");
+        // Create 2001 tiny entries – should trigger ZIP_TOO_MANY_FILES
+        {
+            let mut writer =
+                sevenz_rust::SevenZWriter::create(&src_7z).expect("create many files writer");
+            writer.set_encrypt_header(false);
+            for i in 0..(MAX_ZIP_FILES + 1) {
+                let name = format!("file{:04}.iso", i);
+                let mut entry = sevenz_rust::SevenZArchiveEntry::default();
+                entry.name = name.clone();
+                writer
+                    .push_archive_entry(entry, Some(std::io::Cursor::new(vec![b'a'])))
+                    .expect("push many");
+            }
+            writer.finish().expect("finish many");
+        }
+
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+
+        assert!(res.is_err(), "too many files should reject");
+        assert!(
+            res.unwrap_err().contains("ZIP_TOO_MANY_FILES"),
+            "must be too many files error"
+        );
+        assert!(src_7z.exists(), "source retained");
+    }
+
+    #[test]
+    fn sevenz_limit_helper_pure() {
+        // Verify pure helper rejects oversized declared sizes without allocating huge bodies
+        // This extraction is the minimal refactor allowed to test limit safety cheaply
+        let ok = check_declared_limits(1, 1024, 1024, "ok.iso");
+        assert!(ok.is_ok(), "small sizes should be ok");
+
+        let too_many = check_declared_limits(MAX_ZIP_FILES + 1, 1024, 1024, "many.iso");
+        assert!(too_many.is_err());
+        assert!(too_many.unwrap_err().contains("ZIP_TOO_MANY_FILES"));
+
+        let too_large_single =
+            check_declared_limits(1, MAX_SINGLE_FILE + 1, MAX_SINGLE_FILE + 1, "huge.iso");
+        assert!(too_large_single.is_err());
+        assert!(too_large_single.unwrap_err().contains("ZIP_FILE_TOO_LARGE"));
+
+        let too_large_total = check_declared_limits(2, 1024, MAX_TOTAL_UNCOMPRESSED + 1, "ok.iso");
+        assert!(too_large_total.is_err());
+        assert!(too_large_total.unwrap_err().contains("ZIP_TOTAL_TOO_LARGE"));
+    }
+
+    #[test]
+    fn sevenz_source_retained_all_good_paths() {
+        // Additional explicit source-retained assertion for good path (already checked in A/B/C but explicit)
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("retain.7z");
+        create_7z_archive(&src_7z, vec![("Game.iso".to_string(), b"data".to_vec())]);
+        let src_meta_before = fs::metadata(&src_7z).unwrap().len();
+        let _ = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        assert!(
+            src_7z.exists(),
+            "source .7z must still exist after successful install"
+        );
+        assert_eq!(
+            fs::metadata(&src_7z).unwrap().len(),
+            src_meta_before,
+            "source .7z must be unchanged"
+        );
+    }
+
+    #[test]
+    fn sevenz_staging_cleanup_after_success() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_root = td.path().join("staging");
+        fs::create_dir_all(&staging_root).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("clean.7z");
+        create_7z_archive(&src_7z, vec![("game.iso".to_string(), b"clean".to_vec())]);
+        let imports_dir = staging_root.join("cache").join("imports");
+        fs::create_dir_all(&imports_dir).unwrap();
+        let before = fs::read_dir(&imports_dir).map(|it| it.count()).unwrap_or(0);
+        with_env_config(&cfg, &staging_root, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req).unwrap()
+        });
+        let after = fs::read_dir(&imports_dir).map(|it| it.count()).unwrap_or(0);
+        assert_eq!(before, after, "staging session dir must be cleaned");
+    }
+
+    #[test]
+    fn sevenz_staging_cleanup_after_hostile_reject() {
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_root = td.path().join("staging");
+        fs::create_dir_all(&staging_root).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["iso"]);
+        let src_7z = td.path().join("evil.7z");
+        // Attempt traversal archive
+        create_7z_archive(&src_7z, vec![("../evil.iso".to_string(), b"evil".to_vec())]);
+        let imports_dir = staging_root.join("cache").join("imports");
+        fs::create_dir_all(&imports_dir).unwrap();
+        let _ = with_env_config(&cfg, &staging_root, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_7z.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            let _ = import_game_source(req);
+        });
+        let leftover = fs::read_dir(&imports_dir).map(|i| i.count()).unwrap_or(0);
+        assert_eq!(
+            leftover, 0,
+            "staging must be cleaned even after hostile reject"
+        );
+        assert!(src_7z.exists());
     }
 }

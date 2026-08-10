@@ -70,13 +70,20 @@ describe('V8.6H1 – fixture exact gate', () => {
   const originalLocation = typeof window !== 'undefined' ? window.location : undefined
   // vitest jsdom env: we can mock window.location.search via history pushState
   it('requires exact fixture=golden', () => {
-    // We test fixtureMode pure helper directly via manual URLSearchParams parsing rather than window
-    // Simulate window with fixture params
     const savedEnv = (import.meta as any).env
+    const g: any = typeof window !== 'undefined' ? (window as any) : undefined
+    const prevTauri = g?.__TAURI__
+    const prevTauriInternals = g?.__TAURI_INTERNALS__
+    const prevInvoke = g?.__TAURI_INVOKE__
     try {
-      // force DEV true
+      // force DEV true and ensure non-tauri env for this test – other suites may have left tauri globals
       ;(import.meta as any).env = { DEV: true }
-      // jsdom: set location
+      if (g) {
+        delete g.__TAURI__
+        delete g.__TAURI_INTERNALS__
+        delete g.__TAURI_INVOKE__
+        delete g.__TAURI_IPC__
+      }
       if (typeof window !== 'undefined') {
         const testCases: Array<[string, boolean]> = [
           ['?fixture=golden', true],
@@ -103,6 +110,10 @@ describe('V8.6H1 – fixture exact gate', () => {
       ;(import.meta as any).env = savedEnv
       if (typeof window !== 'undefined') {
         ;(window as any).history.replaceState({}, '', 'http://localhost/')
+        // restore tauri globals if they existed (unlikely needed but safe)
+        if (prevTauri !== undefined) g.__TAURI__ = prevTauri
+        if (prevTauriInternals !== undefined) g.__TAURI_INTERNALS__ = prevTauriInternals
+        if (prevInvoke !== undefined) g.__TAURI_INVOKE__ = prevInvoke
       }
     }
   })

@@ -172,4 +172,30 @@ describe("V8.6C2 findInstalledGame – conservative authority order", () => {
     })
     expect(res.found?.system_id).toBe("gbc")
   })
+  test("duplicate normalized title but exact installedPaths selects exact path – does not fallback to ambiguous", () => {
+    // Two entries share same normalized title "Mario" – ambiguous title logic would fail
+    const games = [
+      mkGame({ id: "a", name: "Mario", rom_path: "C:/Roms/nes/Mario (Copy A).zip", system_id: "nes" }),
+      mkGame({ id: "b", name: "Mario", rom_path: "C:/Roms/nes/Mario (Copy B).zip", system_id: "nes" }),
+    ]
+    // Title-only search would be ambiguous -> no match
+    const ambiguous = findInstalledGame({
+      systemId: "nes",
+      expectedTitle: "Mario",
+      installedPaths: [],
+      refreshedGames: games,
+    })
+    expect(ambiguous.found).toBeNull()
+    expect(ambiguous.reason).toBe("MULTIPLE_TITLE_MATCHES")
+
+    // With exact installedPaths pointing to Copy B, finder must select B despite duplicate title
+    const withExact = findInstalledGame({
+      systemId: "nes",
+      expectedTitle: "Mario",
+      installedPaths: ["c:/roms/nes/Mario (Copy B).zip"],
+      refreshedGames: games,
+    })
+    expect(withExact.found?.id).toBe("b")
+    expect(withExact.found?.rom_path).toBe("C:/Roms/nes/Mario (Copy B).zip")
+  })
 })

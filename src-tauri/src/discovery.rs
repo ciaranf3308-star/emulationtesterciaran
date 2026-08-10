@@ -47,6 +47,45 @@ fn is_allowed_port(url: &Url) -> bool {
     }
 }
 
+// H1.1 – small pure helpers for bounded-body testing (keeps production semantics, testable without HTTP server)
+const VIMM_MAX_BODY: u64 = 2_000_000;
+const VIMM_MAX_BODY_USIZE: usize = 2_000_000;
+
+pub(crate) fn validate_declared_length(declared: u64) -> Result<(), String> {
+    if declared > VIMM_MAX_BODY {
+        return Err(format!(
+            "fetch_vimm body too large declared {} bytes > {}",
+            declared, VIMM_MAX_BODY
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn check_bounded_accumulation(
+    current_len: usize,
+    chunk_len: usize,
+) -> Result<usize, String> {
+    // mirrors fetch_vimm loop logic: reject if would exceed MAX+1
+    let new_len = current_len.saturating_add(chunk_len);
+    if new_len > VIMM_MAX_BODY_USIZE + 1 {
+        return Err(format!(
+            "fetch_vimm body too large {}+ bytes > {}",
+            new_len, VIMM_MAX_BODY
+        ));
+    }
+    if new_len > VIMM_MAX_BODY_USIZE {
+        return Err(format!(
+            "fetch_vimm body too large {} bytes > {}",
+            new_len, VIMM_MAX_BODY
+        ));
+    }
+    Ok(new_len)
+}
+
+pub(crate) fn would_exceed_limit_after_chunk(acc: &[u8], chunk: &[u8]) -> bool {
+    acc.len() + chunk.len() > VIMM_MAX_BODY_USIZE
+}
+
 /// Custom redirect policy – only allow redirects staying on vimm.net host,
 /// with same path guard as primary fetch and no credentials.
 fn is_allowed_redirect(url: &Url) -> bool {
@@ -225,15 +264,9 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     }
 
     // Size guard – inspect Content-Length first when present
-    const MAX_BODY: u64 = 2_000_000;
-    const MAX_BODY_USIZE: usize = 2_000_000;
-
     if let Some(declared) = resp.content_length() {
-        if declared > MAX_BODY {
-            let msg = format!(
-                "fetch_vimm body too large declared {} bytes > {} for url '{}' – rejecting",
-                declared, MAX_BODY, url
-            );
+        if let Err(e) = validate_declared_length(declared) {
+            let msg = format!("{} for url '{}' – rejecting", e, url);
             log_minimal("warn", &msg);
             return Err(msg);
         }
@@ -243,7 +276,7 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     // Uses reqwest chunk() API which does not require extra stream feature
     let mut acc: Vec<u8> = Vec::with_capacity(std::cmp::min(
         resp.content_length().unwrap_or(0) as usize,
-        MAX_BODY_USIZE + 1,
+        VIMM_MAX_BODY_USIZE + 1,
     ));
     let mut resp_mut = resp;
     loop {
@@ -255,26 +288,12 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
         match chunk_opt {
             None => break,
             Some(bytes) => {
-                if acc.len() + bytes.len() > MAX_BODY_USIZE + 1 {
-                    let msg = format!(
-                        "fetch_vimm body too large {}+ bytes > {} for url '{}' – rejecting",
-                        acc.len() + bytes.len(),
-                        MAX_BODY,
-                        url
-                    );
+                if let Err(e) = check_bounded_accumulation(acc.len(), bytes.len()) {
+                    let msg = format!("{} for url '{}' – rejecting", e, url);
                     log_minimal("warn", &msg);
                     return Err(msg);
                 }
                 acc.extend_from_slice(&bytes);
-                if acc.len() > MAX_BODY_USIZE {
-                    let msg = format!(
-                        "fetch_vimm body too large {} bytes for url '{}' – rejecting",
-                        acc.len(),
-                        url
-                    );
-                    log_minimal("warn", &msg);
-                    return Err(msg);
-                }
             }
         }
     }
@@ -696,5 +715,143 @@ mod tests {
                 url_str
             );
         }
+    }
+
+    // === H1.1 VIMM BODY BOUND TESTS ===
+
+    #[test]
+    fn test_vimm_body_bound_below_limit_accepted() {
+        // below 2_000_000 accepted
+        let declared = 1_999_999u64;
+        assert!(validate_declared_length(declared).is_ok());
+        assert!(check_bounded_accumulation(0, 1_999_999).is_ok());
+    }
+
+    #[test]
+    fn test_vimm_body_bound_exact_boundary_accepted() {
+        let declared = 2_000_000u64;
+        assert!(validate_declared_length(declared).is_ok());
+        assert_eq!(check_bounded_accumulation(0, 2_000_000).unwrap(), 2_000_000);
+    }
+
+    #[test]
+    fn test_vimm_body_bound_boundary_plus_one_rejected() {
+        let declared = 2_000_001u64;
+        assert!(validate_declared_length(declared).is_err());
+
+        // streaming accumulation: 2_000_000 + 1 chunk should be rejected (MAX+1 path)
+        // our check_bound returns Err when new_len > MAX (2_000_000)
+        assert!(check_bounded_accumulation(0, 2_000_001).is_err());
+        assert!(check_bounded_accumulation(2_000_000, 1).is_err());
+    }
+
+    #[test]
+    fn test_vimm_body_bound_declared_over_limit_covered() {
+        // simulate Content-Length > limit path
+        for v in [2_000_001u64, 3_000_000, 10_000_000] {
+            assert!(
+                validate_declared_length(v).is_err(),
+                "declared {} must be rejected",
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn test_vimm_body_bound_unknown_length_actual_over_limit_rejected() {
+        // unknown Content-Length but actual body > limit: simulate chunked accumulation
+        let mut acc_len = 0usize;
+        // first 1_000_000 chunk ok
+        acc_len = check_bounded_accumulation(acc_len, 1_000_000).unwrap();
+        assert_eq!(acc_len, 1_000_000);
+        // second 1_000_000 chunk reaches exactly limit ok
+        acc_len = check_bounded_accumulation(acc_len, 1_000_000).unwrap();
+        assert_eq!(acc_len, 2_000_000);
+        // third tiny chunk should reject – this covers unknown-length over-limit actual body
+        assert!(check_bounded_accumulation(acc_len, 1).is_err());
+    }
+
+    #[test]
+    fn test_vimm_body_bound_would_exceed_helper() {
+        let acc = vec![0u8; 1_999_999];
+        let chunk = vec![0u8; 2];
+        assert!(would_exceed_limit_after_chunk(&acc, &chunk));
+        let acc2 = vec![0u8; 100];
+        let chunk2 = vec![0u8; 100];
+        assert!(!would_exceed_limit_after_chunk(&acc2, &chunk2));
+    }
+
+    // === H1.1 VIMM ROUTE EXTENDED ===
+
+    #[test]
+    fn test_vimm_route_reject_vaultevil_family_and_creds_and_custom_port() {
+        let rejected = vec![
+            "https://vimm.net/vaultevil",
+            "https://vimm.net/vaultfoo",
+            "https://vimm.net/vault-evil",
+            "https://vimm.net/vault_evil",
+            "https://vimm.net/vaultx/123",
+            "https://vimm.net:444/vault/123",
+            "https://user@vimm.net/vault/123",
+            "https://user:pass@vimm.net/vault/123",
+        ];
+        for url_str in rejected {
+            let u = Url::parse(url_str).unwrap();
+            // Primary validation: path guard OR port OR creds must reject
+            let path_ok = is_allowed_vault_path(u.path());
+            let port_ok = is_allowed_port(&u);
+            let no_creds = u.username().is_empty() && u.password().is_none();
+            // For valid reject cases, at least one guard fails
+            assert!(
+                !path_ok || !port_ok || !no_creds,
+                "should reject {} path_ok={} port_ok={} no_creds={}",
+                url_str,
+                path_ok,
+                port_ok,
+                no_creds
+            );
+            assert!(!is_allowed_redirect(&u), "redirect must reject {}", url_str);
+        }
+    }
+
+    #[test]
+    fn test_vimm_route_allow_vault_family() {
+        let allowed = vec![
+            "https://vimm.net/vault",
+            "https://vimm.net/vault/",
+            "https://vimm.net/vault/123",
+            "https://vimm.net:443/vault/123",
+        ];
+        for url_str in allowed {
+            let u = Url::parse(url_str).unwrap();
+            assert!(is_allowed_vault_path(u.path()), "path allow {}", url_str);
+            assert!(is_allowed_port(&u), "port allow {}", url_str);
+            assert!(
+                u.username().is_empty() && u.password().is_none(),
+                "no creds {}",
+                url_str
+            );
+            assert!(is_allowed_redirect(&u), "redirect allow {}", url_str);
+        }
+    }
+
+    #[test]
+    fn test_vimm_redirect_matches_primary_rules() {
+        // Ensure redirect validation is NOT more permissive than primary fetch validation
+        let good = Url::parse("https://vimm.net/vault/123").unwrap();
+        assert!(is_allowed_vault_path(good.path()));
+        assert!(is_allowed_redirect(&good));
+
+        let bad_path = Url::parse("https://vimm.net/vaultevil").unwrap();
+        assert!(!is_allowed_vault_path(bad_path.path()));
+        assert!(!is_allowed_redirect(&bad_path));
+
+        let bad_port = Url::parse("https://vimm.net:8080/vault/123").unwrap();
+        assert!(!is_allowed_port(&bad_port));
+        assert!(!is_allowed_redirect(&bad_port));
+
+        let bad_creds = Url::parse("https://user@vimm.net/vault/123").unwrap();
+        assert!(!bad_creds.username().is_empty());
+        assert!(!is_allowed_redirect(&bad_creds));
     }
 }
