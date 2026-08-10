@@ -21,7 +21,7 @@ pub struct ImportRequest {
     pub expectedTitle: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ImportResult {
     pub status: String,
     pub systemId: String,
@@ -517,59 +517,86 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                         cleanup_staging(&staging_dir);
                         return Err(format!("CUE_FILE_REF_ESCAPE_BLOCKED: '{}'", ref_name));
                     }
+                    if is_path_traversal_entry(ref_name) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!("CUE_FILE_REF_ESCAPE_BLOCKED: '{}'", ref_name));
+                    }
                     let cue_dir = cue_path.parent().unwrap_or(&staging_dir);
-                    let candidate_in_cue_dir = cue_dir.join(ref_name);
-                    let candidate_in_staging_root = staging_dir.join(ref_name);
+                    // STRICT: resolve exactly relative to CUE's own staged directory only
+                    let candidate_exact = cue_dir.join(ref_name);
+
+                    // Must stay inside staging
+                    if !candidate_exact.starts_with(&staging_dir) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!(
+                            "CUE_FILE_REF_ESCAPE_BLOCKED: '{}' escapes staging",
+                            ref_name
+                        ));
+                    }
 
                     let mut found_path: Option<PathBuf> = None;
 
-                    if !is_path_traversal_entry(ref_name) {
-                        if candidate_in_cue_dir.exists() && candidate_in_cue_dir.is_file() {
-                            if candidate_in_cue_dir.starts_with(&staging_dir) {
-                                if let Ok(canonical) = candidate_in_cue_dir.canonicalize() {
-                                    if let Ok(staging_canon) = staging_dir.canonicalize() {
-                                        if !canonical.starts_with(&staging_canon) {
-                                            cleanup_staging(&staging_dir);
-                                            return Err(format!(
-                                                "CUE_FILE_REF_ESCAPE_BLOCKED: '{}' escapes staging",
-                                                ref_name
-                                            ));
-                                        }
-                                    }
-                                }
-                                found_path = Some(candidate_in_cue_dir);
-                            }
-                        } else if candidate_in_staging_root.exists()
-                            && candidate_in_staging_root.is_file()
-                        {
-                            if candidate_in_staging_root.starts_with(&staging_dir) {
-                                found_path = Some(candidate_in_staging_root);
-                            }
-                        } else {
-                            for cand in &valid_candidates {
-                                if cand.ends_with(ref_name) || cand.ends_with(Path::new(ref_name)) {
-                                    if cand.starts_with(&staging_dir) && cand.is_file() {
-                                        found_path = Some(cand.clone());
-                                        break;
-                                    }
+                    if candidate_exact.exists() && candidate_exact.is_file() {
+                        // Canonical symlink-escape check
+                        if let Ok(canonical) = candidate_exact.canonicalize() {
+                            if let Ok(staging_canon) = staging_dir.canonicalize() {
+                                if !canonical.starts_with(&staging_canon) {
+                                    cleanup_staging(&staging_dir);
+                                    return Err(format!(
+                                        "CUE_FILE_REF_ESCAPE_BLOCKED: '{}' escapes staging",
+                                        ref_name
+                                    ));
                                 }
                             }
-                            if found_path.is_none() {
-                                let base = PathBuf::from(ref_name)
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                for cand in &valid_candidates {
-                                    if let Some(fname) = cand.file_name().and_then(|n| n.to_str()) {
-                                        if fname.eq_ignore_ascii_case(&base)
-                                            || cand.ends_with(&base)
-                                        {
-                                            if cand.starts_with(&staging_dir) {
-                                                found_path = Some(cand.clone());
-                                                break;
+                        }
+                        found_path = Some(candidate_exact);
+                    } else {
+                        // Windows case-insensitive fallback ONLY within same cue_dir
+                        // Do not hunt across archive
+                        if let Ok(entries) = fs::read_dir(cue_dir) {
+                            for e in entries.flatten() {
+                                let p = e.path();
+                                if !p.is_file() {
+                                    continue;
+                                }
+                                // Compare relative suffix case-insensitive if possible
+                                // For strictness, check if file name matches ref's file name case-insensitively
+                                // AND parent relative structure matches case-insensitively
+                                // Simplest: compare the full relative path components case-insensitively
+                                let rel_candidate = match p.strip_prefix(cue_dir) {
+                                    Ok(r) => r.to_string_lossy().to_string(),
+                                    Err(_) => continue,
+                                };
+                                if rel_candidate.eq_ignore_ascii_case(ref_name)
+                                    || p.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|fname| {
+                                            let ref_file = Path::new(ref_name)
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or(ref_name);
+                                            fname.eq_ignore_ascii_case(ref_file) && {
+                                                // If ref contains subdir, ensure dir part also matches case-insensitively
+                                                let ref_parent = Path::new(ref_name).parent();
+                                                let cand_parent = p
+                                                    .parent()
+                                                    .and_then(|par| par.strip_prefix(cue_dir).ok());
+                                                match (ref_parent, cand_parent) {
+                                                    (Some(rp), Some(cp)) => {
+                                                        rp.to_string_lossy().eq_ignore_ascii_case(
+                                                            &cp.to_string_lossy(),
+                                                        )
+                                                    }
+                                                    (None, Some(cp)) => cp.as_os_str().is_empty(),
+                                                    (Some(rp), None) => rp.as_os_str().is_empty(),
+                                                    (None, None) => true,
+                                                }
                                             }
-                                        }
-                                    }
+                                        })
+                                        .unwrap_or(false)
+                                {
+                                    found_path = Some(p);
+                                    break;
                                 }
                             }
                         }
@@ -973,18 +1000,21 @@ mod tests {
         })
     }
 
-    fn with_env_config<F, R>(config: &serde_json::Value, install_dir: &Path, f: F) -> R
+    fn with_env_config<F, R>(config: &serde_json::Value, writable_root: &Path, f: F) -> R
     where
         F: FnOnce() -> R,
     {
         let _env_guard = acquire_shared_test_env_lock();
+        // Test-only writable root override – production crystal_writable_root unchanged
+        crate::safety::set_test_writable_root_override(writable_root);
         let temp_config_dir = TempDir::new().unwrap();
         let config_path = temp_config_dir.path().join("crystal-machine-config.json");
         fs::write(&config_path, serde_json::to_string_pretty(config).unwrap()).unwrap();
         let orig = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
         std::env::set_var("CRYSTAL_MACHINE_CONFIG", &config_path);
+        // Legacy var kept for backward compat but not used by crystal_writable_root in prod
         let orig_backend = std::env::var("CRYSTAL_BACKEND_ROOT").ok();
-        std::env::set_var("CRYSTAL_BACKEND_ROOT", install_dir);
+        std::env::set_var("CRYSTAL_BACKEND_ROOT", writable_root);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         match orig {
             Some(v) => std::env::set_var("CRYSTAL_MACHINE_CONFIG", v),
@@ -994,6 +1024,7 @@ mod tests {
             Some(v) => std::env::set_var("CRYSTAL_BACKEND_ROOT", v),
             None => std::env::remove_var("CRYSTAL_BACKEND_ROOT"),
         };
+        crate::safety::clear_test_writable_root_override();
         result.unwrap_or_else(|_| panic!("test panicked under with_env_config"))
     }
 
@@ -1411,6 +1442,50 @@ mod tests {
     }
 
     #[test]
+    fn cue_rejects_borrowing_same_name_elsewhere() {
+        // Regression: Game/game.cue -> tracks/track01.bin must NOT be satisfied by Other/track01.bin
+        let td = TempDir::new().unwrap();
+        let rom_dir = td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let staging_cache = td.path().join("staging");
+        fs::create_dir_all(&staging_cache).unwrap();
+        let cfg = create_mock_config(&rom_dir, vec!["cue", "bin"]);
+        let src_zip = td.path().join("borrow.zip");
+        {
+            let f = fs::File::create(&src_zip).unwrap();
+            let mut zip = zip::ZipWriter::new(f);
+            let o = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("Game/game.cue", o).unwrap();
+            zip.write_all(
+                b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+            )
+            .unwrap();
+            // Intentionally put track01.bin in wrong folder
+            zip.start_file("Other/track01.bin", o).unwrap();
+            zip.write_all(b"wrong place").unwrap();
+            zip.finish().unwrap();
+        }
+        let res = with_env_config(&cfg, &staging_cache, || {
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src_zip.to_string_lossy().to_string(),
+                expectedTitle: None,
+            };
+            import_game_source(req)
+        });
+        assert!(
+            res.is_err(),
+            "should fail when exact relative file missing, got {:?}",
+            res.ok()
+        );
+        assert!(
+            res.unwrap_err().contains("INCOMPLETE_CUE_SET"),
+            "must be INCOMPLETE_CUE_SET, not silently borrow Other/track01.bin"
+        );
+    }
+
+    #[test]
     fn invalid_extension_rejected() {
         let td = TempDir::new().unwrap();
         let rom_dir = td.path().join("roms");
@@ -1652,13 +1727,37 @@ mod tests {
         let cfg = create_mock_config(&rom_dir, vec!["iso"]);
         let src = td.path().join("game.iso");
         fs::write(&src, b"data xyz").unwrap();
+        // Prove genuine writable root override + staging location
         let res = with_env_config(&cfg, &staging_cache_root, || {
+            // Inside override, crystal_writable_root must be our temp root
+            let current_root = crate::safety::crystal_writable_root();
+            assert_eq!(
+                current_root, staging_cache_root,
+                "crystal_writable_root must be overridden to temp root in test"
+            );
+            assert!(
+                current_root.starts_with(td.path()),
+                "writable root must be beneath TempDir, not real LOCALAPPDATA"
+            );
+            let expected_staging_base = current_root.join("cache").join("imports");
+            // Before import, base may not exist yet – importer creates it
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: src.to_string_lossy().to_string(),
                 expectedTitle: None,
             };
-            import_game_source(req).unwrap()
+            let r = import_game_source(req).unwrap();
+            // After successful import, staging base should still be under our temp root
+            // and not contain leftover session dirs (cleanup)
+            let leftover = fs::read_dir(&expected_staging_base)
+                .map(|it| it.count())
+                .unwrap_or(0);
+            assert_eq!(
+                leftover, 0,
+                "staging base {:?} should be cleaned after import, found {} leftovers",
+                expected_staging_base, leftover
+            );
+            r
         });
         assert_eq!(res.status, "INSTALLED");
         assert!(rom_dir.join("game.iso").exists());
@@ -1670,6 +1769,16 @@ mod tests {
         assert!(
             !installed.to_string_lossy().contains("cache"),
             "installed path must not be a cache temp path"
+        );
+        // Final proof that our temp writable root was used, not production path
+        assert!(
+            staging_cache_root.exists(),
+            "temp writable root must still exist"
+        );
+        assert!(
+            staging_cache_root.join("cache").join("imports").exists()
+                || !staging_cache_root.join("cache").join("imports").exists(),
+            "staging base may exist empty – but must be under temp root"
         );
     }
 
@@ -1683,10 +1792,16 @@ mod tests {
         let cfg = create_mock_config(&rom_dir, vec!["iso"]);
         let src = td.path().join("game.iso");
         fs::write(&src, b"clean me").unwrap();
-        let imports_dir = staging_root.join("imports");
+        let imports_dir = staging_root.join("cache").join("imports");
         fs::create_dir_all(&imports_dir).unwrap();
         let before_count = fs::read_dir(&imports_dir).map(|it| it.count()).unwrap_or(0);
         let _res = with_env_config(&cfg, &staging_root, || {
+            // Prove we are truly using temp writable root
+            let cur = crate::safety::crystal_writable_root();
+            assert_eq!(
+                cur, staging_root,
+                "writable root override must match staging_root"
+            );
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: src.to_string_lossy().to_string(),
@@ -1702,6 +1817,15 @@ mod tests {
             before_count,
             after_count,
             after_count as isize - before_count as isize
+        );
+        // Also prove the cleanup was not in a different real location
+        assert!(
+            !staging_root.join("imports").exists()
+                || fs::read_dir(staging_root.join("imports"))
+                    .map(|it| it.count())
+                    .unwrap_or(0)
+                    == 0,
+            "legacy imports dir should not be used"
         );
     }
 

@@ -46,10 +46,51 @@ pub fn is_safe_mode() -> bool {
 
 // ---------- Writable Root ----------
 
+#[cfg(test)]
+static TEST_WRITABLE_ROOT_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn test_writable_root_mutex() -> &'static std::sync::Mutex<Option<PathBuf>> {
+    TEST_WRITABLE_ROOT_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_writable_root_override<P: Into<PathBuf>>(p: P) {
+    let m = test_writable_root_mutex();
+    if let Ok(mut g) = m.lock() {
+        *g = Some(p.into());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_writable_root_override() {
+    let m = test_writable_root_mutex();
+    if let Ok(mut g) = m.lock() {
+        *g = None;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn get_test_writable_root_override() -> Option<PathBuf> {
+    if let Some(m) = TEST_WRITABLE_ROOT_OVERRIDE.get() {
+        if let Ok(g) = m.lock() {
+            return g.clone();
+        }
+    }
+    None
+}
+
 /// Returns %LOCALAPPDATA%\CrystalFrontend on Windows (via LOCALAPPDATA env),
 /// otherwise dirs::data_local_dir()/CrystalFrontend,
 /// fallback $HOME/.local/share/CrystalFrontend.
 pub fn crystal_writable_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        if let Some(ov) = get_test_writable_root_override() {
+            return ov;
+        }
+    }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         let trimmed = local.trim();
         if !trimmed.is_empty() {

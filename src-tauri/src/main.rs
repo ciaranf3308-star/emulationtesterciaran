@@ -1,3 +1,4 @@
+mod acquisition_watch;
 mod discovery;
 mod import_game;
 mod machine_config;
@@ -1158,7 +1159,14 @@ pub fn run() {
             discovery::fetch_vimm,
             discovery::discovery_cache_read,
             discovery::discovery_cache_write,
-            import_game::import_game_source
+            import_game::import_game_source,
+            acquisition_watch::get_default_download_directory,
+            acquisition_watch::start_acquisition_watch,
+            acquisition_watch::get_acquisition_watch_status,
+            acquisition_watch::cancel_acquisition_watch,
+            acquisition_watch::get_acquisition_settings,
+            acquisition_watch::set_acquisition_custom_watch_directory,
+            acquisition_watch::clear_acquisition_custom_watch_directory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
