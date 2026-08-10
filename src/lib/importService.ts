@@ -4,6 +4,7 @@
  * Frontend only provides systemId + sourcePath.
  */
 import { isTauriEnvironment } from '../runtime/environment';
+import { getTauriInvoker } from '../runtime/tauri';
 
 export type ImportRequest = {
   systemId: string;
@@ -27,7 +28,7 @@ export type ImportStatus =
   | 'FAILED';
 
 export type ImportResult = {
-  status: string;
+  status: ImportStatus;
   systemId: string;
   installedPaths: string[];
   detectedFiles: string[];
@@ -41,9 +42,8 @@ export async function importGameSource(req: ImportRequest): Promise<ImportResult
   if (!isTauriEnvironment()) {
     throw new Error('import_game_source only available in Tauri environment');
   }
-  const anyWin = window as any;
-  const invoke = anyWin.__TAURI__?.core?.invoke ?? anyWin.__TAURI__?.invoke;
-  if (typeof invoke !== 'function') {
+  const invoke = await getTauriInvoker();
+  if (typeof invoke !== 'function' || invoke === null) {
     throw new Error('Tauri invoke not available');
   }
   const result = (await invoke('import_game_source', { request: req })) as ImportResult;

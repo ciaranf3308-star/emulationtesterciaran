@@ -1,10 +1,11 @@
-#![allow(unused)]
-
-mod safety;
 mod discovery;
 mod import_game;
+mod machine_config;
+mod safety;
 
-use safety::{crystal_writable_root, ensure_writable_dirs, init_safe_mode_from_env, is_safe_mode, log_event};
+use safety::{
+    crystal_writable_root, ensure_writable_dirs, init_safe_mode_from_env, is_safe_mode, log_event,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -127,119 +128,13 @@ struct GamelistMeta {
 }
 
 // ---------- Machine Config discovery ----------
-
+// Single authority – delegates to machine_config module
 fn candidate_config_paths() -> Vec<PathBuf> {
-    let mut cands = Vec::new();
-    if let Ok(envp) = std::env::var("CRYSTAL_MACHINE_CONFIG") {
-        if !envp.trim().is_empty() {
-            cands.push(PathBuf::from(envp));
-        }
-    }
-    if let Ok(cur) = std::env::current_exe() {
-        if let Some(parent) = cur.parent() {
-            cands.push(parent.join("crystal-machine-config.json"));
-            cands.push(parent.join("machine-config.json"));
-            if let Some(gparent) = parent.parent() {
-                cands.push(gparent.join("crystal-machine-config.json"));
-                cands.push(gparent.join("machine-config.json"));
-            }
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        cands.push(cwd.join("crystal-machine-config.json"));
-        cands.push(cwd.join("machine-config.json"));
-        if let Some(p) = cwd.parent() {
-            cands.push(p.join("crystal-machine-config.json"));
-            cands.push(p.join("machine-config.json"));
-            if let Some(gp) = p.parent() {
-                cands.push(gp.join("crystal-machine-config.json"));
-            }
-        }
-    }
-    if let Some(data_local) = dirs::data_local_dir() {
-        cands.push(data_local.join("CrystalFrontend").join("crystal-machine-config.json"));
-        cands.push(data_local.join("Crystal Frontend").join("crystal-machine-config.json"));
-        cands.push(data_local.join("CrystalFrontend").join("machine-config.json"));
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        cands.push(config_dir.join("CrystalFrontend").join("crystal-machine-config.json"));
-        cands.push(config_dir.join("Crystal Frontend").join("crystal-machine-config.json"));
-    }
-    if let Some(home) = dirs::home_dir() {
-        cands.push(home.join("crystal-machine-config.json"));
-        cands.push(home.join(".config").join("crystal").join("crystal-machine-config.json"));
-    }
-    // De-duplicate
-    let mut uniq = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for p in cands {
-        let s = p.to_string_lossy().to_string();
-        if seen.insert(s) {
-            uniq.push(p);
-        }
-    }
-    uniq
+    machine_config::candidate_config_paths()
 }
 
 fn load_machine_config_json() -> Result<serde_json::Value, String> {
-    let candidates = candidate_config_paths();
-    let mut tried: Vec<String> = Vec::new();
-    for path in &candidates {
-        tried.push(path.display().to_string());
-        if path.exists() {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    match serde_json::from_str::<serde_json::Value>(&content) {
-                        Ok(v) => {
-                            if v.get("schemaVersion").is_none() {
-                                let msg = format!("Config at {} missing schemaVersion", path.display());
-                                log_event("warn", &format!("machine_config discovery invalid: {}", msg));
-                                return Err(msg);
-                            }
-                            if v.get("systems").and_then(|s| s.as_array()).is_none() {
-                                let msg = format!("Config at {} missing systems array", path.display());
-                                log_event("warn", &format!("machine_config discovery invalid: {}", msg));
-                                return Err(msg);
-                            }
-                            let sv = v.get("schemaVersion").and_then(|s| s.as_u64()).unwrap_or(0);
-                            if sv != 1 {
-                                let msg = format!("Unsupported schemaVersion {} at {}", sv, path.display());
-                                log_event("warn", &msg);
-                                return Err(msg);
-                            }
-                            let sys_count = v.get("systems").and_then(|s| s.as_array()).map(|a| a.len()).unwrap_or(0);
-                            log_event(
-                                "info",
-                                &format!(
-                                    "machine_config loaded ok from '{}' schemaVersion={} systems={} writable_root='{}' safe_mode={}",
-                                    path.display(),
-                                    sv,
-                                    sys_count,
-                                    crystal_writable_root().display(),
-                                    is_safe_mode()
-                                ),
-                            );
-                            return Ok(v);
-                        }
-                        Err(e) => {
-                            let msg = format!("Failed to parse JSON at {}: {}", path.display(), e);
-                            log_event("error", &msg);
-                            return Err(msg);
-                        }
-                    }
-                }
-                Err(_e) => {
-                    continue;
-                }
-            }
-        }
-    }
-    let msg = format!(
-        "Real machine configuration failed to load – frontend cannot start with example data in installed mode. No machine-local config found. Tried: {}. Place crystal-machine-config.json next to executable, in current directory, in %LOCALAPPDATA%/CrystalFrontend/, or set CRYSTAL_MACHINE_CONFIG env var.",
-        tried.join(", ")
-    );
-    log_event("error", &format!("machine_config discovery failed: {}", msg));
-    Err(msg)
+    machine_config::load_machine_config_json()
 }
 
 #[tauri::command]
@@ -248,8 +143,19 @@ fn get_machine_config() -> Result<serde_json::Value, String> {
     let res = load_machine_config_json();
     match &res {
         Ok(v) => {
-            let sys_len = v.get("systems").and_then(|s| s.as_array()).map(|a| a.len()).unwrap_or(0);
-            log_event("info", &format!("get_machine_config success systems={} safe_mode={}", sys_len, is_safe_mode()));
+            let sys_len = v
+                .get("systems")
+                .and_then(|s| s.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            log_event(
+                "info",
+                &format!(
+                    "get_machine_config success systems={} safe_mode={}",
+                    sys_len,
+                    is_safe_mode()
+                ),
+            );
         }
         Err(e) => {
             log_event("warn", &format!("get_machine_config failed: {}", e));
@@ -302,32 +208,48 @@ fn list_files_in_dir(dir: &Path, valid_exts: &[String]) -> Vec<PathBuf> {
 }
 
 fn basename_without_ext(path: &Path) -> String {
-    path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string()
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn extension_of(path: &Path) -> String {
-    path.extension().and_then(|s| s.to_str()).map(|s| format!(".{}", s)).unwrap_or_default()
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| format!(".{}", s))
+        .unwrap_or_default()
 }
 
 fn get_systems_from_config(config: &serde_json::Value) -> Vec<serde_json::Value> {
-    config.get("systems").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+    config
+        .get("systems")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn find_system_in_config(config: &serde_json::Value, system_id: &str) -> Option<serde_json::Value> {
-    let systems = get_systems_from_config(config);
-    for sys in systems {
-        if sys.get("id").and_then(|id| id.as_str()) == Some(system_id) {
-            return Some(sys);
-        }
-    }
-    None
+    machine_config::find_system_in_config(config, system_id).cloned()
 }
 
 fn get_roots_from_config(config: &serde_json::Value) -> (String, String, String) {
     let roots = config.get("roots");
-    let gamelists = roots.and_then(|r| r.get("gamelists")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let scraped = roots.and_then(|r| r.get("scrapedMedia")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let rom = roots.and_then(|r| r.get("rom")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let gamelists = roots
+        .and_then(|r| r.get("gamelists"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let scraped = roots
+        .and_then(|r| r.get("scrapedMedia"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let rom = roots
+        .and_then(|r| r.get("rom"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     (gamelists, scraped, rom)
 }
 
@@ -367,7 +289,9 @@ fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, Gamelist
                         "name" => game.name = Some(txt),
                         "desc" => game.desc = Some(txt),
                         "path" => game.path = Some(txt),
-                        "favorite" => game.favorite = Some(txt.to_lowercase() == "true" || txt == "1"),
+                        "favorite" => {
+                            game.favorite = Some(txt.to_lowercase() == "true" || txt == "1")
+                        }
                         "playcount" => game.playcount = txt.parse::<u32>().ok(),
                         "lastplayed" => game.lastplayed = Some(txt),
                         "developer" => game.developer = Some(txt),
@@ -388,7 +312,10 @@ fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, Gamelist
                         let key = if let Some(p) = &g.path {
                             let clean = p.trim_start_matches("./").trim_start_matches(".\\");
                             let pb = Path::new(clean);
-                            pb.file_stem().and_then(|s| s.to_str()).unwrap_or(clean).to_lowercase()
+                            pb.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(clean)
+                                .to_lowercase()
                         } else if let Some(n) = &g.name {
                             n.to_lowercase()
                         } else {
@@ -410,13 +337,33 @@ fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, Gamelist
     map
 }
 
-fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str, roots_scraped: &str) -> Vec<GameEntry> {
-    let system_id = system.get("id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-    let system_full = system.get("fullName").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let rom_dir_str = system.get("romDirectory").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let valid_exts: Vec<String> = system.get("validExtensions")
+fn enumerate_games_for_system(
+    system: &serde_json::Value,
+    roots_gamelists: &str,
+    roots_scraped: &str,
+) -> Vec<GameEntry> {
+    let system_id = system
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let system_full = system
+        .get("fullName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let rom_dir_str = system
+        .get("romDirectory")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let valid_exts: Vec<String> = system
+        .get("validExtensions")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     let rom_dir_path = PathBuf::from(rom_dir_str.clone());
@@ -424,8 +371,14 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
     let files = list_files_in_dir(&rom_dir_path, &valid_exts);
 
     let gamelist_path = if !roots_gamelists.is_empty() {
-        let sep = if roots_gamelists.contains('\\') { "\\" } else { "/" };
-        let clean_root = roots_gamelists.trim_end_matches(|c| c == '/' || c == '\\').to_string();
+        let sep = if roots_gamelists.contains('\\') {
+            "\\"
+        } else {
+            "/"
+        };
+        let clean_root = roots_gamelists
+            .trim_end_matches(|c| c == '/' || c == '\\')
+            .to_string();
         PathBuf::from(format!("{}{}{}/gamelist.xml", clean_root, sep, system_id))
     } else {
         PathBuf::from(format!("{}/gamelist.xml", system_id))
@@ -439,11 +392,19 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
         let key = basename.to_lowercase();
         let meta = gamelist_map.get(&key);
         let meta2 = if meta.is_none() {
-            let file_name = fpath.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+            let file_name = fpath
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
             gamelist_map.get(&file_name)
-        } else { None };
+        } else {
+            None
+        };
         let final_meta = meta.or(meta2);
-        let name = final_meta.and_then(|m| m.name.clone()).unwrap_or_else(|| basename.clone());
+        let name = final_meta
+            .and_then(|m| m.name.clone())
+            .unwrap_or_else(|| basename.clone());
         let file_size = std::fs::metadata(&fpath).ok().map(|m| m.len());
         let id = format!("{}/{}", system_id, basename);
         entries.push(GameEntry {
@@ -478,10 +439,19 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
 #[tauri::command]
 fn list_games(system_id: String) -> Result<Vec<GameEntry>, String> {
     let config = load_machine_config_json()?;
-    let system = find_system_in_config(&config, &system_id).ok_or_else(|| format!("System '{}' not found in MachineConfig", system_id))?;
+    let system = find_system_in_config(&config, &system_id)
+        .ok_or_else(|| format!("System '{}' not found in MachineConfig", system_id))?;
     let (gamelists_root, scraped_root, _rom_root) = get_roots_from_config(&config);
     let games = enumerate_games_for_system(&system, &gamelists_root, &scraped_root);
-    log_event("info", &format!("list_games system='{}' count={} safe_mode={}", system_id, games.len(), is_safe_mode()));
+    log_event(
+        "info",
+        &format!(
+            "list_games system='{}' count={} safe_mode={}",
+            system_id,
+            games.len(),
+            is_safe_mode()
+        ),
+    );
     Ok(games)
 }
 
@@ -496,7 +466,14 @@ fn list_all_games() -> Result<Vec<GameEntry>, String> {
         all.append(&mut games);
     }
     all.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    log_event("info", &format!("list_all_games total={} safe_mode={}", all.len(), is_safe_mode()));
+    log_event(
+        "info",
+        &format!(
+            "list_all_games total={} safe_mode={}",
+            all.len(),
+            is_safe_mode()
+        ),
+    );
     Ok(all)
 }
 
@@ -507,9 +484,17 @@ fn get_favorites() -> Result<Vec<GameEntry>, String> {
     let systems = get_systems_from_config(&config);
     let mut favs = Vec::new();
     for sys in &systems {
-        let sys_id = sys.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let sys_id = sys
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let gamelist_path = {
-            let sep = if gamelists_root.contains('\\') { "\\" } else { "/" };
+            let sep = if gamelists_root.contains('\\') {
+                "\\"
+            } else {
+                "/"
+            };
             let clean = gamelists_root.trim_end_matches(|c| c == '/' || c == '\\');
             PathBuf::from(format!("{}{}{}/gamelist.xml", clean, sep, sys_id))
         };
@@ -531,7 +516,14 @@ fn get_favorites() -> Result<Vec<GameEntry>, String> {
         }
     }
     favs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    log_event("info", &format!("get_favorites count={} safe_mode={}", favs.len(), is_safe_mode()));
+    log_event(
+        "info",
+        &format!(
+            "get_favorites count={} safe_mode={}",
+            favs.len(),
+            is_safe_mode()
+        ),
+    );
     Ok(favs)
 }
 
@@ -550,16 +542,34 @@ fn get_recently_played() -> Result<Vec<GameEntry>, String> {
         }
     }
     recents.sort_by(|a, b| {
-        b.last_played.as_ref().unwrap_or(&String::new()).cmp(a.last_played.as_ref().unwrap_or(&String::new()))
+        b.last_played
+            .as_ref()
+            .unwrap_or(&String::new())
+            .cmp(a.last_played.as_ref().unwrap_or(&String::new()))
     });
     recents.truncate(50);
-    log_event("info", &format!("get_recently_played count={} safe_mode={}", recents.len(), is_safe_mode()));
+    log_event(
+        "info",
+        &format!(
+            "get_recently_played count={} safe_mode={}",
+            recents.len(),
+            is_safe_mode()
+        ),
+    );
     Ok(recents)
 }
 
 // ---------- Media verification ----------
 
-const KNOWN_MEDIA_TYPES: &[&str] = &["covers", "physicalmedia", "screenshots", "titlescreens", "videos", "marquees", "miximages"];
+const KNOWN_MEDIA_TYPES: &[&str] = &[
+    "covers",
+    "physicalmedia",
+    "screenshots",
+    "titlescreens",
+    "videos",
+    "marquees",
+    "miximages",
+];
 
 fn media_extensions_for_type(media_type: &str) -> Vec<&'static str> {
     match media_type {
@@ -577,13 +587,21 @@ fn media_extensions_for_type(media_type: &str) -> Vec<&'static str> {
     }
 }
 
-fn find_media_path(root: &str, system_id: &str, media_type: &str, rom_basename: &str) -> Option<String> {
+fn find_media_path(
+    root: &str,
+    system_id: &str,
+    media_type: &str,
+    rom_basename: &str,
+) -> Option<String> {
     if root.is_empty() {
         return None;
     }
     let clean = root.trim_end_matches(|c| c == '/' || c == '\\');
     for ext in media_extensions_for_type(media_type) {
-        let path = PathBuf::from(clean).join(system_id).join(media_type).join(format!("{}{}", rom_basename, ext));
+        let path = PathBuf::from(clean)
+            .join(system_id)
+            .join(media_type)
+            .join(format!("{}{}", rom_basename, ext));
         if path.exists() {
             return Some(path.to_string_lossy().to_string());
         }
@@ -592,7 +610,11 @@ fn find_media_path(root: &str, system_id: &str, media_type: &str, rom_basename: 
 }
 
 #[tauri::command]
-fn verify_media(system_id: String, rom_basename: String, media_types: Vec<String>) -> Result<MediaVerificationResult, String> {
+fn verify_media(
+    system_id: String,
+    rom_basename: String,
+    media_types: Vec<String>,
+) -> Result<MediaVerificationResult, String> {
     let config = load_machine_config_json()?;
     let (_, scraped_root, _) = get_roots_from_config(&config);
     if scraped_root.is_empty() {
@@ -600,7 +622,10 @@ fn verify_media(system_id: String, rom_basename: String, media_types: Vec<String
     }
     let mut result_map: HashMap<String, MediaCheck> = HashMap::new();
     let types_to_check = if media_types.is_empty() {
-        KNOWN_MEDIA_TYPES.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        KNOWN_MEDIA_TYPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
     } else {
         media_types.clone()
     };
@@ -610,7 +635,11 @@ fn verify_media(system_id: String, rom_basename: String, media_types: Vec<String
         let mut exists = false;
         let mut found_path: Option<String> = None;
         let base_path_no_ext = {
-            let sep = if scraped_root.contains('\\') { "\\" } else { "/" };
+            let sep = if scraped_root.contains('\\') {
+                "\\"
+            } else {
+                "/"
+            };
             let clean = scraped_root.trim_end_matches(|c| c == '/' || c == '\\');
             format!("{}{}{}{}{}{}", clean, sep, system_id, sep, mtype, sep)
         };
@@ -625,9 +654,20 @@ fn verify_media(system_id: String, rom_basename: String, media_types: Vec<String
                 }
             }
         }
-        result_map.insert(mtype, MediaCheck { exists, path: found_path, candidates });
+        result_map.insert(
+            mtype,
+            MediaCheck {
+                exists,
+                path: found_path,
+                candidates,
+            },
+        );
     }
-    Ok(MediaVerificationResult { system_id, rom_basename, media: result_map })
+    Ok(MediaVerificationResult {
+        system_id,
+        rom_basename,
+        media: result_map,
+    })
 }
 
 // ---------- Launch backend ----------
@@ -638,10 +678,17 @@ fn contains_blocked_placeholder(template: &str) -> Option<(String, String)> {
         return Some(("%INJECT%".to_string(), "Requires process injection (Xbox360 Xenia: STARTDIR=\"%GAMEDIR%\"; \"%EMULATOR%\" \"%ROM%\" + INJECT semantics not yet implemented)".to_string()));
     }
     if upper.contains("%EMULATOR_OS-SHELL%") || upper.contains("%OS-SHELL%") {
-        return Some(("%EMULATOR_OS-SHELL%".to_string(), "OS-SHELL requires OS shell execution semantics (Steam) not in launch contract V6".to_string()));
+        return Some((
+            "%EMULATOR_OS-SHELL%".to_string(),
+            "OS-SHELL requires OS shell execution semantics (Steam) not in launch contract V6"
+                .to_string(),
+        ));
     }
     if upper.contains("OS-SHELL") {
-        return Some(("%OS-SHELL%".to_string(), "OS-SHELL token detected – blocked until backend implements os_shell".to_string()));
+        return Some((
+            "%OS-SHELL%".to_string(),
+            "OS-SHELL token detected – blocked until backend implements os_shell".to_string(),
+        ));
     }
     None
 }
@@ -661,15 +708,31 @@ fn extract_placeholders(template: &str) -> Vec<String> {
 
 fn is_known_placeholder(ph: &str) -> bool {
     const KNOWN: &[&str] = &[
-        "%ROM%", "%ROM_RAW%", "%BASENAME%", "%GAMEDIR%", "%ROMPATH%",
-        "%EMUDIR%", "%EMUPATH%", "%ESPATH%", "%STARTDIR%",
-        "%INJECT%", "%HIDEWINDOW%", "%ESCAPESPECIALS%", "%RUNINBACKGROUND%",
+        "%ROM%",
+        "%ROM_RAW%",
+        "%BASENAME%",
+        "%GAMEDIR%",
+        "%ROMPATH%",
+        "%EMUDIR%",
+        "%EMUPATH%",
+        "%ESPATH%",
+        "%STARTDIR%",
+        "%INJECT%",
+        "%HIDEWINDOW%",
+        "%ESCAPESPECIALS%",
+        "%RUNINBACKGROUND%",
         "%EMULATOR%",
     ];
     let up = ph.to_uppercase();
-    if KNOWN.contains(&up.as_str()) { return true; }
-    if up.starts_with("%EMULATOR_") && up.ends_with('%') { return true; }
-    if up.starts_with("%CORE_") && up.ends_with('%') { return true; }
+    if KNOWN.contains(&up.as_str()) {
+        return true;
+    }
+    if up.starts_with("%EMULATOR_") && up.ends_with('%') {
+        return true;
+    }
+    if up.starts_with("%CORE_") && up.ends_with('%') {
+        return true;
+    }
     false
 }
 
@@ -701,7 +764,11 @@ fn expand_path_entry(entry: &str, espath: &Option<PathBuf>, gamedir: &Path) -> S
     out
 }
 
-fn resolve_find_rule_path(rule: &FindRule, espath: &Option<PathBuf>, gamedir: &Path) -> Option<PathBuf> {
+fn resolve_find_rule_path(
+    rule: &FindRule,
+    espath: &Option<PathBuf>,
+    gamedir: &Path,
+) -> Option<PathBuf> {
     for entry_rule in &rule.rules {
         for entry in &entry_rule.entries {
             let expanded = expand_path_entry(entry, espath, gamedir);
@@ -720,7 +787,11 @@ fn resolve_find_rule_path(rule: &FindRule, espath: &Option<PathBuf>, gamedir: &P
     None
 }
 
-fn resolve_emulator_paths(req: &LaunchBackendRequest, espath: &Option<PathBuf>, gamedir: &Path) -> HashMap<String, PathBuf> {
+fn resolve_emulator_paths(
+    req: &LaunchBackendRequest,
+    espath: &Option<PathBuf>,
+    gamedir: &Path,
+) -> HashMap<String, PathBuf> {
     let mut map = HashMap::new();
     for fr in &req.emulatorFindRules {
         if let Some(resolved) = resolve_find_rule_path(fr, espath, gamedir) {
@@ -737,7 +808,11 @@ fn resolve_emulator_paths(req: &LaunchBackendRequest, espath: &Option<PathBuf>, 
     map
 }
 
-fn resolve_core_paths(req: &LaunchBackendRequest, espath: &Option<PathBuf>, gamedir: &Path) -> HashMap<String, PathBuf> {
+fn resolve_core_paths(
+    req: &LaunchBackendRequest,
+    espath: &Option<PathBuf>,
+    gamedir: &Path,
+) -> HashMap<String, PathBuf> {
     let mut map = HashMap::new();
     for fr in &req.coreFindRules {
         if let Some(resolved) = resolve_find_rule_path(fr, espath, gamedir) {
@@ -782,14 +857,17 @@ fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
     }
     let prog_raw = args.remove(0);
     let prog = prog_raw.trim_matches('"').to_string();
-    let cleaned_args = args.into_iter().map(|a| {
-        let t = a.trim();
-        if t.starts_with('"') && t.ends_with('"') && t.len() >= 2 {
-            t[1..t.len()-1].to_string()
-        } else {
-            t.to_string()
-        }
-    }).collect();
+    let cleaned_args = args
+        .into_iter()
+        .map(|a| {
+            let t = a.trim();
+            if t.starts_with('"') && t.ends_with('"') && t.len() >= 2 {
+                t[1..t.len() - 1].to_string()
+            } else {
+                t.to_string()
+            }
+        })
+        .collect();
     (prog, cleaned_args)
 }
 
@@ -829,9 +907,10 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
     }
 
     let config_opt = load_machine_config_json().ok();
-    let espath = config_opt.as_ref().and_then(|c| derive_espath(c)).or_else(|| {
-        std::env::var("ESPATH").ok().map(PathBuf::from)
-    });
+    let espath = config_opt
+        .as_ref()
+        .and_then(|c| derive_espath(c))
+        .or_else(|| std::env::var("ESPATH").ok().map(PathBuf::from));
 
     let gamedir = PathBuf::from(&request.romDirectory);
 
@@ -843,19 +922,35 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
     if let Some(es) = &espath {
         subs.insert("%ESPATH%".to_string(), es.to_string_lossy().to_string());
     }
-    subs.insert("%GAMEDIR%".to_string(), gamedir.to_string_lossy().to_string());
-    subs.insert("%ROMPATH%".to_string(), gamedir.to_string_lossy().to_string());
-    subs.insert("%STARTDIR%".to_string(), gamedir.to_string_lossy().to_string());
+    subs.insert(
+        "%GAMEDIR%".to_string(),
+        gamedir.to_string_lossy().to_string(),
+    );
+    subs.insert(
+        "%ROMPATH%".to_string(),
+        gamedir.to_string_lossy().to_string(),
+    );
+    subs.insert(
+        "%STARTDIR%".to_string(),
+        gamedir.to_string_lossy().to_string(),
+    );
 
     if let Some(first_emu) = emu_map.values().next() {
         let first_str = first_emu.to_string_lossy().to_string();
         subs.insert("%EMULATOR%".to_string(), first_str.clone());
         if let Some(parent) = first_emu.parent() {
             subs.insert("%EMUDIR%".to_string(), parent.to_string_lossy().to_string());
-            subs.insert("%EMUPATH%".to_string(), parent.to_string_lossy().to_string());
+            subs.insert(
+                "%EMUPATH%".to_string(),
+                parent.to_string_lossy().to_string(),
+            );
         }
     } else {
-        if let Some(fr) = request.emulatorFindRules.first().or_else(|| request.findRules.iter().find(|r| r.kind=="emulator")) {
+        if let Some(fr) = request
+            .emulatorFindRules
+            .first()
+            .or_else(|| request.findRules.iter().find(|r| r.kind == "emulator"))
+        {
             if let Some(first_entry) = fr.rules.first().and_then(|er| er.entries.first()) {
                 let expanded = expand_path_entry(first_entry, &espath, &gamedir);
                 subs.insert("%EMULATOR%".to_string(), expanded.clone());
@@ -932,7 +1027,10 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
 
     let (program, args) = split_command_respecting_quotes(&command_to_run);
     if program.is_empty() {
-        let err = format!("Failed to parse executable from expanded command: '{}'", expanded);
+        let err = format!(
+            "Failed to parse executable from expanded command: '{}'",
+            expanded
+        );
         log_event("error", &err);
         return Err(err);
     }
@@ -947,7 +1045,13 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
         }
         if std::env::var("CRYSTAL_DRYRUN").is_err() {
             if cfg!(not(target_os = "windows")) {
-                log_event("info", &format!("dry-run launch ok (non-windows) program='{}' args={:?}", program, args));
+                log_event(
+                    "info",
+                    &format!(
+                        "dry-run launch ok (non-windows) program='{}' args={:?}",
+                        program, args
+                    ),
+                );
                 return Ok(());
             }
         }
@@ -973,11 +1077,22 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
 
     match cmd.spawn() {
         Ok(_child) => {
-            log_event("info", &format!("launch_success program='{}' wd='{}' safe_mode={}", program, default_wd.display(), is_safe_mode()));
+            log_event(
+                "info",
+                &format!(
+                    "launch_success program='{}' wd='{}' safe_mode={}",
+                    program,
+                    default_wd.display(),
+                    is_safe_mode()
+                ),
+            );
             Ok(())
         }
         Err(e) => {
-            let err = format!("Failed to launch '{}' args {:?} wd {:?}: {}", program, args, default_wd, e);
+            let err = format!(
+                "Failed to launch '{}' args {:?} wd {:?}: {}",
+                program, args, default_wd, e
+            );
             log_event("error", &err);
             Err(err)
         }
@@ -1079,7 +1194,8 @@ mod backend_launch_guard_tests {
             placeholders: HashMap::new(),
             placeholdersPresent: vec![],
         };
-        let error = launch_game(request).expect_err("safe mode must reject the backend launch path");
+        let error =
+            launch_game(request).expect_err("safe mode must reject the backend launch path");
         assert!(error.starts_with("SAFE_MODE_BLOCKED_LAUNCH"));
         std::env::remove_var("CRYSTAL_SAFE_MODE");
     }

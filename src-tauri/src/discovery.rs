@@ -60,25 +60,45 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     // Validate URL parseable
     let parsed = Url::parse(&url).map_err(|e| {
         let msg = format!("fetch_vimm invalid URL '{}': {}", url, e);
-        log_minimal("warn", &format!("fetch_vimm reject invalid_url url='{}' err='{}'", url, e));
+        log_minimal(
+            "warn",
+            &format!("fetch_vimm reject invalid_url url='{}' err='{}'", url, e),
+        );
         msg
     })?;
 
     // Scheme must be https
     if parsed.scheme() != "https" {
-        let msg = format!("fetch_vimm only allows https, got '{}' for url '{}'", parsed.scheme(), url);
-        log_minimal("warn", &format!("fetch_vimm reject scheme='{}' url='{}'", parsed.scheme(), url));
+        let msg = format!(
+            "fetch_vimm only allows https, got '{}' for url '{}'",
+            parsed.scheme(),
+            url
+        );
+        log_minimal(
+            "warn",
+            &format!(
+                "fetch_vimm reject scheme='{}' url='{}'",
+                parsed.scheme(),
+                url
+            ),
+        );
         return Err(msg);
     }
 
     // Host must be exactly vimm.net (spec says exact, not subdomain unless www.vimm.net allowed – spec says host == vimm.net)
     match parsed.host_str() {
-        Some("vimm.net") => {},
+        Some("vimm.net") => {}
         Some(other) => {
-            let msg = format!("fetch_vimm only allows host vimm.net, got '{}' for url '{}'", other, url);
-            log_minimal("warn", &format!("fetch_vimm reject host='{}' url='{}'", other, url));
+            let msg = format!(
+                "fetch_vimm only allows host vimm.net, got '{}' for url '{}'",
+                other, url
+            );
+            log_minimal(
+                "warn",
+                &format!("fetch_vimm reject host='{}' url='{}'", other, url),
+            );
             return Err(msg);
-        },
+        }
         None => {
             let msg = format!("fetch_vimm missing host for url '{}'", url);
             log_minimal("warn", &msg);
@@ -88,7 +108,11 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
 
     // Path must start with /vault (defense-in-depth)
     if !parsed.path().starts_with("/vault") {
-        let msg = format!("fetch_vimm only allows /vault paths, got '{}' for url '{}'", parsed.path(), url);
+        let msg = format!(
+            "fetch_vimm only allows /vault paths, got '{}' for url '{}'",
+            parsed.path(),
+            url
+        );
         log_minimal("warn", &msg);
         return Err(msg);
     }
@@ -102,7 +126,10 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     // User-Agent derives from Cargo package version (env! CARGO_PKG_VERSION) to avoid stale.
     // Cargo.toml version == app version (4.4.1). Future-proof – single source of truth.
     let app_version = env!("CARGO_PKG_VERSION");
-    let ua = format!("CrystalFrontend/{} (Discovery) - catalog reference only, no automated ROM download", app_version);
+    let ua = format!(
+        "CrystalFrontend/{} (Discovery) - catalog reference only, no automated ROM download",
+        app_version
+    );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -123,16 +150,29 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     // Perform GET
     let resp = client.get(parsed.clone()).send().await.map_err(|e| {
         let msg = format!("fetch_vimm request failed for '{}': {}", url, e);
-        log_minimal("warn", &format!("fetch_vimm network fail url='{}' err='{}'", url, e));
+        log_minimal(
+            "warn",
+            &format!("fetch_vimm network fail url='{}' err='{}'", url, e),
+        );
         msg
     })?;
 
     let status = resp.status().as_u16();
 
     // Log minimal provider/route/status – no cookies, no huge HTML
-    let route_type = if parsed.path().contains("/vault/") && parsed.path().len() > "/vault/".len() && !parsed.query().unwrap_or("").contains("p=list") {
+    let route_type = if parsed.path().contains("/vault/")
+        && parsed.path().len() > "/vault/".len()
+        && !parsed.query().unwrap_or("").contains("p=list")
+    {
         // contains numeric id segment? Treat detail if path is /vault/{digits}
-        if parsed.path().trim_end_matches('/').chars().filter(|c| *c == '/').count() >= 2 {
+        if parsed
+            .path()
+            .trim_end_matches('/')
+            .chars()
+            .filter(|c| *c == '/')
+            .count()
+            >= 2
+        {
             "detail"
         } else {
             "search"
@@ -141,7 +181,13 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
         "search"
     };
 
-    log_minimal("info", &format!("fetch_vimm provider=vimms route={} status={} url='{}'", route_type, status, url));
+    log_minimal(
+        "info",
+        &format!(
+            "fetch_vimm provider=vimms route={} status={} url='{}'",
+            route_type, status, url
+        ),
+    );
 
     // Handle non-2xx – return error with status but do not log body
     if !resp.status().is_success() {
@@ -160,7 +206,11 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
 
     // Size guard
     if body.len() > 2_000_000 {
-        let msg = format!("fetch_vimm body too large {} bytes for url '{}' – rejecting", body.len(), url);
+        let msg = format!(
+            "fetch_vimm body too large {} bytes for url '{}' – rejecting",
+            body.len(),
+            url
+        );
         log_minimal("warn", &msg);
         return Err(msg);
     }
@@ -183,20 +233,32 @@ fn sanitize_discovery_key(key: &str) -> Result<String, String> {
         return Err("discovery cache key contains '..' traversal".to_string());
     }
     if t.contains('/') || t.contains('\\') {
-        return Err("discovery cache key must not contain path separators – use ':' delimiter".to_string());
+        return Err(
+            "discovery cache key must not contain path separators – use ':' delimiter".to_string(),
+        );
     }
     // Allowed chars: alphanumeric, '-', '_', ':', '.'
     // We deliberately reject spaces and other symbols which the frontend sanitizes via safeCacheKeyPart.
-    if !t.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.') {
+    if !t
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.')
+    {
         return Err(format!("discovery cache key contains forbidden character '{}': only alphanumeric _ - : . allowed", t));
     }
     // Reject empty segments (e.g., "::" or leading/trailing ":")
     let segs: Vec<&str> = t.split(':').collect();
     if segs.iter().any(|s| s.is_empty()) {
-        return Err("discovery cache key contains empty segment (e.g. 'a::b' or leading/trailing ':')".to_string());
+        return Err(
+            "discovery cache key contains empty segment (e.g. 'a::b' or leading/trailing ':')"
+                .to_string(),
+        );
     }
     if segs.len() < 2 || segs.len() > 3 {
-        return Err(format!("discovery cache key must have 2-3 colon-separated segments, got {} in '{}'", segs.len(), t));
+        return Err(format!(
+            "discovery cache key must have 2-3 colon-separated segments, got {} in '{}'",
+            segs.len(),
+            t
+        ));
     }
     // First segment must be provider (e.g., vimms)
     // No strict enforcement beyond non-empty, but we keep minimal.
@@ -224,29 +286,59 @@ pub fn discovery_cache_read(key: String) -> Result<Option<String>, String> {
     // Validate absolute path is inside approved writable root via existing guard
     // Using is_safe_write_path (which accepts absolute descendant as ok) – we use same guard even for reads
     // to prevent path escape via symlink tricks or prefix spoof.
-    crate::safety::is_safe_write_path(&abs).map_err(|e| format!("discovery cache read safety reject '{}': {}", abs.display(), e))?;
+    crate::safety::is_safe_write_path(&abs).map_err(|e| {
+        format!(
+            "discovery cache read safety reject '{}': {}",
+            abs.display(),
+            e
+        )
+    })?;
 
     // Additional defense: ensure rel still starts with cache/discovery/
     if !rel.starts_with("cache/discovery/") {
-        return Err(format!("discovery cache rel path must start with cache/discovery/, got '{}'", rel));
+        return Err(format!(
+            "discovery cache rel path must start with cache/discovery/, got '{}'",
+            rel
+        ));
     }
 
     if !abs.exists() {
         // Log minimal – provider prefix safe
-        crate::safety::log_event("info", &format!("discovery_cache_read miss key='{}' sanitized='{}'", key, sanitized));
+        crate::safety::log_event(
+            "info",
+            &format!(
+                "discovery_cache_read miss key='{}' sanitized='{}'",
+                key, sanitized
+            ),
+        );
         return Ok(None);
     }
 
     let content = std::fs::read_to_string(&abs).map_err(|e| {
-        format!("discovery_cache_read failed reading '{}': {}", abs.display(), e)
+        format!(
+            "discovery_cache_read failed reading '{}': {}",
+            abs.display(),
+            e
+        )
     })?;
 
     // Size guard – similar to fetcher 2MB, cache entries small but cap
     if content.len() > 2_000_000 {
-        return Err(format!("discovery cache entry too large {} bytes for key '{}'", content.len(), key));
+        return Err(format!(
+            "discovery cache entry too large {} bytes for key '{}'",
+            content.len(),
+            key
+        ));
     }
 
-    crate::safety::log_event("info", &format!("discovery_cache_read hit key='{}' bytes={}", key, content.len()));
+    crate::safety::log_event(
+        "info",
+        &format!(
+            "discovery_cache_read hit key='{}' bytes={}",
+            key,
+            content.len()
+        ),
+    );
     Ok(Some(content))
 }
 
@@ -256,23 +348,55 @@ pub fn discovery_cache_write(key: String, content: String) -> Result<(), String>
     let rel = discovery_relative_path(&sanitized);
 
     if !rel.starts_with("cache/discovery/") {
-        return Err(format!("discovery cache rel path must start with cache/discovery/, got '{}'", rel));
+        return Err(format!(
+            "discovery cache rel path must start with cache/discovery/, got '{}'",
+            rel
+        ));
     }
 
     if content.len() > 2_000_000 {
-        return Err(format!("discovery cache write too large {} bytes for key '{}' – max 2MB", content.len(), key));
+        return Err(format!(
+            "discovery cache write too large {} bytes for key '{}' – max 2MB",
+            content.len(),
+            key
+        ));
     }
 
     // resolve_writable_path ensures parent dirs exist and validates safety via is_safe_write_path internally.
     // It also ensures %LOCALAPPDATA%\\CrystalFrontend\\ cache\\discovery structure.
-    let abs = crate::safety::resolve_writable_path(&rel).map_err(|e| format!("discovery cache write resolve failed for rel='{}': {}", rel, e))?;
+    let abs = crate::safety::resolve_writable_path(&rel).map_err(|e| {
+        format!(
+            "discovery cache write resolve failed for rel='{}': {}",
+            rel, e
+        )
+    })?;
 
     // Double-validate final absolute path
-    crate::safety::is_safe_write_path(&abs).map_err(|e| format!("discovery cache write safety reject '{}': {}", abs.display(), e))?;
+    crate::safety::is_safe_write_path(&abs).map_err(|e| {
+        format!(
+            "discovery cache write safety reject '{}': {}",
+            abs.display(),
+            e
+        )
+    })?;
 
-    std::fs::write(&abs, content.as_bytes()).map_err(|e| format!("discovery cache write failed for '{}': {}", abs.display(), e))?;
+    std::fs::write(&abs, content.as_bytes()).map_err(|e| {
+        format!(
+            "discovery cache write failed for '{}': {}",
+            abs.display(),
+            e
+        )
+    })?;
 
-    crate::safety::log_event("info", &format!("discovery_cache_write ok key='{}' file='{}' bytes={}", key, abs.display(), content.len()));
+    crate::safety::log_event(
+        "info",
+        &format!(
+            "discovery_cache_write ok key='{}' file='{}' bytes={}",
+            key,
+            abs.display(),
+            content.len()
+        ),
+    );
     Ok(())
 }
 
@@ -329,7 +453,12 @@ mod tests {
         ];
         for k in valid {
             let s = sanitize_discovery_key(k);
-            assert!(s.is_ok(), "valid key '{}' should pass, got err {:?}", k, s.err());
+            assert!(
+                s.is_ok(),
+                "valid key '{}' should pass, got err {:?}",
+                k,
+                s.err()
+            );
         }
     }
 
@@ -346,7 +475,11 @@ mod tests {
             "trailingcolon:",
         ];
         for k in bad {
-            assert!(sanitize_discovery_key(k).is_err(), "bad key '{}' should be rejected", k);
+            assert!(
+                sanitize_discovery_key(k).is_err(),
+                "bad key '{}' should be rejected",
+                k
+            );
         }
     }
 
@@ -356,15 +489,33 @@ mod tests {
         let key = "vimms:ps2:test123";
         let sanitized = sanitize_discovery_key(key).expect("sanitize should ok");
         let rel = discovery_relative_path(&sanitized);
-        assert!(rel.starts_with("cache/discovery/"), "rel must start cache/discovery/: {}", rel);
+        assert!(
+            rel.starts_with("cache/discovery/"),
+            "rel must start cache/discovery/: {}",
+            rel
+        );
         let abs = crate::safety::resolve_writable_path(&rel).expect("resolve should succeed");
         let root = crate::safety::crystal_writable_root();
-        assert!(abs.starts_with(&root), "abs {:?} must start with root {:?}", abs, root);
+        assert!(
+            abs.starts_with(&root),
+            "abs {:?} must start with root {:?}",
+            abs,
+            root
+        );
         // Also prove is_safe_write_path passes
-        assert!(crate::safety::is_safe_write_path(&abs).is_ok(), "safe_write_path should allow cache file");
+        assert!(
+            crate::safety::is_safe_write_path(&abs).is_ok(),
+            "safe_write_path should allow cache file"
+        );
         // Ensure not AppLocalData assumption – root must be CrystalFrontend not com.crystal.frontend
         let root_str = root.to_string_lossy().to_lowercase();
-        assert!(root_str.contains("crystalfrontend") || root_str.contains("crystal_frontend") || root_str.ends_with("crystalfrontend"), "root should be CrystalFrontend based, got {}", root.display());
+        assert!(
+            root_str.contains("crystalfrontend")
+                || root_str.contains("crystal_frontend")
+                || root_str.ends_with("crystalfrontend"),
+            "root should be CrystalFrontend based, got {}",
+            root.display()
+        );
     }
 
     #[test]

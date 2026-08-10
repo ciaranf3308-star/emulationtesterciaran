@@ -105,14 +105,26 @@ pub fn is_safe_write_path(path: &Path) -> Result<(), String> {
 
     // Drive / root guard
     if s == "/" || s == "\\" || s == "." {
-        return Err(format!("Refusing to write to filesystem root / current dir marker '{}'", s));
+        return Err(format!(
+            "Refusing to write to filesystem root / current dir marker '{}'",
+            s
+        ));
     }
     // Windows drive root patterns: "C:", "C:\", "C:/", "D:", etc.
-    if s.len() == 2 && s.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) && s.chars().nth(1) == Some(':') {
+    if s.len() == 2
+        && s.chars()
+            .next()
+            .map(|c| c.is_ascii_alphabetic())
+            .unwrap_or(false)
+        && s.chars().nth(1) == Some(':')
+    {
         return Err(format!("Refusing drive root '{}'", s));
     }
     if s.len() == 3
-        && s.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+        && s.chars()
+            .next()
+            .map(|c| c.is_ascii_alphabetic())
+            .unwrap_or(false)
         && s.chars().nth(1) == Some(':')
         && (s.chars().nth(2) == Some('\\') || s.chars().nth(2) == Some('/'))
     {
@@ -201,7 +213,10 @@ pub fn is_safe_write_path(path: &Path) -> Result<(), String> {
         }
         // Drive-relative like "C:foo"
         if s.len() >= 2 && s.chars().nth(1) == Some(':') {
-            return Err(format!("Drive-relative path '{}' not allowed", path.display()));
+            return Err(format!(
+                "Drive-relative path '{}' not allowed",
+                path.display()
+            ));
         }
         // If relative contains traversal we already rejected via components. Accept as safe-to-be-joined.
         return Ok(());
@@ -423,7 +438,11 @@ mod tests {
     fn test_is_safe_write_path_absolute_inside_root() {
         let root = crystal_writable_root();
         let inside = root.join("logs").join("test.log");
-        assert!(is_safe_write_path(&inside).is_ok(), "inside root should be ok: {}", inside.display());
+        assert!(
+            is_safe_write_path(&inside).is_ok(),
+            "inside root should be ok: {}",
+            inside.display()
+        );
     }
 
     #[test]
@@ -436,7 +455,11 @@ mod tests {
         let root = crystal_writable_root();
         if !p.starts_with(&root) {
             let err = is_safe_write_path(&p).unwrap_err();
-            assert!(err.contains("writable root") || err.contains("Forbidden") || err.contains("Unsafe"));
+            assert!(
+                err.contains("writable root")
+                    || err.contains("Forbidden")
+                    || err.contains("Unsafe")
+            );
         }
     }
 
@@ -485,7 +508,9 @@ mod tests {
     fn test_log_event_creates_file() {
         let _ = ensure_writable_dirs();
         log_event("info", "test log from unit test");
-        let log_path = crystal_writable_root().join("logs").join("crystal-frontend.log");
+        let log_path = crystal_writable_root()
+            .join("logs")
+            .join("crystal-frontend.log");
         assert!(log_path.exists(), "log file should exist after log_event");
     }
 }

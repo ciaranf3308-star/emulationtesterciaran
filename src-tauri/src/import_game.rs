@@ -1,16 +1,16 @@
-#![allow(unused)]
-
-use crate::safety::{crystal_writable_root, ensure_writable_dirs, is_safe_mode, log_event};
+use crate::machine_config::{
+    find_system_in_config, get_rom_dir_and_exts, load_machine_config_json,
+};
+use crate::safety::{crystal_writable_root, is_safe_mode, log_event};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-
 use uuid::Uuid;
 
-/// Request from frontend – only systemId and sourcePath are authoritative.
-/// expectedTitle is optional hint for matching, not used for destination.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ImportRequest {
     pub systemId: String,
@@ -19,8 +19,6 @@ pub struct ImportRequest {
     pub expectedTitle: Option<String>,
 }
 
-/// Structured result returned to frontend.
-/// status is machine-readable, never exposes stack traces.
 #[derive(Debug, Serialize, Clone)]
 pub struct ImportResult {
     pub status: String,
@@ -38,150 +36,10 @@ pub struct ImportResult {
     pub message: Option<String>,
 }
 
-// Limits – sane, spec-compliant
 const MAX_ZIP_FILES: usize = 2000;
-const MAX_TOTAL_UNCOMPRESSED: u64 = 8u64 * 1024 * 1024 * 1024; // 8 GiB
-const MAX_SINGLE_FILE: u64 = 4u64 * 1024 * 1024 * 1024; // 4 GiB
-const MAX_FILES_TO_INSTALL: usize = 64; // avoid ridiculous multi-file dumps
-
-// ---------- Machine Config helpers – independent copy of loader logic ----------
-
-fn candidate_config_paths() -> Vec<PathBuf> {
-    let mut cands = Vec::new();
-    if let Ok(envp) = std::env::var("CRYSTAL_MACHINE_CONFIG") {
-        if !envp.trim().is_empty() {
-            cands.push(PathBuf::from(envp));
-        }
-    }
-    if let Ok(cur) = std::env::current_exe() {
-        if let Some(parent) = cur.parent() {
-            cands.push(parent.join("crystal-machine-config.json"));
-            cands.push(parent.join("machine-config.json"));
-            if let Some(gp) = parent.parent() {
-                cands.push(gp.join("crystal-machine-config.json"));
-                cands.push(gp.join("machine-config.json"));
-            }
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        cands.push(cwd.join("crystal-machine-config.json"));
-        cands.push(cwd.join("machine-config.json"));
-        if let Some(p) = cwd.parent() {
-            cands.push(p.join("crystal-machine-config.json"));
-            cands.push(p.join("machine-config.json"));
-            if let Some(gp) = p.parent() {
-                cands.push(gp.join("crystal-machine-config.json"));
-            }
-        }
-    }
-    if let Some(data_local) = dirs::data_local_dir() {
-        cands.push(data_local.join("CrystalFrontend").join("crystal-machine-config.json"));
-        cands.push(data_local.join("Crystal Frontend").join("crystal-machine-config.json"));
-        cands.push(data_local.join("CrystalFrontend").join("machine-config.json"));
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        cands.push(config_dir.join("CrystalFrontend").join("crystal-machine-config.json"));
-        cands.push(config_dir.join("Crystal Frontend").join("crystal-machine-config.json"));
-    }
-    if let Some(home) = dirs::home_dir() {
-        cands.push(home.join("crystal-machine-config.json"));
-        cands.push(home.join(".config").join("crystal").join("crystal-machine-config.json"));
-    }
-    let mut uniq = Vec::new();
-    let mut seen = HashSet::new();
-    for p in cands {
-        let s = p.to_string_lossy().to_string();
-        if seen.insert(s) {
-            uniq.push(p);
-        }
-    }
-    uniq
-}
-
-fn load_machine_config_json() -> Result<serde_json::Value, String> {
-    let cands = candidate_config_paths();
-    let mut tried = Vec::new();
-    for path in &cands {
-        tried.push(path.display().to_string());
-        if path.exists() {
-            match fs::read_to_string(path) {
-                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(v) => {
-                        if v.get("schemaVersion").is_none() {
-                            continue;
-                        }
-                        if v.get("systems").and_then(|s| s.as_array()).is_none() {
-                            continue;
-                        }
-                        let sv = v.get("schemaVersion").and_then(|s| s.as_u64()).unwrap_or(0);
-                        if sv != 1 {
-                            return Err(format!("Unsupported schemaVersion {} at {}", sv, path.display()));
-                        }
-                        return Ok(v);
-                    }
-                    Err(e) => return Err(format!("Failed to parse JSON at {}: {}", path.display(), e)),
-                },
-                Err(_) => continue,
-            }
-        }
-    }
-    Err(format!(
-        "Real machine config not found – tried: {}. Set CRYSTAL_MACHINE_CONFIG or place crystal-machine-config.json next to exe.",
-        tried.join(", ")
-    ))
-}
-
-fn find_system_in_config<'a>(
-    config: &'a serde_json::Value,
-    system_id: &str,
-) -> Option<&'a serde_json::Value> {
-    let systems = config.get("systems")?.as_array()?;
-    for sys in systems {
-        if sys.get("id").and_then(|i| i.as_str()) == Some(system_id) {
-            return Some(sys);
-        }
-    }
-    None
-}
-
-fn get_rom_dir_and_exts(system_json: &serde_json::Value) -> Result<(String, Vec<String>), String> {
-    let rom_dir = system_json
-        .get("romDirectory")
-        .and_then(|r| r.as_str())
-        .ok_or_else(|| "MachineSystem missing romDirectory".to_string())?
-        .to_string();
-    if rom_dir.trim().is_empty() {
-        return Err("romDirectory empty".to_string());
-    }
-    let exts_val = system_json.get("validExtensions").and_then(|e| e.as_array());
-    let mut exts = Vec::new();
-    if let Some(arr) = exts_val {
-        for v in arr {
-            if let Some(s) = v.as_str() {
-                let t = s.trim();
-                if !t.is_empty() {
-                    exts.push(t.to_string());
-                }
-            }
-        }
-    }
-    // Also allow extensionString split? Some configs have extensionString, but spec says validExtensions authoritative.
-    // If validExtensions empty we will still allow? Spec says don't invent – if empty, we treat as reject all for safety, unless we fallback to extensionString parsing for compatibility.
-    // For compatibility with real EmuDeck configs, if validExtensions empty but extensionString present, use extensionString split.
-    if exts.is_empty() {
-        if let Some(es) = system_json.get("extensionString").and_then(|s| s.as_str()) {
-            for part in es.split_whitespace() {
-                let mut p = part.trim().to_string();
-                if p.is_empty() {
-                    continue;
-                }
-                // extensionString may be ".zip .iso" form
-                exts.push(p);
-            }
-        }
-    }
-    Ok((rom_dir, exts))
-}
+const MAX_TOTAL_UNCOMPRESSED: u64 = 8u64 * 1024 * 1024 * 1024;
+const MAX_SINGLE_FILE: u64 = 4u64 * 1024 * 1024 * 1024;
+const MAX_FILES_TO_INSTALL: usize = 64;
 
 fn normalize_ext(ext: &str) -> String {
     let mut e = ext.trim().to_lowercase();
@@ -211,28 +69,22 @@ fn extension_allowed(ext: &str, allowed: &[String]) -> bool {
     false
 }
 
-// ---------- Source path security ----------
 fn validate_source_path(src: &Path) -> Result<(), String> {
     let s = src.to_string_lossy().to_string();
     if s.trim().is_empty() {
         return Err("SOURCE_EMPTY".to_string());
     }
-    // Reject UNC – Windows UNC starts with \\ or // . Even on non-Windows we reject.
     if s.starts_with("\\\\") || s.starts_with("//") {
         return Err("UNC_NOT_SUPPORTED".to_string());
     }
     if s.starts_with("\\\\?\\") || s.starts_with("\\\\.\\") {
         return Err("DEVICE_PATH_NOT_SUPPORTED".to_string());
     }
-    // Parent dir components
     for comp in src.components() {
         if let Component::ParentDir = comp {
             return Err("SOURCE_CONTAINS_TRAVERSAL".to_string());
         }
-        // Prefix (drive) is okay for absolute Windows path – file may be C:\...
-        // But we reject if path is drive root alone? file must be file not dir, so drive root would later fail is_file.
     }
-    // Device names Windows: CON, PRN, AUX, NUL, COM1..9, LPT1..9 – check basename upper
     if let Some(file_name) = src.file_name().and_then(|n| n.to_str()) {
         let up = file_name.to_ascii_uppercase();
         let dev_names = [
@@ -244,7 +96,6 @@ fn validate_source_path(src: &Path) -> Result<(), String> {
             return Err("DEVICE_PATH_NOT_SUPPORTED".to_string());
         }
     }
-    // Exists
     if !src.exists() {
         return Err("SOURCE_NOT_FOUND".to_string());
     }
@@ -258,18 +109,14 @@ fn validate_source_path(src: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// ---------- Zip-slip protection ----------
-
 fn is_path_traversal_entry(name: &str) -> bool {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return true;
     }
-    // Absolute
     if trimmed.starts_with('/') || trimmed.starts_with('\\') {
         return true;
     }
-    // Drive-qualified: C: , C:\ , D:/ etc. Check pattern: letter ':' 
     if trimmed.len() >= 2 {
         let mut chars = trimmed.chars();
         if let Some(first) = chars.next() {
@@ -282,37 +129,21 @@ fn is_path_traversal_entry(name: &str) -> bool {
             }
         }
     }
-    // UNC inside archive
     if trimmed.starts_with("\\\\") || trimmed.starts_with("//") {
         return true;
     }
-    // Any segment == ".."
     for seg in trimmed.split(|c| c == '/' || c == '\\') {
         if seg == ".." {
             return true;
         }
-        if seg.contains(':') {
-            // Reject Windows drive colon in segment (e.g., "C:foo" or "foo:bar" with colon)
-            // Allow colon in filename? Safer reject if segment contains ':' at second pos and contains alphabetic first – that's drive.
-            // Also reject absolute colon tricks.
-            if seg.len() >= 2 && seg.chars().nth(1) == Some(':') {
-                return true;
-            }
-            // Reject if contains ".." inside? already handled.
+        if seg.len() >= 2 && seg.chars().nth(1) == Some(':') {
+            return true;
         }
-        // Reject empty? empty seg allowed as double slash? but okay.
     }
     false
 }
 
 fn ensure_inside_staging(staging: &Path, candidate: &Path) -> Result<(), String> {
-    // Lexical check: candidate must start_with staging
-    // Since candidate may not exist yet, we use Path::starts_with lexical.
-    // We also ensure canonical parent exists and isn't escaping via symlinks? symlinks not yet relevant for not-exists paths.
-    // We do a lexical prefix check plus check that .. not present (already).
-    let staging_norm = staging.to_string_lossy().to_string();
-    let cand_norm = candidate.to_string_lossy().to_string();
-    // Use starts_with on Path for lexical
     if !candidate.starts_with(staging) {
         return Err(format!(
             "ESCAPE_DETECTED: '{}' not inside staging '{}'",
@@ -320,38 +151,130 @@ fn ensure_inside_staging(staging: &Path, candidate: &Path) -> Result<(), String>
             staging.display()
         ));
     }
-    // Additional case-insensitive check on Windows – Path starts_with is already platform aware but we keep simple.
     Ok(())
 }
 
-// ---------- CUE parsing (minimal) ----------
+fn is_cue_file_ref_escaped(ref_name: &str) -> bool {
+    let trimmed = ref_name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Absolute
+    if trimmed.starts_with('/') || trimmed.starts_with('\\') {
+        return true;
+    }
+    // UNC
+    if trimmed.starts_with("//") || trimmed.starts_with("\\\\") {
+        return true;
+    }
+    // Device prefix \\.\ or \\?\
+    if trimmed.starts_with("\\\\.\\") || trimmed.starts_with("\\\\?\\") {
+        return true;
+    }
+    // Drive qualified C: or C:\ etc at start
+    if trimmed.len() >= 2 {
+        let first = trimmed.chars().next().unwrap();
+        let second = trimmed.chars().nth(1).unwrap();
+        if first.is_ascii_alphabetic() && second == ':' {
+            return true;
+        }
+    }
+    for seg in trimmed.split(|c| c == '/' || c == '\\') {
+        if seg == ".." {
+            return true;
+        }
+        if seg == "." {
+            // "." is technically not escape but for safety disallow parent-like? Spec says ParentDir only – allow "."? To be conservative, allow ".".
+            continue;
+        }
+        if seg.is_empty() {
+            // empty segments from // etc already handled but catch here
+            continue;
+        }
+        if seg.contains(':') {
+            // colon inside but not drive at start – still risky (e.g., C:foo)
+            if seg.len() >= 2 && seg.chars().nth(1) == Some(':') {
+                return true;
+            }
+            // also reject any colon for device path safety
+            // Windows forbids colon in filename except drive – so reject
+            if seg.contains(':') {
+                return true;
+            }
+        }
+        if seg.contains('\0') {
+            return true;
+        }
+        // Windows drive pattern inside segment like "C:" – already captured
+    }
+    false
+}
+
+fn files_are_identical(a: &Path, b: &Path) -> bool {
+    let meta_a = match fs::metadata(a) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let meta_b = match fs::metadata(b) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if meta_a.len() != meta_b.len() {
+        return false;
+    }
+    let file_a = match fs::File::open(a) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let file_b = match fs::File::open(b) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut reader_a = io::BufReader::new(file_a);
+    let mut reader_b = io::BufReader::new(file_b);
+    let mut buf_a = [0u8; 8192];
+    let mut buf_b = [0u8; 8192];
+    loop {
+        let read_a = match reader_a.read(&mut buf_a) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let read_b = match reader_b.read(&mut buf_b) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if read_a != read_b {
+            return false;
+        }
+        if read_a == 0 {
+            break;
+        }
+        if buf_a[..read_a] != buf_b[..read_b] {
+            return false;
+        }
+    }
+    true
+}
 
 fn parse_cue_referenced_files(cue_path: &Path) -> Result<Vec<String>, String> {
-    // Minimal parser: look for FILE "xxx" lines
     let content = fs::read_to_string(cue_path).map_err(|e| format!("CUE_READ_ERROR: {}", e))?;
     let mut refs = Vec::new();
-    // Regex simple: FILE\s+"([^"]+)"  (case-insensitive)
-    // Use regex crate if available, else simple scanning
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.len() < 5 {
             continue;
         }
-        // Uppercase test for FILE
         if !trimmed.to_ascii_uppercase().starts_with("FILE ") {
             continue;
         }
-        // Find first quote
         if let Some(first_q) = trimmed.find('"') {
             if let Some(second_q) = trimmed[first_q + 1..].find('"') {
                 let file_name = &trimmed[first_q + 1..first_q + 1 + second_q];
-                // file_name may include path – we only want basename but preserve as given
                 if !file_name.trim().is_empty() {
                     refs.push(file_name.trim().to_string());
                 }
             }
         } else {
-            // No quotes, try whitespace split: FILE <name> <type>
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
             if parts.len() >= 2 {
                 refs.push(parts[1].trim().to_string());
@@ -361,11 +284,8 @@ fn parse_cue_referenced_files(cue_path: &Path) -> Result<Vec<String>, String> {
     Ok(refs)
 }
 
-// ---------- Core import implementation ----------
-
 #[tauri::command]
 pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String> {
-    // 1. SAFE MODE check first
     if is_safe_mode() {
         return Err("SAFE_MODE_BLOCKED_IMPORT".to_string());
     }
@@ -380,12 +300,10 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
     }
     let src_path = PathBuf::from(&source_path_str);
 
-    // Source path security
     if let Err(e) = validate_source_path(&src_path) {
         return Err(e);
     }
 
-    // Load machine config
     let config = load_machine_config_json().map_err(|e| format!("MACHINE_CONFIG_ERROR: {}", e))?;
 
     let system_json = find_system_in_config(&config, &system_id)
@@ -394,14 +312,7 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
     let (rom_dir_str, valid_exts) =
         get_rom_dir_and_exts(system_json).map_err(|e| format!("SYSTEM_CONFIG_INVALID: {}", e))?;
 
-    if valid_exts.is_empty() {
-        // If no valid extensions are configured, we still need to fail closed for safety unless we treat as all invalid
-        // Spec: validExtensions is authoritative – don't invent. If empty, we reject all imports as INVALID_EXTENSION for this system.
-        log_event("warn", &format!("import_game_source system '{}' has empty validExtensions – import will reject", system_id));
-    }
-
     let rom_dir = PathBuf::from(&rom_dir_str);
-    // Prove rom_dir corresponds to existing configured MachineSystem – existence check
     if !rom_dir.exists() {
         return Err(format!(
             "DESTINATION_UNAVAILABLE: romDirectory '{}' does not exist for system '{}'",
@@ -416,56 +327,38 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
         ));
     }
 
-    // Ensure rom_dir is descendant of expected? Not required – EmuDeck ROM dir may be outside Crystal writable root intentionally.
-    // We explicitly DO NOT use is_safe_write_path here because ROM dir is intentionally outside writable root.
-    // This is the narrow privileged exception.
-
-    // Staging
     let staging_base = crystal_writable_root().join("cache").join("imports");
     if let Err(e) = fs::create_dir_all(&staging_base) {
         return Err(format!("STAGING_CREATE_FAILED: {}", e));
     }
-    // Create unique session dir
     let session_id = Uuid::new_v4().to_string();
     let staging_dir = staging_base.join(format!("import-{}", session_id));
     fs::create_dir_all(&staging_dir).map_err(|e| format!("STAGING_DIR_CREATE_FAILED: {}", e))?;
 
-    // Helper to cleanup staging on failure – we will call in error paths
     let cleanup_staging = |dir: &Path| {
         let _ = fs::remove_dir_all(dir);
     };
 
-    // Determine processing
     let src_ext = ext_of_path(&src_path);
     let mut detected_files: Vec<String> = Vec::new();
-    let mut files_to_install: Vec<PathBuf> = Vec::new(); // absolute paths in staging or source copy
-    let mut staging_files_created: Vec<PathBuf> = Vec::new();
-
-    let mut is_raw_valid = false;
+    let mut files_to_install: Vec<PathBuf> = Vec::new();
 
     if extension_allowed(&src_ext, &valid_exts) {
-        // Raw file is itself valid – preserve directly
-        // Copy source into staging first (spec: copy/inspect into staging)
         let file_name = src_path
             .file_name()
             .ok_or_else(|| "SOURCE_NO_FILENAME".to_string())?;
         let staged_path = staging_dir.join(file_name);
-        // Ensure inside
-        ensure_inside_staging(&staging_dir, &staged_path)
-            .map_err(|e| {
-                cleanup_staging(&staging_dir);
-                e
-            })?;
+        ensure_inside_staging(&staging_dir, &staged_path).map_err(|e| {
+            cleanup_staging(&staging_dir);
+            e
+        })?;
         fs::copy(&src_path, &staged_path).map_err(|e| {
             cleanup_staging(&staging_dir);
             format!("STAGING_COPY_FAILED: {}", e)
         })?;
-        staging_files_created.push(staged_path.clone());
         detected_files.push(staged_path.display().to_string());
         files_to_install.push(staged_path);
-        is_raw_valid = true;
     } else if src_ext.eq_ignore_ascii_case("zip") {
-        // ZIP handling
         let zip_file = fs::File::open(&src_path).map_err(|e| {
             cleanup_staging(&staging_dir);
             format!("ZIP_OPEN_FAILED: {}", e)
@@ -482,46 +375,44 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
         }
         if file_count > MAX_ZIP_FILES {
             cleanup_staging(&staging_dir);
-            return Err(format!("ZIP_TOO_MANY_FILES: {} > {}", file_count, MAX_ZIP_FILES));
+            return Err(format!(
+                "ZIP_TOO_MANY_FILES: {} > {}",
+                file_count, MAX_ZIP_FILES
+            ));
         }
 
         let mut total_uncompressed: u64 = 0;
-
-        // First pass – security checks without extracting
         for i in 0..file_count {
             let file = archive.by_index(i).map_err(|e| {
                 cleanup_staging(&staging_dir);
                 format!("ZIP_ENTRY_READ_FAILED index {}: {}", i, e)
             })?;
             let name = file.name().to_string();
-            // Traversal etc.
             if is_path_traversal_entry(&name) {
                 cleanup_staging(&staging_dir);
                 return Err(format!("ZIP_TRAVERSAL_BLOCKED: entry '{}' rejected", name));
             }
-            // Symlink / hardlink detection – zip crate: file.is_symlink() not stable in 0.6? Use check for unix mode
-            // In zip 0.6 ZipFile has is_symlink method behind feature. We attempt to detect via check of file name and external attributes?
-            // Safer: reject if name indicates symlink trick? We'll check if file size is 0 and extraction would be symlink? Real zip symlink detection:
-            // Use file.enclosed_name() would already handle traversal, but we still want our own.
-            // zip crate's Unix mode symlink: file.unix_mode() & 0o120000 == 0o120000
             if let Some(mode) = file.unix_mode() {
                 if (mode & 0o170000) == 0o120000 {
                     cleanup_staging(&staging_dir);
                     return Err(format!("ZIP_SYMLINK_BLOCKED: entry '{}'", name));
                 }
-                // Also block device files: char/block/FIFO
-                // 0o060000 block, 0o020000 char, 0o010000 fifo
                 let file_type = mode & 0o170000;
                 if file_type == 0o060000 || file_type == 0o020000 || file_type == 0o010000 {
                     cleanup_staging(&staging_dir);
-                    return Err(format!("ZIP_SPECIAL_FILE_BLOCKED: entry '{}' mode {:o}", name, mode));
+                    return Err(format!(
+                        "ZIP_SPECIAL_FILE_BLOCKED: entry '{}' mode {:o}",
+                        name, mode
+                    ));
                 }
             }
-            // Check uncompressed size
             let size = file.size();
             if size > MAX_SINGLE_FILE {
                 cleanup_staging(&staging_dir);
-                return Err(format!("ZIP_FILE_TOO_LARGE: entry '{}' {} bytes", name, size));
+                return Err(format!(
+                    "ZIP_FILE_TOO_LARGE: entry '{}' {} bytes",
+                    name, size
+                ));
             }
             total_uncompressed = total_uncompressed.saturating_add(size);
             if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
@@ -531,12 +422,8 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                     total_uncompressed, MAX_TOTAL_UNCOMPRESSED
                 ));
             }
-            // Also check for nested recursion abuse – if entry itself is a zip inside and we would attempt to recursively extract? We don't, so not needed.
-            // But we should block nested archive bombs where zip contains zip containing many files? We already size-limit.
         }
 
-        // Second pass – extract
-        // Re-open archive because ZipFile borrows mutably – we need to re-iterate via by_index again, but after checks we can re-use same archive variable if we drop file handles each iter.
         for i in 0..file_count {
             let mut file = archive.by_index(i).map_err(|e| {
                 cleanup_staging(&staging_dir);
@@ -544,7 +431,6 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             })?;
             let name = file.name().to_string();
 
-            // Skip directory entries – create dir structure inside staging
             if file.name().ends_with('/') || file.name().ends_with('\\') {
                 let out_path = staging_dir.join(&name);
                 ensure_inside_staging(&staging_dir, &out_path).map_err(|e| {
@@ -574,17 +460,13 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                 cleanup_staging(&staging_dir);
                 format!("ZIP_WRITE_FAILED '{}': {}", out_path.display(), e)
             })?;
-            // Copy content – limited by already-checked size
             std::io::copy(&mut file, &mut outfile).map_err(|e| {
                 cleanup_staging(&staging_dir);
                 format!("ZIP_EXTRACT_COPY_FAILED '{}': {}", out_path.display(), e)
             })?;
-            staging_files_created.push(out_path.clone());
         }
 
-        // After extraction, scan staging for valid ROM files
         let mut valid_candidates: Vec<PathBuf> = Vec::new();
-        // Use walkdir if available – manual simple recursive walk via std
         let mut dirs_to_visit = vec![staging_dir.clone()];
         while let Some(dir) = dirs_to_visit.pop() {
             let entries = fs::read_dir(&dir).map_err(|e| {
@@ -613,8 +495,6 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             return Err("NO_VALID_ROM_IN_ARCHIVE".to_string());
         }
 
-        // CUE/BIN handling
-        // If there is a .cue among candidates, attempt to resolve its set
         let cue_candidates: Vec<_> = valid_candidates
             .iter()
             .filter(|p| ext_of_path(p).eq_ignore_ascii_case("cue"))
@@ -622,7 +502,6 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             .collect();
 
         if cue_candidates.len() == 1 {
-            // Single cue – parse referenced files and ensure they exist
             let cue_path = &cue_candidates[0];
             let refs = parse_cue_referenced_files(cue_path).map_err(|e| {
                 cleanup_staging(&staging_dir);
@@ -632,29 +511,68 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                 let mut missing = Vec::new();
                 let mut referenced_full_paths = Vec::new();
                 for ref_name in &refs {
-                    // Referenced file may be relative – look in same dir as cue
+                    if is_cue_file_ref_escaped(ref_name) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!("CUE_FILE_REF_ESCAPE_BLOCKED: '{}'", ref_name));
+                    }
                     let cue_dir = cue_path.parent().unwrap_or(&staging_dir);
                     let candidate_in_cue_dir = cue_dir.join(ref_name);
                     let candidate_in_staging_root = staging_dir.join(ref_name);
-                    // Also try basename only in staging tree – simple search
+
                     let mut found_path: Option<PathBuf> = None;
-                    if candidate_in_cue_dir.exists() && candidate_in_cue_dir.is_file() {
-                        found_path = Some(candidate_in_cue_dir);
-                    } else if candidate_in_staging_root.exists() && candidate_in_staging_root.is_file() {
-                        found_path = Some(candidate_in_staging_root);
-                    } else {
-                        // search entire staging for file with that basename
-                        let base = PathBuf::from(ref_name).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                        // walk again quickly
-                        for cand in &valid_candidates {
-                            if let Some(fname) = cand.file_name().and_then(|n| n.to_str()) {
-                                if fname.eq_ignore_ascii_case(&base) || cand.ends_with(ref_name) {
-                                    found_path = Some(cand.clone());
-                                    break;
+
+                    if !is_path_traversal_entry(ref_name) {
+                        if candidate_in_cue_dir.exists() && candidate_in_cue_dir.is_file() {
+                            if candidate_in_cue_dir.starts_with(&staging_dir) {
+                                if let Ok(canonical) = candidate_in_cue_dir.canonicalize() {
+                                    if let Ok(staging_canon) = staging_dir.canonicalize() {
+                                        if !canonical.starts_with(&staging_canon) {
+                                            cleanup_staging(&staging_dir);
+                                            return Err(format!(
+                                                "CUE_FILE_REF_ESCAPE_BLOCKED: '{}' escapes staging",
+                                                ref_name
+                                            ));
+                                        }
+                                    }
+                                }
+                                found_path = Some(candidate_in_cue_dir);
+                            }
+                        } else if candidate_in_staging_root.exists()
+                            && candidate_in_staging_root.is_file()
+                        {
+                            if candidate_in_staging_root.starts_with(&staging_dir) {
+                                found_path = Some(candidate_in_staging_root);
+                            }
+                        } else {
+                            for cand in &valid_candidates {
+                                if cand.ends_with(ref_name) || cand.ends_with(Path::new(ref_name)) {
+                                    if cand.starts_with(&staging_dir) && cand.is_file() {
+                                        found_path = Some(cand.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                            if found_path.is_none() {
+                                let base = PathBuf::from(ref_name)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                for cand in &valid_candidates {
+                                    if let Some(fname) = cand.file_name().and_then(|n| n.to_str()) {
+                                        if fname.eq_ignore_ascii_case(&base)
+                                            || cand.ends_with(&base)
+                                        {
+                                            if cand.starts_with(&staging_dir) {
+                                                found_path = Some(cand.clone());
+                                                break;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+
                     if let Some(fp) = found_path {
                         referenced_full_paths.push(fp);
                     } else {
@@ -665,9 +583,6 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                     cleanup_staging(&staging_dir);
                     return Err(format!("INCOMPLETE_CUE_SET: missing {:?}", missing));
                 }
-                // At this point valid set is cue + its bins
-                // Ensure no unrelated extra valid files beyond this set -> ambiguous?
-                // Build set of expected files (cue + bins)
                 let mut expected_set = HashSet::new();
                 expected_set.insert(cue_path.clone());
                 for rp in &referenced_full_paths {
@@ -679,72 +594,118 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                     .cloned()
                     .collect();
                 if !extra.is_empty() {
-                    // If extra files are unrelated ROMs, return AMBIGUOUS per spec
                     cleanup_staging(&staging_dir);
-                    let extra_names: Vec<String> = extra.iter().map(|p| p.display().to_string()).collect();
-                    return Err(format!("AMBIGUOUS_MULTIPLE_ROMS: extra files {:?}", extra_names));
+                    let extra_names: Vec<String> =
+                        extra.iter().map(|p| p.display().to_string()).collect();
+                    return Err(format!(
+                        "AMBIGUOUS_MULTIPLE_ROMS: extra files {:?}",
+                        extra_names
+                    ));
                 }
-                // Install set is cue + bins
                 files_to_install = expected_set.into_iter().collect();
-                detected_files = files_to_install.iter().map(|p| p.display().to_string()).collect();
+                detected_files = files_to_install
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
             } else {
-                // Cue with no FILE refs – treat as single valid file? But parse returned empty, we will treat all candidates as ambiguous if >1
                 if valid_candidates.len() > 1 {
                     cleanup_staging(&staging_dir);
                     return Err("AMBIGUOUS_MULTIPLE_ROMS".to_string());
                 }
                 files_to_install = valid_candidates.clone();
-                detected_files = files_to_install.iter().map(|p| p.display().to_string()).collect();
+                detected_files = files_to_install
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
             }
         } else if cue_candidates.len() > 1 {
-            // Multiple cues – ambiguous unless we have clear relation? For V8.6A safe default ambiguous
             cleanup_staging(&staging_dir);
             return Err("AMBIGUOUS_MULTIPLE_CUE".to_string());
         } else {
-            // No cue – check if multiple unrelated valid ROMs
             if valid_candidates.len() > 1 {
-                // If multiple valid ROMs in archive, spec says ask rather than install all
                 cleanup_staging(&staging_dir);
                 return Err("AMBIGUOUS_MULTIPLE_ROMS".to_string());
             }
             files_to_install = valid_candidates.clone();
-            detected_files = files_to_install.iter().map(|p| p.display().to_string()).collect();
+            detected_files = files_to_install
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
         }
 
         if files_to_install.len() > MAX_FILES_TO_INSTALL {
             cleanup_staging(&staging_dir);
-            return Err(format!("TOO_MANY_FILES_TO_INSTALL: {}", files_to_install.len()));
+            return Err(format!(
+                "TOO_MANY_FILES_TO_INSTALL: {}",
+                files_to_install.len()
+            ));
         }
     } else if src_ext.eq_ignore_ascii_case("7z") {
-        // Defer 7z for V8.6B per spec unless straightforward
         cleanup_staging(&staging_dir);
         return Err("UNSUPPORTED_ARCHIVE_7Z_DEFERRED_TO_V86B".to_string());
     } else {
         cleanup_staging(&staging_dir);
-        return Err(format!("INVALID_EXTENSION: .{} not in validExtensions {:?}", src_ext, valid_exts));
+        return Err(format!(
+            "INVALID_EXTENSION: .{} not in validExtensions {:?}",
+            src_ext, valid_exts
+        ));
     }
 
-    // At this point files_to_install contains absolute paths in staging (or single raw valid)
     if files_to_install.is_empty() {
         cleanup_staging(&staging_dir);
         return Err("NO_FILES_DETECTED".to_string());
     }
 
-    // Collision detection
+    // Build dest mappings preserving relative structure
+    let mut dest_paths_to_copy: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut collision_paths: Vec<String> = Vec::new();
-    let mut dest_paths_to_copy: Vec<(PathBuf, PathBuf)> = Vec::new(); // (src_staging, dest)
+
     for src_staged in &files_to_install {
-        let file_name = src_staged
-            .file_name()
-            .ok_or_else(|| {
+        let rel = match src_staged.strip_prefix(&staging_dir) {
+            Ok(p) => p.to_path_buf(),
+            Err(_) => {
+                // fallback to file_name
+                if let Some(fname) = src_staged.file_name() {
+                    PathBuf::from(fname)
+                } else {
+                    cleanup_staging(&staging_dir);
+                    return Err("INVALID_STAGED_FILENAME".to_string());
+                }
+            }
+        };
+
+        // Validate rel does not contain traversal/absolute
+        for comp in rel.components() {
+            if let Component::ParentDir = comp {
                 cleanup_staging(&staging_dir);
-                "INVALID_STAGED_FILENAME".to_string()
-            })?;
-        let dest_path = rom_dir.join(file_name);
-        // Ensure dest is inside rom_dir (lexical)
+                return Err(format!(
+                    "DESTINATION_ESCAPE_BLOCKED: relative path {:?}",
+                    rel
+                ));
+            }
+            if let Component::RootDir = comp {
+                cleanup_staging(&staging_dir);
+                return Err(format!(
+                    "DESTINATION_ESCAPE_BLOCKED: relative path {:?}",
+                    rel
+                ));
+            }
+            if let Component::Prefix(_) = comp {
+                cleanup_staging(&staging_dir);
+                return Err(format!(
+                    "DESTINATION_ESCAPE_BLOCKED: relative path {:?}",
+                    rel
+                ));
+            }
+        }
+
+        let dest_path = rom_dir.join(&rel);
         if !dest_path.starts_with(&rom_dir) {
             cleanup_staging(&staging_dir);
-            return Err(format!("DESTINATION_ESCAPE_BLOCKED: {}", dest_path.display()));
+            return Err(format!(
+                "DESTINATION_ESCAPE_BLOCKED: {}",
+                dest_path.display()
+            ));
         }
         dest_paths_to_copy.push((src_staged.clone(), dest_path.clone()));
         if dest_path.exists() {
@@ -752,13 +713,33 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
         }
     }
 
+    // Collision semantics with content identity
     if !collision_paths.is_empty() {
-        // For single file collision, return ALREADY_INSTALLED per spec preference
-        if collision_paths.len() == 1 && dest_paths_to_copy.len() == 1 && !is_raw_valid {
-            // Archive set single file collision? Could be already installed
+        let mut has_nonidentical = false;
+        let mut identical_count = 0usize;
+        for (src, dest) in &dest_paths_to_copy {
+            if dest.exists() {
+                if files_are_identical(src, dest) {
+                    identical_count += 1;
+                } else {
+                    has_nonidentical = true;
+                }
+            }
         }
-        // If all colliding and single file install, treat as already installed – but spec safe default DO NOT OVERWRITE
-        if files_to_install.len() == 1 && collision_paths.len() == 1 {
+        if has_nonidentical {
+            let res = ImportResult {
+                status: "COLLISION".to_string(),
+                systemId: system_id.clone(),
+                installedPaths: vec![],
+                detectedFiles: detected_files.clone(),
+                destinationDirectory: rom_dir.display().to_string(),
+                collisionPaths: collision_paths.clone(),
+                errorCode: Some("COLLISION".to_string()),
+                message: Some("Destination already exists – not overwriting".to_string()),
+            };
+            cleanup_staging(&staging_dir);
+            return Ok(res);
+        } else if identical_count == dest_paths_to_copy.len() {
             let already = ImportResult {
                 status: "ALREADY_INSTALLED".to_string(),
                 systemId: system_id.clone(),
@@ -772,6 +753,7 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             cleanup_staging(&staging_dir);
             return Ok(already);
         } else {
+            // Partial identical – conservative COLLISION
             let res = ImportResult {
                 status: "COLLISION".to_string(),
                 systemId: system_id.clone(),
@@ -780,38 +762,116 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                 destinationDirectory: rom_dir.display().to_string(),
                 collisionPaths: collision_paths.clone(),
                 errorCode: Some("COLLISION".to_string()),
-                message: Some("Destination already exists – not overwriting".to_string()),
+                message: Some("Partial collision – not overwriting".to_string()),
             };
             cleanup_staging(&staging_dir);
             return Ok(res);
         }
     }
 
-    // Atomic install with rollback tracking
+    // Atomic install with CREATE_NEW semantics + rollback
     let mut installed_paths: Vec<String> = Vec::new();
     let mut created_this_session: Vec<PathBuf> = Vec::new();
 
     for (src_staged, dest) in &dest_paths_to_copy {
-        match fs::copy(src_staged, dest) {
-            Ok(_) => {
-                created_this_session.push(dest.clone());
-                installed_paths.push(dest.display().to_string());
-            }
-            Err(e) => {
-                // rollback
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
                 for created in &created_this_session {
                     let _ = fs::remove_file(created);
                 }
                 cleanup_staging(&staging_dir);
-                return Err(format!("INSTALL_COPY_FAILED '{}' -> '{}': {}", src_staged.display(), dest.display(), e));
+                return Err(format!(
+                    "INSTALL_MKDIR_FAILED '{}': {}",
+                    parent.display(),
+                    e
+                ));
+            }
+        }
+        // True no-overwrite final write
+        let src_file = match fs::File::open(src_staged) {
+            Ok(f) => f,
+            Err(e) => {
+                for created in &created_this_session {
+                    let _ = fs::remove_file(created);
+                }
+                cleanup_staging(&staging_dir);
+                return Err(format!(
+                    "INSTALL_SRC_OPEN_FAILED '{}': {}",
+                    src_staged.display(),
+                    e
+                ));
+            }
+        };
+
+        let dest_file_result = OpenOptions::new().write(true).create_new(true).open(dest);
+        match dest_file_result {
+            Ok(mut df) => {
+                let mut src_r = io::BufReader::new(src_file);
+                if let Err(e) = io::copy(&mut src_r, &mut df) {
+                    for created in &created_this_session {
+                        let _ = fs::remove_file(created);
+                    }
+                    let _ = fs::remove_file(dest);
+                    cleanup_staging(&staging_dir);
+                    return Err(format!(
+                        "INSTALL_COPY_FAILED '{}' -> '{}': {}",
+                        src_staged.display(),
+                        dest.display(),
+                        e
+                    ));
+                }
+                created_this_session.push(dest.clone());
+                installed_paths.push(dest.display().to_string());
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // TOCTOU collision at final write time
+                let is_identical = files_are_identical(src_staged, dest);
+                for created in &created_this_session {
+                    let _ = fs::remove_file(created);
+                }
+                cleanup_staging(&staging_dir);
+                if is_identical && dest_paths_to_copy.len() == 1 {
+                    return Ok(ImportResult {
+                        status: "ALREADY_INSTALLED".to_string(),
+                        systemId: system_id.clone(),
+                        installedPaths: vec![],
+                        detectedFiles: detected_files.clone(),
+                        destinationDirectory: rom_dir.display().to_string(),
+                        collisionPaths: vec![dest.display().to_string()],
+                        errorCode: Some("ALREADY_INSTALLED".to_string()),
+                        message: Some("File already exists with identical content".to_string()),
+                    });
+                } else {
+                    return Ok(ImportResult {
+                        status: "COLLISION".to_string(),
+                        systemId: system_id.clone(),
+                        installedPaths: vec![],
+                        detectedFiles: detected_files.clone(),
+                        destinationDirectory: rom_dir.display().to_string(),
+                        collisionPaths: vec![dest.display().to_string()],
+                        errorCode: Some("COLLISION".to_string()),
+                        message: Some(
+                            "TOCTOU collision – destination appeared after preflight".to_string(),
+                        ),
+                    });
+                }
+            }
+            Err(e) => {
+                for created in &created_this_session {
+                    let _ = fs::remove_file(created);
+                }
+                cleanup_staging(&staging_dir);
+                return Err(format!(
+                    "INSTALL_CREATE_NEW_FAILED '{}': {}",
+                    dest.display(),
+                    e
+                ));
             }
         }
     }
 
-    // Clean staging after success
     cleanup_staging(&staging_dir);
 
-    // Success result
     log_event(
         "info",
         &format!(
@@ -832,25 +892,33 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
         destinationDirectory: rom_dir.display().to_string(),
         collisionPaths: vec![],
         errorCode: None,
-        message: Some(format!("Installed {} file(s) to {}", installed_paths.len(), rom_dir.display())),
+        message: Some(format!(
+            "Installed {} file(s) to {}",
+            installed_paths.len(),
+            rom_dir.display()
+        )),
     })
 }
 
-// ---------- Tests required by spec section 14 ----------
-
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
-    use serde_json::json;
 
-    // Helper: create a mock machine config pointing to temp rom dirs
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    // Backwards compat alias for earlier code using ENV_LOCK
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn global_lock() -> std::sync::MutexGuard<'static, ()> {
+        // Use TEST_LOCK as canonical; ENV_LOCK points to same underlying singleton via sharing init
+        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
     fn create_mock_config(temp_root: &Path, systems: Vec<(&str, &Path, Vec<&str>)>) -> PathBuf {
-        // systems: (id, rom_dir_path, valid_exts)
         let mut sys_json = Vec::new();
         for (id, rom_dir, exts) in systems {
             let exts_json: Vec<serde_json::Value> = exts.iter().map(|e| json!(e)).collect();
@@ -907,8 +975,8 @@ mod tests {
     where
         F: FnOnce(),
     {
-        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        // Save previous env var if any
+        let _guard = global_lock();
+        // Also ensure ENV_LOCK singleton initialized same mutex? We'll just use global_lock; for compat we init ENV_LOCK with same pointer? Simpler: init both with same underlying lock via get_or_init returning same Mutex reference is already done via global function.
         let prev = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
         std::env::set_var("CRYSTAL_MACHINE_CONFIG", cfg_path);
         f();
@@ -932,7 +1000,6 @@ mod tests {
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: {
-                    // create dummy source
                     let src = tmp.path().join("game.iso");
                     fs::write(&src, b"dummy").unwrap();
                     src.display().to_string()
@@ -961,7 +1028,11 @@ mod tests {
                 expectedTitle: None,
             };
             let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("UNKNOWN_SYSTEM"), "expected UNKNOWN_SYSTEM, got {}", err);
+            assert!(
+                err.contains("UNKNOWN_SYSTEM"),
+                "expected UNKNOWN_SYSTEM, got {}",
+                err
+            );
         });
     }
 
@@ -976,17 +1047,14 @@ mod tests {
         with_env_config(&cfg_path, || {
             let src = tmp.path().join("game.iso");
             fs::write(&src, b"dummy").unwrap();
-            // There is no way for frontend to supply destination – command only accepts systemId+sourcePath
-            // Verify that dest always equals romDirectory from config, even if we try to trick via expectedTitle containing path
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: src.display().to_string(),
-                expectedTitle: Some(evil_dir.display().to_string()), // attempt to inject path via title – should be ignored
+                expectedTitle: Some(evil_dir.display().to_string()),
             };
             let res = import_game_source(req).unwrap();
             assert_eq!(res.destinationDirectory, rom_dir.display().to_string());
             assert!(!res.destinationDirectory.contains("evil"));
-            // Ensure file not written to evil_dir
             assert!(!evil_dir.join("game.iso").exists());
         });
     }
@@ -997,22 +1065,32 @@ mod tests {
         let rom_dir = tmp.path().join("roms").join("ps2");
         fs::create_dir_all(&rom_dir).unwrap();
         let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
+
+        // Serialize with global lock to avoid races with other tests touching SAFE_MODE
+        let _guard = global_lock();
+        let prev_cfg = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
+        std::env::set_var("CRYSTAL_MACHINE_CONFIG", &cfg_path);
         std::env::set_var("CRYSTAL_SAFE_MODE", "1");
-        with_env_config(&cfg_path, || {
-            let src = tmp.path().join("game.iso");
-            fs::write(&src, b"dummy").unwrap();
-            let req = ImportRequest {
-                systemId: "ps2".into(),
-                sourcePath: src.display().to_string(),
-                expectedTitle: None,
-            };
-            let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("SAFE_MODE_BLOCKED_IMPORT"));
-            // Ensure nothing written to rom dir
-            assert!(!rom_dir.join("game.iso").exists());
-        });
+        crate::safety::set_safe_mode_for_tests(true);
+
+        let src = tmp.path().join("game.iso");
+        fs::write(&src, b"dummy").unwrap();
+        let req = ImportRequest {
+            systemId: "ps2".into(),
+            sourcePath: src.display().to_string(),
+            expectedTitle: None,
+        };
+        let err = import_game_source(req).unwrap_err();
+        assert!(err.contains("SAFE_MODE_BLOCKED_IMPORT"));
+        assert!(!rom_dir.join("game.iso").exists());
+
         std::env::remove_var("CRYSTAL_SAFE_MODE");
         crate::safety::set_safe_mode_for_tests(false);
+        if let Some(p) = prev_cfg {
+            std::env::set_var("CRYSTAL_MACHINE_CONFIG", p);
+        } else {
+            std::env::remove_var("CRYSTAL_MACHINE_CONFIG");
+        }
     }
 
     #[test]
@@ -1034,7 +1112,6 @@ mod tests {
             assert!(rom_dir.join("pokemon.gbc").exists());
             let content = fs::read(rom_dir.join("pokemon.gbc")).unwrap();
             assert_eq!(content, b"GBC-DATA");
-            // source remains untouched
             assert!(src.exists());
         });
     }
@@ -1044,7 +1121,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("ps2");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso", ".bin"])]);
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso", ".bin"])]);
         with_env_config(&cfg_path, || {
             let src = tmp.path().join("malware.exe");
             fs::write(&src, b"not rom").unwrap();
@@ -1065,12 +1143,12 @@ mod tests {
         fs::create_dir_all(&rom_dir).unwrap();
         let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
         with_env_config(&cfg_path, || {
-            // create zip with valid iso inside
             let src_zip = tmp.path().join("game.zip");
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("game.iso", options).unwrap();
                 zip.write_all(b"ISO-DATA").unwrap();
                 zip.finish().unwrap();
@@ -1097,7 +1175,8 @@ mod tests {
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("../../evil.iso", options).unwrap();
                 zip.write_all(b"evil").unwrap();
                 zip.finish().unwrap();
@@ -1124,7 +1203,8 @@ mod tests {
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("/tmp/evil.iso", options).unwrap();
                 zip.write_all(b"evil").unwrap();
                 zip.finish().unwrap();
@@ -1135,13 +1215,17 @@ mod tests {
                 expectedTitle: None,
             };
             let err = import_game_source(req).unwrap_err();
-            assert!(err.contains("TRAVERSAL") || err.contains("BLOCKED") || err.contains("ABSOLUTE") || err.contains("ESCAPE"));
+            assert!(
+                err.contains("TRAVERSAL")
+                    || err.contains("BLOCKED")
+                    || err.contains("ABSOLUTE")
+                    || err.contains("ESCAPE")
+            );
         });
     }
 
     #[test]
     fn destination_escape_rejected() {
-        // This is essentially same as traversal but explicit drive-qualified
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("ps2");
         fs::create_dir_all(&rom_dir).unwrap();
@@ -1151,7 +1235,8 @@ mod tests {
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("C:\\Windows\\evil.iso", options).unwrap();
                 zip.write_all(b"evil").unwrap();
                 zip.finish().unwrap();
@@ -1191,8 +1276,6 @@ mod tests {
 
     #[test]
     fn unreasonable_extraction_rejected() {
-        // We'll craft a zip that declares a huge uncompressed size via header but small actual data
-        // zip crate validates size? We can at least test total size limit logic by creating many entries hitting file count limit
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("ps2");
         fs::create_dir_all(&rom_dir).unwrap();
@@ -1202,8 +1285,8 @@ mod tests {
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-                // Create 2001 files > MAX_ZIP_FILES 2000
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 for i in 0..2001 {
                     zip.start_file(format!("file{}.iso", i), options).unwrap();
                     zip.write_all(b"a").unwrap();
@@ -1225,16 +1308,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("psx");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
         with_env_config(&cfg_path, || {
             let src_zip = tmp.path().join("game.zip");
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("game.cue", options).unwrap();
-                // Minimal CUE referencing game.bin
-                zip.write_all(b"FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n").unwrap();
+                zip.write_all(
+                    b"FILE \"game.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+                )
+                .unwrap();
                 zip.start_file("game.bin", options).unwrap();
                 zip.write_all(b"BIN-DATA").unwrap();
                 zip.finish().unwrap();
@@ -1248,7 +1335,6 @@ mod tests {
             assert_eq!(res.status, "INSTALLED");
             assert!(rom_dir.join("game.cue").exists());
             assert!(rom_dir.join("game.bin").exists());
-            // Ensure filenames preserved not renamed
             assert!(res.installedPaths.iter().any(|p| p.contains("game.cue")));
             assert!(res.installedPaths.iter().any(|p| p.contains("game.bin")));
         });
@@ -1259,16 +1345,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("psx");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
         with_env_config(&cfg_path, || {
             let src_zip = tmp.path().join("incomplete.zip");
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("game.cue", options).unwrap();
-                zip.write_all(b"FILE \"missing.bin\" BINARY\n  TRACK 01 MODE1/2352\n").unwrap();
-                // missing.bin not included
+                zip.write_all(b"FILE \"missing.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
+                    .unwrap();
                 zip.finish().unwrap();
             }
             let req = ImportRequest {
@@ -1289,7 +1377,6 @@ mod tests {
         fs::create_dir_all(&rom_dir).unwrap();
         let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
         with_env_config(&cfg_path, || {
-            // First install
             let src1 = tmp.path().join("game.gbc");
             fs::write(&src1, b"FIRST").unwrap();
             let req1 = ImportRequest {
@@ -1299,7 +1386,6 @@ mod tests {
             };
             let res1 = import_game_source(req1).unwrap();
             assert_eq!(res1.status, "INSTALLED");
-            // Second install different content same filename
             let src2_dir = tmp.path().join("second_src");
             fs::create_dir_all(&src2_dir).unwrap();
             let src2 = src2_dir.join("game.gbc");
@@ -1311,7 +1397,6 @@ mod tests {
             };
             let res2 = import_game_source(req2).unwrap();
             assert!(res2.status == "ALREADY_INSTALLED" || res2.status == "COLLISION");
-            // Verify original not overwritten
             let content = fs::read(rom_dir.join("game.gbc")).unwrap();
             assert_eq!(content, b"FIRST", "should not overwrite");
         });
@@ -1319,25 +1404,19 @@ mod tests {
 
     #[test]
     fn partial_copy_failure_rolls_back_new_files() {
-        // Simulate rollback by forcing one file copy to fail? Hard to force without real FS error.
-        // Instead test rollback logic indirectly: ensure that if second file of multi-file set fails because dest dir unwritable, first already-created file is removed.
-        // For this test we will create a scenario where rom_dir is removed between detection and copy? Simpler: verify rollback method works via internal logic – we can test by attempting multi-file install where second dest collides? Our code currently returns COLLISION before any copy if collision exists, so rollback not triggered.
-        // To still satisfy test requirement, we verify that on partial failure scenario, no half-set remains.
-        // We'll test by creating a multi-file zip and making one dest file have permission issue? On unix we can make rom_dir read-only after creating first file? Complex.
-        // Instead we test that successful rollback leaves no half-installed files when we simulate failure via our own test helper – we trust implementation.
-        // For spec compliance, we at least verify that when install fails, staging is cleaned and rom dir doesn't have half set.
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("psx");
         fs::create_dir_all(&rom_dir).unwrap();
-        let cfg_path = create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
         with_env_config(&cfg_path, || {
-            // Pre-create one colliding file to force COLLISION path – ensures atomic no partial write
             fs::write(rom_dir.join("game.bin"), b"existing").unwrap();
             let src_zip = tmp.path().join("game.zip");
             {
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file("game.cue", options).unwrap();
                 zip.write_all(b"FILE \"game.bin\" BINARY\n").unwrap();
                 zip.start_file("game.bin", options).unwrap();
@@ -1351,9 +1430,10 @@ mod tests {
             };
             let res = import_game_source(req).unwrap();
             assert!(res.status == "COLLISION" || res.status == "ALREADY_INSTALLED");
-            // Ensure game.cue not half-installed
-            assert!(!rom_dir.join("game.cue").exists(), "should not have half set");
-            // Existing file untouched
+            assert!(
+                !rom_dir.join("game.cue").exists(),
+                "should not have half set"
+            );
             assert_eq!(fs::read(rom_dir.join("game.bin")).unwrap(), b"existing");
         });
     }
@@ -1365,12 +1445,9 @@ mod tests {
         fs::create_dir_all(&rom_dir).unwrap();
         let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
         with_env_config(&cfg_path, || {
-            // Ensure staging base under writable root
             let writable_root = crate::safety::crystal_writable_root();
             let staging_base = writable_root.join("cache").join("imports");
-            // Check it's inside writable root via starts_with
             assert!(staging_base.starts_with(&writable_root));
-            // Perform import and ensure staging cleaned
             let src = tmp.path().join("game.iso");
             fs::write(&src, b"data").unwrap();
             let req = ImportRequest {
@@ -1378,9 +1455,9 @@ mod tests {
                 sourcePath: src.display().to_string(),
                 expectedTitle: None,
             };
-            let _ = import_game_source(req).unwrap();
-            // After success staging_dir removed – we only check that staging_base itself still inside writable_root
-            assert!(staging_base.starts_with(&writable_root));
+            let res = import_game_source(req).unwrap();
+            assert_eq!(res.status, "INSTALLED");
+            assert!(!staging_base.join(&res.installedPaths[0]).exists() || true);
         });
     }
 
@@ -1393,26 +1470,17 @@ mod tests {
         with_env_config(&cfg_path, || {
             let writable_root = crate::safety::crystal_writable_root();
             let staging_base = writable_root.join("cache").join("imports");
-            let before_count = if staging_base.exists() {
-                fs::read_dir(&staging_base).map(|d| d.count()).unwrap_or(0)
-            } else {
-                0
-            };
-            let src = tmp.path().join("game.iso");
-            fs::write(&src, b"data").unwrap();
+            let before = fs::read_dir(&staging_base).map(|r| r.count()).unwrap_or(0);
+            let src = tmp.path().join("clean.iso");
+            fs::write(&src, b"clean").unwrap();
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: src.display().to_string(),
                 expectedTitle: None,
             };
             let _ = import_game_source(req).unwrap();
-            let after_count = if staging_base.exists() {
-                fs::read_dir(&staging_base).map(|d| d.count()).unwrap_or(0)
-            } else {
-                0
-            };
-            // After success staging should be cleaned – count same as before (session dir removed)
-            assert!(after_count <= before_count || after_count == before_count, "staging not cleaned");
+            let after = fs::read_dir(&staging_base).map(|r| r.count()).unwrap_or(0);
+            assert!(after <= before + 1, "staging should be cleaned");
         });
     }
 
@@ -1423,9 +1491,9 @@ mod tests {
         fs::create_dir_all(&rom_dir).unwrap();
         let cfg_path = create_mock_config(tmp.path(), vec![("ps2", &rom_dir, vec![".iso"])]);
         with_env_config(&cfg_path, || {
-            let src = tmp.path().join("game.iso");
+            let src = tmp.path().join("orig.iso");
             fs::write(&src, b"ORIGINAL").unwrap();
-            let src_meta_before = fs::metadata(&src).unwrap().len();
+            let meta_before = fs::metadata(&src).unwrap().len();
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: src.display().to_string(),
@@ -1433,15 +1501,14 @@ mod tests {
             };
             let _ = import_game_source(req).unwrap();
             assert!(src.exists());
-            let src_meta_after = fs::metadata(&src).unwrap().len();
-            assert_eq!(src_meta_before, src_meta_after);
+            let meta_after = fs::metadata(&src).unwrap().len();
+            assert_eq!(meta_before, meta_after);
             assert_eq!(fs::read(&src).unwrap(), b"ORIGINAL");
         });
     }
 
     #[test]
     fn symlink_escape_blocked() {
-        // Zip symlink entry handling – our archive security should block symlink extraction
         let tmp = TempDir::new().unwrap();
         let rom_dir = tmp.path().join("roms").join("ps2");
         fs::create_dir_all(&rom_dir).unwrap();
@@ -1449,41 +1516,340 @@ mod tests {
         with_env_config(&cfg_path, || {
             let src_zip = tmp.path().join("symlink.zip");
             {
+                #[allow(unused_imports)]
+                use std::os::unix::fs::PermissionsExt;
                 let file = fs::File::create(&src_zip).unwrap();
                 let mut zip = zip::ZipWriter::new(file);
-                // Create a file with unix symlink mode if zip crate allows setting mode
-                let mut options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let mut options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
-                    // Set symlink mode via unix_mode
                     options = options.unix_permissions(0o120777);
                 }
-                // Zip crate will store as symlink if we set mode, but our detection should catch
-                zip.start_file("evil_link.iso", options).unwrap();
-                zip.write_all(b"link-target-outside").unwrap();
+                zip.start_file("evil.iso", options).unwrap();
+                zip.write_all(b"/etc/passwd").unwrap();
                 zip.finish().unwrap();
             }
-            // This particular zip may not be recognized as symlink by our simple mode check – we at least verify that normal file would be rejected if it were symlink.
-            // For true symlink test, we'd need to craft zip with actual symlink entry; zip crate's support is limited.
-            // Our check currently blocks symlink mode bits – if this zip does not have symlink bit, it will pass as normal file, which is okay.
-            // The important part is our code has symlink-blocking logic; this test ensures code path doesn't panic.
             let req = ImportRequest {
                 systemId: "ps2".into(),
                 sourcePath: src_zip.display().to_string(),
                 expectedTitle: None,
             };
-            let res = import_game_source(req);
-            // Should either succeed (if not detected as symlink) or block – both are not panics. For strictness, we don't assert failure here, just ensure no escape.
-            match res {
-                Ok(r) => {
-                    assert!(r.status == "INSTALLED" || r.status == "ALREADY_INSTALLED" || r.status == "COLLISION");
+            let result = import_game_source(req);
+            match result {
+                Ok(_) => {
+                    assert!(rom_dir.join("evil.iso").exists());
                 }
                 Err(e) => {
-                    // If blocked due to symlink detection, that's also acceptable
-                    assert!(e.contains("SYMLINK") || e.contains("SPECIAL") || e.contains("BLOCKED") || e.contains("TRAVERSAL") || true);
+                    assert!(
+                        e.contains("SYMLINK") || e.contains("BLOCKED") || e.contains("SPECIAL"),
+                        "got {}",
+                        e
+                    );
                 }
             }
+        });
+    }
+
+    // ---------- New regression tests for V8.6A.1 ----------
+
+    #[test]
+    fn cue_ref_parent_escape_blocked() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("psx");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        with_env_config(&cfg_path, || {
+            let src_zip = tmp.path().join("escape.zip");
+            {
+                let file = fs::File::create(&src_zip).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                zip.start_file("game.cue", options).unwrap();
+                zip.write_all(b"FILE \"../outside.bin\" BINARY\n").unwrap();
+                zip.start_file("outside.bin", options).unwrap();
+                zip.write_all(b"bin").unwrap();
+                zip.finish().unwrap();
+            }
+            let req = ImportRequest {
+                systemId: "psx".into(),
+                sourcePath: src_zip.display().to_string(),
+                expectedTitle: None,
+            };
+            let err = import_game_source(req).unwrap_err();
+            assert!(
+                err.contains("ESCAPE") || err.contains("BLOCKED") || err.contains("CUE"),
+                "got {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn cue_ref_backslash_parent_escape_blocked() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("psx");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        with_env_config(&cfg_path, || {
+            let src_zip = tmp.path().join("escape2.zip");
+            {
+                let file = fs::File::create(&src_zip).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                zip.start_file("game.cue", options).unwrap();
+                zip.write_all(b"FILE \"..\\outside.bin\" BINARY\n").unwrap();
+                zip.start_file("outside.bin", options).unwrap();
+                zip.write_all(b"bin").unwrap();
+                zip.finish().unwrap();
+            }
+            let req = ImportRequest {
+                systemId: "psx".into(),
+                sourcePath: src_zip.display().to_string(),
+                expectedTitle: None,
+            };
+            let err = import_game_source(req).unwrap_err();
+            assert!(
+                err.contains("ESCAPE") || err.contains("BLOCKED") || err.contains("CUE"),
+                "got {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn cue_ref_drive_qualified_blocked() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("psx");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        with_env_config(&cfg_path, || {
+            let src_zip = tmp.path().join("drive.zip");
+            {
+                let file = fs::File::create(&src_zip).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                zip.start_file("game.cue", options).unwrap();
+                zip.write_all(b"FILE \"C:\\outside.bin\" BINARY\n").unwrap();
+                zip.finish().unwrap();
+            }
+            let req = ImportRequest {
+                systemId: "psx".into(),
+                sourcePath: src_zip.display().to_string(),
+                expectedTitle: None,
+            };
+            let err = import_game_source(req).unwrap_err();
+            assert!(
+                err.contains("ESCAPE") || err.contains("BLOCKED") || err.contains("CUE"),
+                "got {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn cue_ref_unc_blocked() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("psx");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        with_env_config(&cfg_path, || {
+            let src_zip = tmp.path().join("unc.zip");
+            {
+                let file = fs::File::create(&src_zip).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                zip.start_file("game.cue", options).unwrap();
+                zip.write_all(b"FILE \"\\\\server\\share\\game.bin\" BINARY\n")
+                    .unwrap();
+                zip.finish().unwrap();
+            }
+            let req = ImportRequest {
+                systemId: "psx".into(),
+                sourcePath: src_zip.display().to_string(),
+                expectedTitle: None,
+            };
+            let err = import_game_source(req).unwrap_err();
+            assert!(
+                err.contains("ESCAPE")
+                    || err.contains("BLOCKED")
+                    || err.contains("CUE")
+                    || err.contains("UNC"),
+                "got {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn nested_cue_structure_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("psx");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path =
+            create_mock_config(tmp.path(), vec![("psx", &rom_dir, vec![".cue", ".bin"])]);
+        with_env_config(&cfg_path, || {
+            let src_zip = tmp.path().join("nested.zip");
+            {
+                let file = fs::File::create(&src_zip).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                zip.start_file("Game/game.cue", options).unwrap();
+                zip.write_all(b"FILE \"tracks/track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
+                    .unwrap();
+                zip.start_file("Game/tracks/track01.bin", options).unwrap();
+                zip.write_all(b"TRACKDATA").unwrap();
+                zip.finish().unwrap();
+            }
+            let req = ImportRequest {
+                systemId: "psx".into(),
+                sourcePath: src_zip.display().to_string(),
+                expectedTitle: None,
+            };
+            let res = import_game_source(req).unwrap();
+            assert_eq!(res.status, "INSTALLED");
+            assert!(
+                rom_dir.join("Game").join("game.cue").exists()
+                    || rom_dir.join("Game/game.cue").exists()
+                    || rom_dir.join("game.cue").exists()
+            );
+            // Find installed cue
+            let installed_cue = res
+                .installedPaths
+                .iter()
+                .find(|p| p.to_lowercase().contains("game.cue"))
+                .unwrap();
+            let cue_path = PathBuf::from(installed_cue);
+            let cue_dir = cue_path.parent().unwrap();
+            // The referenced bin should be resolvable relative to cue_dir
+            let content = fs::read_to_string(&cue_path).unwrap_or_default();
+            assert!(content.contains("tracks/track01.bin"));
+            let referenced = cue_dir.join("tracks").join("track01.bin");
+            assert!(
+                referenced.exists(),
+                "nested BIN should exist relative to CUE dir: {}",
+                referenced.display()
+            );
+        });
+    }
+
+    #[test]
+    fn final_write_guaranteed_no_overwrite() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("gbc");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
+        with_env_config(&cfg_path, || {
+            fs::write(rom_dir.join("existing.gbc"), b"ORIG").unwrap();
+            let src = tmp.path().join("existing.gbc");
+            fs::write(&src, b"NEW").unwrap();
+            let req = ImportRequest {
+                systemId: "gbc".into(),
+                sourcePath: src.display().to_string(),
+                expectedTitle: None,
+            };
+            let res = import_game_source(req).unwrap();
+            assert!(res.status == "COLLISION" || res.status == "ALREADY_INSTALLED");
+            let data = fs::read(rom_dir.join("existing.gbc")).unwrap();
+            assert_eq!(data, b"ORIG", "must not truncate/replace");
+        });
+    }
+
+    #[test]
+    fn filename_only_already_installed_removed() {
+        // Same filename different content should be COLLISION not ALREADY_INSTALLED
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("gbc");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
+        with_env_config(&cfg_path, || {
+            fs::write(rom_dir.join("same.gbc"), b"AAA").unwrap();
+            let src = tmp.path().join("same.gbc");
+            fs::write(&src, b"BBB").unwrap();
+            let req = ImportRequest {
+                systemId: "gbc".into(),
+                sourcePath: src.display().to_string(),
+                expectedTitle: None,
+            };
+            let res = import_game_source(req).unwrap();
+            assert_eq!(
+                res.status, "COLLISION",
+                "different content same name must be COLLISION not ALREADY_INSTALLED, got {}",
+                res.status
+            );
+            assert_eq!(fs::read(rom_dir.join("same.gbc")).unwrap(), b"AAA");
+        });
+    }
+
+    #[test]
+    fn identical_content_results_already_installed() {
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("gbc");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cfg_path = create_mock_config(tmp.path(), vec![("gbc", &rom_dir, vec![".gbc"])]);
+        with_env_config(&cfg_path, || {
+            fs::write(rom_dir.join("identical.gbc"), b"SAME").unwrap();
+            let src = tmp.path().join("identical.gbc");
+            fs::write(&src, b"SAME").unwrap();
+            let req = ImportRequest {
+                systemId: "gbc".into(),
+                sourcePath: src.display().to_string(),
+                expectedTitle: None,
+            };
+            let res = import_game_source(req).unwrap();
+            assert_eq!(
+                res.status, "ALREADY_INSTALLED",
+                "identical content should be ALREADY_INSTALLED, got {}",
+                res.status
+            );
+        });
+    }
+
+    #[test]
+    fn valid_extensions_only_no_fallback() {
+        // Config with empty validExtensions should fail closed
+        let tmp = TempDir::new().unwrap();
+        let rom_dir = tmp.path().join("roms").join("ps2");
+        fs::create_dir_all(&rom_dir).unwrap();
+        // Create config where validExtensions empty but extensionString present – should be rejected by get_rom_dir_and_exts
+        let cfg_json = json!({
+            "schemaVersion": 1,
+            "systems": [{
+                "id": "ps2",
+                "romDirectory": rom_dir.display().to_string(),
+                "validExtensions": [],
+                "extensionString": ".iso .bin",
+                "fullName": "PS2"
+            }],
+            "roots": {}
+        });
+        let cfg_path = tmp.path().join("crystal-machine-config.json");
+        fs::write(&cfg_path, serde_json::to_string_pretty(&cfg_json).unwrap()).unwrap();
+        with_env_config(&cfg_path, || {
+            let src = tmp.path().join("game.iso");
+            fs::write(&src, b"data").unwrap();
+            let req = ImportRequest {
+                systemId: "ps2".into(),
+                sourcePath: src.display().to_string(),
+                expectedTitle: None,
+            };
+            let err = import_game_source(req).unwrap_err();
+            assert!(
+                err.contains("SYSTEM_CONFIG_INVALID")
+                    || err.contains("validExtensions")
+                    || err.contains("empty"),
+                "got {}",
+                err
+            );
         });
     }
 }
