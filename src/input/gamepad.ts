@@ -7,17 +7,18 @@ const REPEAT_INTERVAL = 120
 type ButtonMap = Partial<Record<number, NavigationAction>>
 
 /**
- * V8.4 DISCOVER — Y now maps to DISCOVER (search) to free elegant secondary entry
- * Dual-menu safeguard: menu remains on Start (9) + Back+Start combo elsewhere; Y previously
- * duplicated menu so we repurpose cleanly. Docs: Y = [Y] DISCOVER, X (2) = favorite, Start = menu.
+ * V8.4.1 – Controller mapping hardened (ADDITIVE, does not steal X/Y):
+ * - System view: L/R system cycle, A = library, B not used, Menu = settings, Y stays FREE (not discover), View/Select (8) = DISCOVER additive.
+ * - Library view: L/R game cycle, A play, B back to system, X = media cycle (preserved), Y = favorite toggle (preserved), View/Select (8)=DISCOVER prefilled.
+ * - Gamepad Y (button 3) remains favorite for parity with keyboard Y; discover is dedicated to View/Search.
  */
 const DEFAULT_BUTTON_MAP: ButtonMap = {
   0: 'confirm',
   1: 'back',
-  2: 'favorite',
-  3: 'search', // V8.4: physical Y (Xbox) = SEARCH/DISCOVER — was menu duplicate, now discover
-  8: 'search', // Select/View still search secondary
-  9: 'menu',   // Start/Menu = settings retained single source
+  2: 'media', // X (west) – MEDIA cycle – preserves existing Library X action (keyboard X = media)
+  3: 'favorite', // Y (north) – favorite toggle – preserves existing Library Y action (keyboard Y/F = favorite)
+  8: 'search', // Select/View – DISCOVER dedicated additive entry (search = / ? on keyboard)
+  9: 'menu',   // Start/Menu = settings
   4: 'previousSystem',
   5: 'nextSystem',
 }

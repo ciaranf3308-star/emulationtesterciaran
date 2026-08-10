@@ -1,9 +1,13 @@
 /**
- * V8.4 DISCOVER — Boutique-hotel premium Discovery view
- * Crystal-native, 1920x1080 / 1140x648 safe, heavy defocus bg, no shop/cart/price
+ * Crystal Discovery – Vimm's Lair catalog reference
+ * Premium gaming OS: graphite / silver / acrylic glass / cool electric cyan accent
+ * Controller-first, collectible hardware culture presentation – NOT boutique-hotel hospitality
  *
  * Props allow empty prefill (System Landing) and selected game context (Library)
+ * V8.4.1 HARDENING: empty query returns empty locally (no network), additive controller mapping,
+ * detail/controller deterministic (A open, B close detail -> results, B from results -> origin)
  */
+
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import type { GameEntry } from '../runtime/backend'
 import discoveryService, { type DiscoveryResult, canonicalVaultUrl } from '../lib/discoveryService'
@@ -79,7 +83,16 @@ export function DiscoverView({
     setFocusedIdx(0)
   }, [debounced, results.length])
 
-  // search effect
+  // Track detail open state globally for App→Discover coordination (prevents double-back)
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        (window as any).__crystal_discover_detail_open = showDetailPanel
+      }
+    } catch {}
+  }, [showDetailPanel])
+
+  // search effect – V8.4.1: empty query returns empty locally, no network (live audit ?p=list&system=PS2 without q 404)
   useEffect(() => {
     let cancelled = false
     async function doSearch() {
@@ -160,7 +173,7 @@ export function DiscoverView({
     }
   }, [])
 
-  // controller bindings exposed via dataset and window event? Parent App.tsx will call onNav-> we support imperative key handlers
+  // V8.4.1 deterministic controller + keyboard
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (showDetailPanel) {
@@ -168,44 +181,64 @@ export function DiscoverView({
           e.preventDefault()
           setShowDetailPanel(false)
           setSelectedDetail(null)
+          return
+        }
+        if (e.key === 'Enter' || e.key === ' ') {
+          // Detail A = OPEN ON VIMM'S LAIR (primary action)
+          e.preventDefault()
+          const id = (detailFull?.providerId || detailFull?.id || selectedDetail?.id) as string
+          if (id) handleOpenVault(id)
+          return
         }
       } else {
         if (e.key === 'Escape' || e.key === 'Backspace') {
           e.preventDefault()
           onBack()
+          return
         }
         if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'k') {
           e.preventDefault()
           setFocusedIdx(i => Math.max(0, i - 1))
+          return
         }
         if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'j') {
           e.preventDefault()
           setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + 1))
+          return
         }
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           const r = results[focusedIdx]
           if (r) openDetail(r)
+          return
         }
         if (e.key === 'x' || e.key === 'X') {
           e.preventDefault()
           searchInputRef.current?.focus()
+          return
         }
       }
     }
+
     const onDiscoverNav = (ev: any) => {
       const action = ev?.detail as string
       if (!action) return
       if (showDetailPanel) {
-        if (action === 'back' || action === 'menu' || action === 'confirm') {
-          // back closes detail, confirm would be open-on-vimm inside detail? For now close handled via button
-          if (action === 'back') {
-            setShowDetailPanel(false)
-            setSelectedDetail(null)
-          }
+        if (action === 'back' || action === 'menu') {
+          setShowDetailPanel(false)
+          setSelectedDetail(null)
           return
         }
+        if (action === 'confirm') {
+          // Detail A -> OPEN ON VIMM'S LAIR
+          const id = (detailFull?.providerId || detailFull?.id || selectedDetail?.id) as string
+          if (id) handleOpenVault(id)
+          return
+        }
+        // while detail open, ignore navigation arrows for detail close behavior
+        return
       } else {
+        // results list mode
         if (action === 'up') setFocusedIdx(i => Math.max(0, i - 1))
         else if (action === 'down') setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + 1))
         else if (action === 'left') setFocusedIdx(i => Math.max(0, i - 1))
@@ -213,21 +246,23 @@ export function DiscoverView({
         else if (action === 'confirm') {
           const r = results[focusedIdx]
           if (r) openDetail(r)
-        } else if (action === 'media' || action === 'search' || action === 'favorite') {
+        } else if (action === 'search') {
           try { searchInputRef.current?.focus() } catch {}
-        } else if (action === 'back') {
-          // let App's onBack handle origin restore – still close discover view via our onBack
+        } else if (action === 'back' || action === 'menu') {
+          // results B -> return to origin (library/system) via onBack – single exit, no double-back
           onBack()
         }
+        // favorite/media do NOT trigger discover here – App preserves those, we ignore to stay additive
       }
     }
+
     window.addEventListener('keydown', onKey)
     window.addEventListener('crystal-discover-nav' as any, onDiscoverNav)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('crystal-discover-nav' as any, onDiscoverNav)
     }
-  }, [results, focusedIdx, showDetailPanel, onBack])
+  }, [results, focusedIdx, showDetailPanel, onBack, selectedDetail, detailFull, handleOpenVault])
 
   async function openDetail(r: DiscoveryResult) {
     setSelectedDetail(r)
@@ -265,7 +300,7 @@ export function DiscoverView({
         zIndex: 7,
       }}
     >
-      {/* Heavily blurred bg layer */}
+      {/* Heavily blurred bg layer – graphite premium gaming OS, NOT boutique hotel */}
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
         {backgroundUrl ? (
           <img
@@ -292,7 +327,7 @@ export function DiscoverView({
             ? 'linear-gradient(180deg, rgba(10,12,18,0.34), rgba(10,12,18,0.52)), radial-gradient(84% 68% at 50% 18%, transparent 8%, rgba(6,9,14,0.42) 72%)'
             : 'linear-gradient(180deg, rgba(250,252,255,0.64), rgba(240,244,255,0.72)), radial-gradient(84% 66% at 50% 22%, transparent 10%, rgba(234,238,248,0.42) 70%)',
         }} />
-        {/* premium vignette */}
+        {/* premium vignette – cool electric cyan hardware glow */}
         <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse at center, transparent 56%, rgba(0,0,0,0.18) 100%)', opacity: isDark ? 0.55 : 0.22 }} />
       </div>
 
@@ -394,8 +429,9 @@ export function DiscoverView({
           )}
         </div>
         <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.54, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[X] EDIT</span>
+          <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[View] SEARCH</span>
           <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[A] OPEN</span>
+          <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[B] BACK</span>
         </div>
       </div>
 
@@ -438,6 +474,11 @@ export function DiscoverView({
             No catalog entries for “{debounced}” on {systemFullName}. Try broader title. {errorMsg && <span style={{ color: '#ff7b7b' }}> {errorMsg}</span>}
           </div>
         )}
+        {!offline && !schemaChanged && !searching && !debounced && (
+          <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.42, padding: '24px 4px' }}>
+            Type to search {systemFullName} on Vimm's Lair – empty query returns empty locally (no network). Future browse-all will use verified letter route /vault/{'{SYSTEM}/{LETTER}'}.
+          </div>
+        )}
         {!offline && !schemaChanged && results.map((r, idx) => {
           const focused = idx === focusedIdx
           const inLib = inLibraryCheck(r.title)
@@ -463,8 +504,8 @@ export function DiscoverView({
                 transition: 'all 180ms cubic-bezier(0.16,1,0.3,1)',
               }}
             >
-              {r.thumbUrl ? (
-                <img src={r.thumbUrl} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 8, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.08)'}`, flexShrink: 0, background: '#fff' }} />
+              {r.thumbUrl || r.thumbnailUrl ? (
+                <img src={r.thumbUrl || r.thumbnailUrl} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 8, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.08)'}`, flexShrink: 0, background: '#fff' }} />
               ) : (
                 <div style={{ width: 56, height: 56, borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(18,26,44,0.06)', display: 'grid', placeItems: 'center', fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.5, flexShrink: 0 }}>◐</div>
               )}
@@ -474,6 +515,8 @@ export function DiscoverView({
                   {r.region && <span style={{ padding: '2px 7px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', border: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'} ` }}>{r.region}</span>}
                   {r.year && <span>{r.year}</span>}
                   {r.developer && <span style={{ opacity: 0.7 }}>• {r.developer.slice(0, 18)}</span>}
+                  {r.version && <span style={{ opacity: 0.62 }}>• {r.version}</span>}
+                  {r.languages && <span style={{ opacity: 0.62 }}>• {Array.isArray(r.languages) ? r.languages.join('/') : r.languages}</span>}
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                   <span style={{
@@ -487,6 +530,9 @@ export function DiscoverView({
                     border: `1px solid ${inLib ? (isDark ? 'rgba(255,214,90,0.24)' : 'rgba(255,180,0,0.24)') : isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
                     color: inLib ? (isDark ? '#ffd85a' : '#8a5a00') : undefined,
                   }}>{inLib ? '★ IN YOUR LIBRARY' : 'NOT IN YOUR LIBRARY'}</span>
+                  {(r as any).rating != null && String((r as any).rating) !== 'none' && (
+                    <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9.5, opacity: 0.6 }}>★ {String((r as any).rating)}</span>
+                  )}
                 </div>
               </div>
               <div style={{ alignSelf: 'center', opacity: focused ? 0.9 : 0.32, fontSize: 12 }}>↗</div>
@@ -495,7 +541,7 @@ export function DiscoverView({
         })}
       </div>
 
-      {/* Detail overlay/panel */}
+      {/* Detail overlay/panel – deterministic A=open B=close */}
       {showDetailPanel && selectedDetail && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 10,
@@ -533,8 +579,12 @@ export function DiscoverView({
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontFamily: 'var(--crystal-mono)', fontSize: 10.5 }}>
                   {(detailFull?.developer || selectedDetail.developer) && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>DEV {(detailFull?.developer || selectedDetail.developer)}</span>}
                   {(detailFull?.publisher || selectedDetail.publisher) && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>PUB {(detailFull?.publisher || selectedDetail.publisher)}</span>}
-                  {(detailFull?.players || selectedDetail.players) && <span style={{ padding: '4px 9px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}` } }>{detailFull?.players || selectedDetail.players}P</span>}
+                  {(detailFull?.players || selectedDetail.players) && <span style={{ padding: '4px 9px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}` }}>{detailFull?.players || selectedDetail.players}P</span>}
                   {selectedDetail.discCount && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>{selectedDetail.discCount} DISC</span>}
+                  {(detailFull as any)?.version && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>VER {(detailFull as any).version}</span>}
+                  {(detailFull as any)?.serial && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>S/N {(detailFull as any).serial}</span>}
+                  {(detailFull as any)?.graphicsRating != null && <span>G {String((detailFull as any).graphicsRating)}</span>}
+                  {(detailFull as any)?.overallRating != null && <span>Overall {String((detailFull as any).overallRating)} {(detailFull as any).overallVotes ? `(${String((detailFull as any).overallVotes)})` : ''}</span>}
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -560,6 +610,8 @@ export function DiscoverView({
                 {(detailFull?.verification || selectedDetail.verification) && (
                   <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.7 }}>
                     Verification: {detailFull?.verification || selectedDetail.verification} • {detailFull?.mediaType || 'ISO'} • Rating {detailFull?.rating || selectedDetail.rating || '--'}
+                    {(detailFull as any)?.crc ? ` • CRC ${(detailFull as any).crc}` : ''}
+                    {(detailFull as any)?.verificationDate ? ` • Verified ${(detailFull as any).verificationDate}` : ''}
                   </div>
                 )}
 
@@ -569,9 +621,10 @@ export function DiscoverView({
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <button
                     onClick={() => handleOpenVault(selectedDetail.id)}
+                    autoFocus
                     style={{
                       appearance: 'none',
                       padding: '11px 18px',
@@ -588,9 +641,10 @@ export function DiscoverView({
                     <span style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(0,0,0,0.12)', display: 'grid', placeItems: 'center', fontSize: 11 }}>A</span>
                     OPEN ON VIMM'S LAIR
                   </button>
-                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.52, alignSelf: 'center', maxWidth: 220 }}>
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.52, maxWidth: 220 }}>
                     {canonicalVaultUrl(selectedDetail.id)}
-                  </div>
+                  </span>
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>[B] CLOSE DETAIL – [B again] BACK TO LIBRARY</span>
                 </div>
 
                 {(detailFull?.availability === 'unavailable' || detailFull?.availability === 'takedown' || selectedDetail.availability === 'unavailable' || selectedDetail.availability === 'takedown') && (

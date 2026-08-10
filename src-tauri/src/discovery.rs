@@ -35,12 +35,24 @@ fn log_minimal(level: &str, msg: &str) {
     try_log(level, msg);
 }
 
-/// Custom redirect policy – only allow redirects staying on vimm.net host.
+/// Custom redirect policy – only allow redirects staying on vimm.net host,
+/// with same path guard as primary fetch and no credentials.
 fn is_allowed_redirect(url: &Url) -> bool {
     if url.scheme() != "https" {
         return false;
     }
-    matches!(url.host_str(), Some("vimm.net"))
+    if url.host_str() != Some("vimm.net") {
+        return false;
+    }
+    // Must remain inside /vault – prevents open-redirect to other vimm paths
+    if !url.path().starts_with("/vault") {
+        return false;
+    }
+    // Reject any embedded credentials (username / password)
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    true
 }
 
 #[tauri::command]
@@ -87,6 +99,10 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     }
 
     // Build reqwest client with timeout 10s and custom redirect policy
+    // User-Agent derives from Cargo package version (env! CARGO_PKG_VERSION) to avoid stale.
+    // Cargo.toml version == app version (4.4.1). Future-proof – single source of truth.
+    let app_version = env!("CARGO_PKG_VERSION");
+    let ua = format!("CrystalFrontend/{} (Discovery) - catalog reference only, no automated ROM download", app_version);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -96,7 +112,7 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
             }
             attempt.follow()
         }))
-        .user_agent("CrystalFrontend/4.3.1 (Discovery) - catalog reference only, no automated ROM download")
+        .user_agent(ua)
         .build()
         .map_err(|e| {
             let msg = format!("fetch_vimm failed to build client: {}", e);

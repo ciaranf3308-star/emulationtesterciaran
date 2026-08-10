@@ -1,6 +1,8 @@
 /**
  * vimmRoutes – URL building and validation for https://vimm.net/vault only
  * No arbitrary hosts. No open proxy.
+ * LIVE VERIFIED 2026-08-10: search route requires q param; empty q returns 404 / unreliable.
+ * Therefore builder rejects empty query – caller must not hit network for empty query.
  */
 
 import { isValidVimmUrl as hostIsValid } from './hostValidation'
@@ -13,24 +15,26 @@ export function buildVaultRoot(): string {
 }
 
 export function isValidVimmUrl(urlStr: string): boolean {
-  // Delegate to canonical hostValidation single source of truth; if that changes, this follows
   try { return hostIsValid(urlStr) } catch { return false }
 }
 
+/**
+ * Build Vimm search URL.
+ * @param systemToken – exact Vimm token (e.g. PS2, PS1, 3DS, GameCube)
+ * @param query – non-empty search term
+ * @throws if query empty – empty query must NOT trigger network request per V8.4.1 hardening
+ */
 export function buildSearchUrl(systemToken: string, query: string): string {
   const token = systemToken.trim();
+  if (!token) throw new Error('Vimm system token required');
   const q = query.trim();
-  // encode token & query safely, but preserve empty query handling (list all for system)
+  if (q.length === 0) {
+    throw new Error('Empty query – no network request should be made – use browse route separately (/vault/{SYSTEM}/{LETTER})');
+  }
   // Vimm route: /vault/?p=list&system=XXX&q=YYY
-  // When query empty, omit q or send empty? Send without q to avoid weird server behaviour.
   const base = `${VAULT_ROOT}/`;
   const systemParam = `system=${encodeURIComponent(token)}`;
   const listParam = `p=list`;
-  if (q.length === 0) {
-    const url = `${base}?${listParam}&${systemParam}`;
-    if (!isValidVimmUrl(url)) throw new Error(`Built Vimm search URL invalid: ${url}`);
-    return url;
-  }
   const qParam = `q=${encodeURIComponent(q)}`;
   const url = `${base}?${listParam}&${systemParam}&${qParam}`;
   if (!isValidVimmUrl(url)) throw new Error(`Built Vimm search URL invalid: ${url}`);
@@ -38,7 +42,7 @@ export function buildSearchUrl(systemToken: string, query: string): string {
 }
 
 export function buildAdvSearchUrl(systemToken: string, query: string, options?: { sort?: string }): string {
-  // optional advanced mode – currently mirrors basic but documents slot for future
+  // delegates – will throw on empty query as well
   const base = buildSearchUrl(systemToken, query);
   if (options?.sort) {
     try {
@@ -68,15 +72,12 @@ export function parseIdFromUrl(url: string): string | null {
   try {
     const u = new URL(url);
     if (u.hostname !== VIMM_HOST) return null;
-    // expect /vault/{numeric}
     const m = u.pathname.match(/\/vault\/(\d+)/);
     if (m && m[1]) return m[1];
-    // also accept ? id= param fallback
     const idParam = u.searchParams.get('id');
     if (idParam && /^\d+$/.test(idParam)) return idParam;
     return null;
   } catch {
-    // also handle relative /vault/123
     const m2 = url.match(/\/vault\/(\d+)/);
     if (m2 && m2[1]) return m2[1];
     return null;

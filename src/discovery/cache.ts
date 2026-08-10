@@ -2,6 +2,7 @@
  * cache – in-memory + Tauri fs cache for discovery
  * Safety: All writes limited to %LOCALAPPDATA%\CrystalFrontend\cache\discovery\ via plugin-fs AppLocalData baseDir.
  * No writes outside approved tree. Validates paths.
+ * TTL: search 20m, detail 24h – persistent across restart via Tauri fs.
  */
 
 import type { DiscoveryResult, DiscoveryGameDetail, SearchCacheEntry, DetailCacheEntry } from './types';
@@ -11,7 +12,6 @@ const MEMORY_SEARCH = new Map<string, SearchCacheEntry>();
 const MEMORY_DETAIL = new Map<string, DetailCacheEntry>();
 
 function safeCacheKeyPart(s: string): string {
-  // sanitize for filesystem – allow alphanumeric dash underscore
   return s.replace(/[^a-zA-Z0-9\-_]/g, '_').slice(0, 80) || 'none';
 }
 
@@ -46,34 +46,61 @@ function lsRemove(key: string) {
   } catch {}
 }
 
+type FsModule = {
+  writeTextFile: (path: string, data: string, opts: { baseDir: any }) => Promise<void>;
+  readTextFile: (path: string, opts: { baseDir: any }) => Promise<string>;
+  exists: (path: string, opts: { baseDir: any }) => Promise<boolean>;
+  mkdir: (path: string, opts: { baseDir: any; recursive?: boolean }) => Promise<void>;
+  BaseDirectory: any;
+};
+
+async function getFsModule(): Promise<FsModule | null> {
+  try {
+    // Proper dynamic import – works when @tauri-apps/plugin-fs is installed (Tauri v2)
+    // In browser dev (no Tauri) this will reject and we fall back to localStorage.
+    const mod = await import('@tauri-apps/plugin-fs');
+    return mod as unknown as FsModule;
+  } catch {
+    return null;
+  }
+}
+
+function isSafeRelPath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  // Must start with exact approved prefix
+  if (!lower.startsWith('cache/discovery/')) return false;
+  // Reject traversal
+  if (lower.includes('..')) return false;
+  // Reject sibling / external markers
+  if (lower.includes('emudeck') || lower.includes('es-de') || lower.includes('emulationstation')) return false;
+  if (lower.includes('roms') && !lower.includes('crystalfrontend')) {
+    // Disallow roms folder reference outside our tree – extra safety
+    // Our approved path never contains roms, so reject any containing roms segment
+    return false;
+  }
+  // Reject absolute-looking
+  if (relPath.startsWith('/') || relPath.startsWith('\\')) return false;
+  if (relPath.includes(':')) return false; // no drive prefix in relative
+  return true;
+}
+
 async function tauriFsWrite(key: string, data: string): Promise<boolean> {
   try {
-    // Dynamic import – Tauri env only, optional peer
-    const mod: any = await (0, eval)(`import('@tauri-apps/plugin-fs')`).catch(() => null);
-    if (!mod) return false;
+    const fsMod = await getFsModule();
+    if (!fsMod) return false;
 
-    const { writeTextFile, BaseDirectory, exists, mkdir } = mod;
+    const { writeTextFile, BaseDirectory, exists, mkdir } = fsMod;
 
-    // Validate key – prevent traversal
     if (key.includes('..') || key.includes('/') || key.includes('\\')) {
-      // we use colon-separated keys, they shouldn't contain path separators beyond our mapping
-      // For filesystem we map colon to folder
-      // Additional validation: key must not contain traversal patterns
       return false;
     }
 
-    // Further validation: ensure mapped relative path stays inside cache/discovery
-    // Relative path: cache/discovery/<key>.json with sanitized subfolders
     const sanitized = key.replace(/:/g, '/');
     if (sanitized.includes('..')) return false;
     const relPath = `cache/discovery/${sanitized}.json`;
 
-    // Validate no forbidden segments
-    const lower = relPath.toLowerCase();
-    if (lower.includes('emudeck') || lower.includes('es-de') || lower.includes('emulationstation')) return false;
-    if (!lower.startsWith('cache/discovery/')) return false;
+    if (!isSafeRelPath(relPath)) return false;
 
-    // Ensure parent dir exists (best effort) – plugin-fs mkdir with baseDir
     try {
       if (typeof exists === 'function' && typeof mkdir === 'function') {
         const dirPart = relPath.slice(0, relPath.lastIndexOf('/'));
@@ -84,11 +111,9 @@ async function tauriFsWrite(key: string, data: string): Promise<boolean> {
           }
         }
       }
-    } catch {
-      // ignore mkdir failure – still try write
-    }
+    } catch {}
 
-    await writeTextFile(relPath, data, { baseDir: mod.BaseDirectory.AppLocalData });
+    await writeTextFile(relPath, data, { baseDir: BaseDirectory.AppLocalData });
     return true;
   } catch {
     return false;
@@ -97,14 +122,13 @@ async function tauriFsWrite(key: string, data: string): Promise<boolean> {
 
 async function tauriFsRead(key: string): Promise<string | null> {
   try {
-    // @ts-ignore optional peer
-    const mod: any = await (0, eval)(`import('@tauri-apps/plugin-fs')`).catch(() => null);
-    if (!mod) return null;
-    const { readTextFile, BaseDirectory } = mod;
+    const fsMod = await getFsModule();
+    if (!fsMod) return null;
+    const { readTextFile, BaseDirectory } = fsMod;
     const sanitized = key.replace(/:/g, '/');
     if (sanitized.includes('..')) return null;
     const relPath = `cache/discovery/${sanitized}.json`;
-    if (!relPath.toLowerCase().startsWith('cache/discovery/')) return null;
+    if (!isSafeRelPath(relPath)) return null;
     const content = await readTextFile(relPath, { baseDir: BaseDirectory.AppLocalData });
     return typeof content === 'string' ? content : null;
   } catch {
@@ -120,14 +144,12 @@ export async function getCachedSearch(
   const key = getSearchCacheKey(provider, systemId, query);
   const now = Date.now();
 
-  // memory first
   const mem = MEMORY_SEARCH.get(key);
   if (mem) {
     if (!isExpired(mem, now)) return mem.data;
     MEMORY_SEARCH.delete(key);
   }
 
-  // tauri fs
   const fsText = await tauriFsRead(key);
   if (fsText) {
     try {
@@ -141,7 +163,6 @@ export async function getCachedSearch(
     } catch {}
   }
 
-  // localStorage fallback
   const ls = lsGet(key);
   if (ls) {
     try {
@@ -176,12 +197,10 @@ export async function setCachedSearch(
   };
   MEMORY_SEARCH.set(key, entry);
 
-  // async persisted best-effort – do not await failure
   try {
     const text = JSON.stringify(entry);
     const wrote = await tauriFsWrite(key, text);
     if (!wrote) {
-      // fallback to localStorage
       lsSet(key, text);
     }
   } catch {
@@ -262,10 +281,13 @@ export function prune(): void {
   const now = Date.now();
   for (const [k, v] of MEMORY_SEARCH) if (isExpired(v, now)) MEMORY_SEARCH.delete(k);
   for (const [k, v] of MEMORY_DETAIL) if (isExpired(v, now)) MEMORY_DETAIL.delete(k);
-  // localStorage prune would be expensive – skipped (lazy expiry on get)
 }
 
 export function clearMemoryCache(): void {
   MEMORY_SEARCH.clear();
   MEMORY_DETAIL.clear();
+}
+
+export function isSafeCachePath(relPath: string): boolean {
+  return isSafeRelPath(relPath);
 }

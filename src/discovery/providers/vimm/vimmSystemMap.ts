@@ -1,12 +1,12 @@
 /**
- * vimmSystemMap – Crystal ID -> Vimm vault token
+ * vimmSystemMap – Crystal ID -> Vimm vault token (LIVE VERIFIED 2026-08-10)
  *
- * Tokens observed on live vimm.net (best-effort conservative):
- *  PS2, PSX (or PS1), PSP, N64, SNES, GB, GBC, GBA, DS/NDS, 3DS,
- *  NGC/GameCube/GC, Dreamcast/DC, GEN/Genesis, Xbox, Xbox360, Wii, WiiU, etc.
+ * Source: docs/VIMM-VAULT-SCHEMA.md live audit 2026-08-10 – authoritative.
+ * Vault root lists 34 classic systems; Crystal maps 19 IDs except steam unsupported.
+ * Genesis & Megadrive remain distinct Crystal keys even if they resolve to same Vimm token (Genesis).
  *
- * Since full audit not yet done, we map conservatively and mark steam unsupported explicitly.
- * Keep genesis & megadrive distinct keys even if they map to same Vimm token – needed for Crystal UI.
+ * Crystal psx -> Vimm PS1 (not PSX) per live verified token.
+ * Crystal n3ds -> Vimm 3DS.
  */
 
 export type CrystalSystemId =
@@ -19,41 +19,42 @@ export type CrystalSystemId =
 type VimmTokenMap = Record<string, string | null>;
 
 /**
- * Conservative mapping – null means explicitly unsupported / unsure.
- * Comments indicate alternatives observed.
+ * Canonical mapping – null = explicitly unsupported / steam only.
+ * Values are exact Vimm tokens observed live.
  */
 const CRYSTAL_TO_VIMM: VimmTokenMap = {
-  // Nintendo
-  'n3ds': null, // Vimm may use "3DS" or "n3ds" – unsure without audit, mark unsupported for now (explicit re-enable later)
+  // Nintendo handhelds / consoles
+  'n3ds': '3DS',
   'gb': 'GB',
   'gba': 'GBA',
   'gbc': 'GBC',
-  'gc': 'GameCube', // observed tokens: GameCube, GC, NGC – using GameCube as canonical
+  'gc': 'GameCube',
   'n64': 'N64',
-  'nds': 'DS', // Vimm uses "DS" for NDS – alternative NDS
+  'nds': 'DS',
   'snes': 'SNES',
   'wii': 'Wii',
   'wiiu': 'WiiU',
 
   // Sega
-  'genesis': 'Genesis', // Vimm token "Genesis" – GEN variant also seen
-  'megadrive': 'Genesis', // distinct Crystal entry, same Vimm token logically but kept separate
-  'dreamcast': 'Dreamcast', // alt DC
+  'genesis': 'Genesis',
+  'megadrive': 'Genesis', // distinct Crystal entry, same Vimm token – kept separate deliberately
+  'dreamcast': 'Dreamcast',
 
-  // Sony
+  // Sony – psx -> PS1 is the live token (PSX is alt tool alias but vault uses PS1)
   'ps2': 'PS2',
   'psp': 'PSP',
-  'psx': 'PSX', // alt PS1
+  'psx': 'PS1',
 
   // Microsoft
   'xbox': 'Xbox',
   'xbox360': 'Xbox360',
 
-  // Unsupported explicitly
+  // Explicit unsupported – no PC/Steam vault
   'steam': null,
 };
 
-// Alt tokens we also accept for reverse lookup robustness
+// Reverse / alias tokens we accept for robust incoming data.
+// Keys are exact Vimm tokens as seen in URLs / docs, including alt forms.
 const ALT_TOKENS: Record<string, string> = {
   // GC variants -> gc
   'GC': 'gc',
@@ -62,23 +63,25 @@ const ALT_TOKENS: Record<string, string> = {
   // DS/NDS
   'NDS': 'nds',
   'DS': 'nds',
-  // 3DS
+  // 3DS – crystal n3ds
   '3DS': 'n3ds',
   'n3ds': 'n3ds',
   // Dreamcast
   'DC': 'dreamcast',
   'Dreamcast': 'dreamcast',
-  // Genesis
+  // Genesis / MD
   'GEN': 'genesis',
   'Genesis': 'genesis',
   'MD': 'megadrive',
   'MegaDrive': 'megadrive',
-  // PSX variants
+  // PS1 / PSX both resolve to Crystal psx; vault token canonical is PS1
   'PS1': 'psx',
   'PSX': 'psx',
-  // PS2, PSP, etc canonical uppercase
+  'PS': 'psx', // some older references
+  // Sony others canonical
   'PS2': 'ps2',
   'PSP': 'psp',
+  // Nintendo others
   'N64': 'n64',
   'SNES': 'snes',
   'GB': 'gb',
@@ -91,11 +94,13 @@ const ALT_TOKENS: Record<string, string> = {
 };
 
 export function crystalToVimmToken(systemId: string): string | null {
-  const sid = systemId.toLowerCase();
+  if (!systemId) return null;
+  const sid = systemId.toLowerCase().trim();
   if (sid in CRYSTAL_TO_VIMM) {
+    // explicit lookup includes null for unsupported (steam)
     return CRYSTAL_TO_VIMM[sid] ?? null;
   }
-  // also try alt reverse? No – only map known
+  // Also allow passing Vimm token directly? No – only Crystal IDs map.
   return null;
 }
 
@@ -114,15 +119,13 @@ export function listUnsupportedExplicit(): string[] {
 
 export function vimmTokenToCrystal(vimmToken: string): string | null {
   if (!vimmToken) return null;
-  // direct alt map first (case-sensitive then case-insensitive)
   if (ALT_TOKENS[vimmToken]) return ALT_TOKENS[vimmToken];
   const lower = vimmToken.toLowerCase();
-  // brute force reverse via CRYSTAL_TO_VIMM (find first key whose value case-insensitively matches token)
+  // brute force reverse via CRYSTAL_TO_VIMM (first key whose value case-insensitively matches)
   for (const [crystal, token] of Object.entries(CRYSTAL_TO_VIMM)) {
     if (!token) continue;
     if (token.toLowerCase() === lower) return crystal;
   }
-  // handle lowered alts
   for (const [alt, crystal] of Object.entries(ALT_TOKENS)) {
     if (alt.toLowerCase() === lower) return crystal;
   }

@@ -1,15 +1,18 @@
 /**
- * parseVimmSearch – robust Vimm vault list parser
- * Parser version 1.0.0
+ * parseVimmSearch – live-table aware Vimm vault list parser
+ * Parser version 1.0.0 (stable header-mapped)
  *
- * Handles:
- * - canonical href /vault/{numeric}
- * - semantic labels without relying solely on nth-child
- * - zero results case
- * - availability / takedown detection
- * - thumbnail only if publicly exposed (img src)
- * - No download URL extraction
- * - Throws ParserError when schema changed
+ * LIVE 2026-08-10 audit source:
+ * Table header: Title | Region | Version | Languages | Rating
+ * Each row contains anchor href /vault/{digits}, Region column with flag imgs
+ *   <img src="/images/flags/usa.png" title="USA"> etc.
+ * Version column string e.g. "1.0", Languages "de en es fr it" or "-", Rating "10.0" | "none"
+ *
+ * Implements header -> column index mapping once, then reads rows accordingly.
+ * Falls back gracefully to legacy .result-row div fixtures and generic anchor extraction.
+ * Thumbnail security: only allow https://vimm.net and https://dl.vimm.net image origins,
+ *   and disallow flag images (/images/flags) as thumbnails.
+ * Throws ParserError (kind='parser-error') on schema change, never returns it.
  */
 
 import type { DiscoveryResult, ParserError } from '../../types';
@@ -19,11 +22,7 @@ import { buildDetailUrl } from './vimmRoutes';
 
 export const PARSER_VERSION = VIMM_PARSER_VERSION_SEARCH;
 
-function makeParserError(
-  httpStatus: number,
-  message: string,
-  selectorHint?: string
-): ParserError {
+function makeParserError(httpStatus: number, message: string, selectorHint?: string): ParserError {
   return createParserError('vimms', 'search', httpStatus, PARSER_VERSION, message, selectorHint);
 }
 
@@ -54,11 +53,59 @@ function extractYear(text: string): number | undefined {
 }
 
 function hasDomParser(): boolean {
-  return typeof (globalThis as any).DOMParser !== 'undefined' || typeof (globalThis as any).window !== 'undefined' && typeof (globalThis as any).window.DOMParser !== 'undefined';
+  return typeof (globalThis as any).DOMParser !== 'undefined' || (typeof (globalThis as any).window !== 'undefined' && typeof (globalThis as any).window.DOMParser !== 'undefined');
 }
 
-function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: string): DiscoveryResult[] | ParserError {
-  // Use DOMParser when available – browser path
+function isAllowedThumbUrl(candidate: string): string | undefined {
+  try {
+    const u = new URL(candidate, 'https://vimm.net');
+    if (u.protocol !== 'https:') return undefined;
+    const host = u.hostname.toLowerCase();
+    if (host !== 'vimm.net' && host !== 'dl.vimm.net') return undefined;
+    // Reject flag images – they are region, not thumbnail
+    if (u.pathname.toLowerCase().includes('/images/flags')) return undefined;
+    // Only ordinary public images – allow /images/vault/, /images/, image.php, /image.php, box/thumb etc.
+    // If host is dl.vimm.net, require image.php? pattern or /images/; still safe as long as origin is allowed
+    return u.toString().slice(0, 500);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractRegionFromElement(cellEl: Element | null): string | undefined {
+  if (!cellEl) return undefined;
+  // Prefer flag imgs title/alt
+  const flags = Array.from(cellEl.querySelectorAll('img[src*="/images/flags"], img[src*="flags"]')) as HTMLImageElement[];
+  if (flags.length > 0) {
+    const regions: string[] = [];
+    for (const img of flags) {
+      const title = (img.getAttribute('title') || img.getAttribute('alt') || '').trim();
+      if (title) regions.push(title);
+      else {
+        // fallback src filename without ext e.g. usa.png -> USA
+        const src = img.getAttribute('src') || '';
+        const fname = src.split('/').pop()?.split('.')[0];
+        if (fname) regions.push(fname);
+      }
+    }
+    if (regions.length) {
+      // normalize – join with '/' if multiple, keep as provided (e.g. USA+Europe -> keep)
+      return regions.join('/').slice(0, 40);
+    }
+  }
+  // fallback text content short
+  const txt = (cellEl.textContent || '').trim().slice(0, 30);
+  if (txt && txt.length <= 20 && /^[A-Za-z\s\/\+\-,]+$/.test(txt)) {
+    if (txt === '-' || txt.toLowerCase() === 'none') return undefined;
+    return txt;
+  }
+  return undefined;
+}
+
+/**
+ * DOM path – header-mapped table aware.
+ */
+function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: string): DiscoveryResult[] {
   let doc: Document;
   try {
     const Parser = (globalThis as any).DOMParser || (globalThis as any).window?.DOMParser;
@@ -66,35 +113,214 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
     const parser = new Parser();
     doc = parser.parseFromString(html, 'text/html') as Document;
   } catch (e) {
-    return makeParserError(200, `DOMParser failed: ${(e as Error).message}`, 'DOMParser');
+    throw makeParserError(200, `DOMParser failed: ${(e as Error).message}`, 'DOMParser');
   }
 
-  // Heuristic: find all anchors with /vault/\d+
+  // 1. Try live table with header mapping
+  const tables = Array.from(doc.querySelectorAll('table'));
+  for (const table of tables) {
+    // Find header row: first tr containing th with Title
+    const headerRows = Array.from(table.querySelectorAll('tr'));
+    let headerMap: Record<string, number> = {};
+    let headerFound = false;
+    let bodyRowStartIdx = 1;
+
+    for (let i = 0; i < Math.min(headerRows.length, 3); i++) {
+      const tr = headerRows[i];
+      const ths = Array.from(tr.querySelectorAll('th'));
+      if (ths.length >= 2) {
+        const headers = ths.map(th => (th.textContent || '').trim().toLowerCase());
+        // Check if contains title
+        if (headers.some(h => h.includes('title'))) {
+          headers.forEach((h, idx) => {
+            const key = h.replace(/[^a-z]/g, ''); // normalize "languages" -> languages, "region" -> region
+            if (key.includes('title')) headerMap['title'] = idx;
+            else if (key.includes('region')) headerMap['region'] = idx;
+            else if (key.includes('version')) headerMap['version'] = idx;
+            else if (key.includes('language')) headerMap['languages'] = idx;
+            else if (key.includes('rating')) headerMap['rating'] = idx;
+          });
+          headerFound = true;
+          bodyRowStartIdx = i + 1;
+          break;
+        }
+      }
+    }
+
+    if (headerFound) {
+      const results: DiscoveryResult[] = [];
+      const rows = headerRows.slice(bodyRowStartIdx);
+      for (const row of rows) {
+        const tds = Array.from(row.querySelectorAll('td'));
+        if (tds.length === 0) continue;
+        const anchor = row.querySelector('a[href*="/vault/"]') as HTMLAnchorElement | null;
+        if (!anchor) continue;
+        const href = anchor.getAttribute('href') || '';
+        const m = href.match(/\/vault\/(\d+)/);
+        if (!m) continue;
+        const id = m[1];
+        const titleRaw = (anchor.textContent || '').trim() || anchor.getAttribute('title')?.trim() || `Game ${id}`;
+        const title = titleRaw.replace(/\s+/g, ' ').trim().slice(0, 200);
+
+        const rowText = row.textContent || '';
+        const availInfo = detectAvailability(rowText);
+
+        // title idx usually 0 but use mapping if present
+        let region: string | undefined;
+        if (headerMap['region'] !== undefined && tds[headerMap['region']]) {
+          region = extractRegionFromElement(tds[headerMap['region']]);
+        } else {
+          // try any flag img in row
+          const flagImg = row.querySelector('img[src*="/images/flags"]') as HTMLImageElement | null;
+          if (flagImg) {
+            region = flagImg.getAttribute('title')?.trim() || flagImg.getAttribute('alt')?.trim() || undefined;
+          }
+        }
+
+        let version: string | undefined;
+        if (headerMap['version'] !== undefined && tds[headerMap['version']]) {
+          const vt = (tds[headerMap['version']].textContent || '').trim().slice(0, 30);
+          if (vt && vt !== '-' && vt.toLowerCase() !== 'none') version = vt;
+        }
+
+        let languages: string | undefined;
+        if (headerMap['languages'] !== undefined && tds[headerMap['languages']]) {
+          const lt = (tds[headerMap['languages']].textContent || '').trim().slice(0, 80);
+          if (lt && lt !== '-') languages = lt;
+        }
+
+        let rating: string | undefined;
+        if (headerMap['rating'] !== undefined && tds[headerMap['rating']]) {
+          const rt = (tds[headerMap['rating']].textContent || '').trim().slice(0, 20);
+          if (rt && rt.toLowerCase() !== 'none') rating = rt;
+          else if (rt.toLowerCase() === 'none') rating = undefined;
+          else rating = rt || undefined;
+        } else {
+          const ratingMatch = rowText.match(/Rating:\s*([0-9\.\/]+)/i);
+          if (ratingMatch) rating = ratingMatch[1].slice(0, 20);
+        }
+
+        const year = extractYear(rowText);
+
+        let thumbnailUrl: string | undefined;
+        // Search row may contain box thumb img not flag – allow only vimm.net / dl.vimm.net non-flag
+        const imgs = Array.from(row.querySelectorAll('img[src]')) as HTMLImageElement[];
+        for (const img of imgs) {
+          const srcAttr = img.getAttribute('src') || (img as any).src || '';
+          if (!srcAttr) continue;
+          if (srcAttr.toLowerCase().includes('/images/flags')) continue;
+          const allowed = isAllowedThumbUrl(srcAttr);
+          if (allowed) {
+            thumbnailUrl = allowed;
+            break;
+          }
+        }
+
+        let discCount: number | undefined;
+        const discMatch = title.match(/\(Disc\s*(\d+)(?:\s*of\s*(\d+))?\)/i) || rowText.match(/(\d+)\s+disc/i);
+        if (discMatch && discMatch[1]) {
+          const n = parseInt(discMatch[1], 10);
+          if (!isNaN(n) && n > 1 && n < 10) discCount = n;
+        }
+
+        results.push({
+          provider: 'vimms',
+          providerId: id,
+          systemId: crystalSystemId,
+          externalSystem: vimmSystemToken,
+          title,
+          region,
+          year,
+          rating,
+          version,
+          languages,
+          externalUrl: buildDetailUrl(id),
+          thumbnailUrl,
+          availability: availInfo.availability,
+          discCount,
+        });
+      }
+
+      if (results.length > 0) {
+        const uniq = new Map<string, DiscoveryResult>();
+        for (const r of results) uniq.set(r.providerId, r);
+        return Array.from(uniq.values());
+      }
+      // If header found but zero rows, valid empty result?
+      const bodyText = doc.body?.textContent?.toLowerCase() || '';
+      if (bodyText.includes('no results') || bodyText.includes('no games found') || bodyText.includes('0 results')) {
+        return [];
+      }
+      // Continue to next table attempt or fallback
+    }
+  }
+
+  // 2. Legacy fixture support – .result-row divs (tests)
+  const resultRows = doc.querySelectorAll('.result-row');
+  if (resultRows.length > 0) {
+    const results: DiscoveryResult[] = [];
+    resultRows.forEach((row) => {
+      const a = row.querySelector('a[href*="/vault/"]') as HTMLAnchorElement | null;
+      if (!a) return;
+      const href = a.getAttribute('href') || '';
+      const m = href.match(/\/vault\/(\d+)/);
+      if (!m) return;
+      const id = m[1];
+      const title = (a.textContent || '').trim().slice(0, 200) || `Game ${id}`;
+      const rowText = row.textContent || '';
+      const avail = detectAvailability(rowText);
+      let region: string | undefined;
+      // per fixture region is span.region
+      const regEl = row.querySelector('.region');
+      if (regEl?.textContent) region = regEl.textContent.trim().slice(0, 30);
+      // Year extraction from .year span or context
+      let year: number | undefined;
+      const yearEl = row.querySelector('.year');
+      if (yearEl?.textContent) {
+        const ym = yearEl.textContent.match(/\d{4}/);
+        if (ym) year = parseInt(ym[0], 10);
+      }
+      if (!year) year = extractYear(rowText);
+      let thumb: string | undefined;
+      const img = row.querySelector('img[src]') as HTMLImageElement | null;
+      if (img) {
+        thumb = isAllowedThumbUrl(img.getAttribute('src') || img.src || '');
+      }
+      results.push({
+        provider: 'vimms',
+        providerId: id,
+        systemId: crystalSystemId,
+        externalSystem: vimmSystemToken,
+        title,
+        region,
+        year,
+        externalUrl: buildDetailUrl(id),
+        thumbnailUrl: thumb,
+        availability: avail.availability,
+      });
+    });
+    if (results.length > 0) {
+      const uniq = new Map<string, DiscoveryResult>();
+      for (const r of results) uniq.set(r.providerId, r);
+      return Array.from(uniq.values());
+    }
+  }
+
+  // 3. Generic vault anchors – live fallback
   const anchors = Array.from(doc.querySelectorAll('a[href*="/vault/"]')) as HTMLAnchorElement[];
-  const vaultAnchors = anchors.filter(a => {
-    const href = a.getAttribute('href') || '';
-    return /\/vault\/\d+/.test(href);
-  });
+  const vaultAnchors = anchors.filter(a => /\/vault\/\d+/.test(a.getAttribute('href') || ''));
 
   if (vaultAnchors.length === 0) {
-    // Zero results is valid – but check if page looks like a search page vs completely changed schema
-    // If page contains "No results" phrase, return empty.
     const bodyText = doc.body?.textContent?.toLowerCase() || '';
     if (bodyText.includes('no results') || bodyText.includes('no games found') || bodyText.includes('0 results')) {
       return [];
     }
-    // Also valid when body has vault table but empty – treat as empty if we see list/table header but no rows
     const hasVaultMarkers = html.toLowerCase().includes('vault') || bodyText.includes('vault');
-    if (hasVaultMarkers) {
-      // Likely zero results
-      return [];
-    }
-    // Otherwise schema changed
-    return makeParserError(200, 'Vimm search format changed – no vault anchors found', 'a[href*="/vault/"]');
+    if (hasVaultMarkers) return [];
+    throw makeParserError(200, 'Vimm search format changed – no vault anchors found', 'a[href*="/vault/"]');
   }
 
   const results: DiscoveryResult[] = [];
-
   for (const a of vaultAnchors) {
     const href = a.getAttribute('href') || '';
     const m = href.match(/\/vault\/(\d+)/);
@@ -102,49 +328,36 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
     const id = m[1];
     const titleRaw = (a.textContent || '').trim() || a.getAttribute('title')?.trim() || `Game ${id}`;
     const title = titleRaw.replace(/\s+/g, ' ').trim().slice(0, 200);
-
-    // Locate row container for extra metadata – nearest tr, li, or div with class list
     let row: Element | null = a.closest('tr') || a.closest('li') || a.closest('div');
     let rowText = row?.textContent || a.parentElement?.textContent || '';
-    // availability
     const availInfo = detectAvailability(rowText || '');
 
-    // region badge heuristic – look for small span with region codes
     let region: string | undefined;
-    const regionEl =
-      row?.querySelector?.('.region, .badge, [class*="region"]') ||
-      row?.querySelector?.('small') ||
-      null;
-    if (regionEl?.textContent) {
-      const rt = regionEl.textContent.trim().slice(0, 20);
-      if (/^(USA|Europe|Japan|World|USA\+Europe|US|EU|JP|UK)$/i.test(rt.replace(/[^A-Za-z\+]/g, ''))) {
-        region = rt;
-      } else if (rt.length <= 12 && /^[A-Za-z,\s\+]+$/.test(rt)) {
-        region = rt; // keep short region-ish
+    const flagInRow = row?.querySelector('img[src*="/images/flags"]') as HTMLImageElement | null;
+    if (flagInRow) region = flagInRow.getAttribute('title')?.trim() || flagInRow.getAttribute('alt')?.trim() || undefined;
+    else {
+      const regionEl = row?.querySelector?.('.region, .badge, [class*="region"]') || row?.querySelector?.('small');
+      if (regionEl?.textContent) {
+        const rt = regionEl.textContent.trim().slice(0, 20);
+        if (rt) region = rt;
       }
     }
 
     const year = extractYear(rowText);
 
     let thumbnailUrl: string | undefined;
-    // Only if img src is publicly exposed adjacent to result – avoid anti-bot tricks
     const img = row?.querySelector('img[src]') as HTMLImageElement | null;
-    if (img && img.src) {
-      // Basic validation – http(s) and vimm.net or static vimm host allowed? Per spec only thumbnail if publicly exposed as img src – we allow any https but prefer vimm.net
-      try {
-        const u = new URL(img.src, 'https://vimm.net');
-        if (u.protocol === 'https:') thumbnailUrl = u.toString().slice(0, 500);
-      } catch {
-        // ignore
+    if (img) {
+      const src = img.getAttribute('src') || img.src || '';
+      if (!src.toLowerCase().includes('/images/flags')) {
+        thumbnailUrl = isAllowedThumbUrl(src);
       }
     }
 
-    // rating heuristic
     let rating: string | undefined;
     const ratingMatch = rowText.match(/Rating:\s*([0-9\.\/]+)/i);
     if (ratingMatch) rating = ratingMatch[1].slice(0, 20);
 
-    // disc count heuristic
     let discCount: number | undefined;
     const discMatch = title.match(/\(Disc\s*(\d+)(?:\s*of\s*(\d+))?\)/i) || rowText.match(/(\d+)\s+disc/i);
     if (discMatch && discMatch[1]) {
@@ -168,15 +381,13 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
     });
   }
 
-  // De-dup by providerId
   const uniq = new Map<string, DiscoveryResult>();
   for (const r of results) uniq.set(r.providerId, r);
   return Array.from(uniq.values());
 }
 
-function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: string): DiscoveryResult[] | ParserError {
-  // Node / test fallback – regex heuristics, no DOM
-  // Find all vault ids in html
+function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: string): DiscoveryResult[] {
+  // Table header mapping regex fallback
   const vaultRe = /href=["']\/vault\/(\d+)["'][^>]*>([^<]{1,200}?)<\/a>/gi;
   const matches: { id: string; title: string; index: number }[] = [];
   let m: RegExpExecArray | null;
@@ -192,7 +403,6 @@ function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: 
       return [];
     }
     if (lower.includes('/vault/')) {
-      // fallback generic /vault/(\d+) without anchor text constraints
       const gen = /\/vault\/(\d+)/g;
       const seen = new Set<string>();
       let g: RegExpExecArray | null;
@@ -203,33 +413,106 @@ function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: 
         matches.push({ id, title: `Game ${id}`, index: g.index });
       }
       if (matches.length === 0) {
-        return makeParserError(200, 'Vimm search format changed – regex found no vault entries', 'href="/vault/{id}"');
+        throw makeParserError(200, 'Vimm search format changed – regex found no vault entries', 'href="/vault/{id}"');
       }
     } else {
-      // zero results case might still have no vault links
       if (lower.includes('vault')) return [];
-      return makeParserError(200, 'Vimm search format changed – no vault patterns in HTML', '/vault/{id}');
+      throw makeParserError(200, 'Vimm search format changed – no vault patterns in HTML', '/vault/{id}');
+    }
+  }
+
+  // Attempt header mapping via <th> extraction
+  let headerMap: Record<string, number> | null = null;
+  const headerMatch = html.match(/<tr[^>]*>([\s\S]*?<th[^>]*>[\s\S]*?<\/th>[\s\S]*?)<\/tr>/i);
+  if (headerMatch) {
+    const headerHtml = headerMatch[0];
+    const thRe = /<th[^>]*>([\s\S]*?)<\/th>/gi;
+    const headers: string[] = [];
+    let thM: RegExpExecArray | null;
+    while ((thM = thRe.exec(headerHtml)) !== null) {
+      headers.push(thM[1].replace(/<[^>]+>/g, '').trim().toLowerCase());
+    }
+    if (headers.some(h => h.includes('title'))) {
+      headerMap = {};
+      headers.forEach((h, idx) => {
+        const k = h.replace(/[^a-z]/g, '');
+        if (k.includes('title')) headerMap!['title'] = idx;
+        else if (k.includes('region')) headerMap!['region'] = idx;
+        else if (k.includes('version')) headerMap!['version'] = idx;
+        else if (k.includes('language')) headerMap!['languages'] = idx;
+        else if (k.includes('rating')) headerMap!['rating'] = idx;
+      });
     }
   }
 
   const results: DiscoveryResult[] = matches.map(({ id, title }) => {
-    // Slice around match for context (500 chars after) to infer year/availability
     const pos = html.indexOf(`/vault/${id}`);
-    const ctx = pos >= 0 ? html.slice(pos, pos + 800) : '';
-    const avail = detectAvailability(ctx);
-    const year = extractYear(ctx);
+    const ctxFull = pos >= 0 ? html.slice(Math.max(0, pos - 500), pos + 800) : '';
+    const avail = detectAvailability(ctxFull);
+    const year = extractYear(ctxFull);
 
-    // thumbnail regex – img src near
-    let thumb: string | undefined;
-    const imgRe = new RegExp(`\\/vault\\/${id}[^<]{0,400}<img[^>]+src=["']([^"']+)["']|<img[^>]+src=["']([^"']+)["'][^>]{0,400}\\/vault\\/${id}`, 'i');
-    const imgM = ctx.match(imgRe) || html.slice(Math.max(0, pos - 400), pos + 800).match(/<img[^>]+src=["']([^"']+)["']/i);
-    if (imgM) {
-      const candidate = imgM[1] || imgM[2];
-      if (candidate) {
-        try {
-          const u = new URL(candidate, 'https://vimm.net');
-          if (u.protocol === 'https:') thumb = u.toString().slice(0, 500);
-        } catch {}
+    // Try to parse surrounding <tr> for td fields if headerMap available
+    let version: string | undefined;
+    let languages: string | undefined;
+    let region: string | undefined;
+    let rating: string | undefined;
+    let thumbnailUrl: string | undefined;
+
+    if (headerMap) {
+      // locate enclosing <tr>...</tr>
+      const trStart = html.lastIndexOf('<tr', pos);
+      const trEnd = html.indexOf('</tr>', pos);
+      if (trStart !== -1 && trEnd !== -1) {
+        const trHtml = html.slice(trStart, trEnd + 5);
+        const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+        const tds: string[] = [];
+        let tdM: RegExpExecArray | null;
+        while ((tdM = tdRe.exec(trHtml)) !== null) tds.push(tdM[1]);
+        if (tds.length > 0) {
+          if (headerMap['region'] !== undefined && tds[headerMap['region']]) {
+            const cell = tds[headerMap['region']];
+            const flagTitle = cell.match(/title=["']([^"']+)["']/i) || cell.match(/alt=["']([^"']+)["']/i);
+            if (flagTitle) region = flagTitle[1].trim().slice(0, 30);
+            else {
+              const txt = cell.replace(/<[^>]+>/g, '').trim().slice(0, 20);
+              if (txt && txt !== '-') region = txt;
+            }
+          }
+          if (headerMap['version'] !== undefined && tds[headerMap['version']]) {
+            const v = tds[headerMap['version']].replace(/<[^>]+>/g, '').trim().slice(0, 30);
+            if (v && v !== '-') version = v;
+          }
+          if (headerMap['languages'] !== undefined && tds[headerMap['languages']]) {
+            const l = tds[headerMap['languages']].replace(/<[^>]+>/g, '').trim().slice(0, 80);
+            if (l && l !== '-') languages = l;
+          }
+          if (headerMap['rating'] !== undefined && tds[headerMap['rating']]) {
+            const r = tds[headerMap['rating']].replace(/<[^>]+>/g, '').trim().slice(0, 20);
+            if (r && r.toLowerCase() !== 'none') rating = r;
+          }
+        }
+      }
+    } else {
+      // fallback region via flag title near match
+      const flagTitleMatch = ctxFull.match(/\/images\/flags\/[^"']+["'][^>]*title=["']([^"']+)["']/i) || ctxFull.match(/title=["']([^"']+)["'][^>]*\/images\/flags/i);
+      if (flagTitleMatch) region = flagTitleMatch[1].trim().slice(0, 30);
+      else {
+        const altMatch = ctxFull.match(/<img[^>]+src=["'][^"']*flags[^"']*["'][^>]*alt=["']([^"']+)["']/i);
+        if (altMatch) region = altMatch[1].trim().slice(0, 30);
+      }
+    }
+
+    // thumbnail regex – img src near, but security filtered
+    const imgRe = /<img[^>]+src=["']([^"']+)["']/gi;
+    let imgM: RegExpExecArray | null;
+    // Use ctxFull and search for img that is not flag
+    while ((imgM = imgRe.exec(ctxFull)) !== null) {
+      const candidate = imgM[1];
+      if (candidate.toLowerCase().includes('/images/flags')) continue;
+      const allowed = isAllowedThumbUrl(candidate);
+      if (allowed) {
+        thumbnailUrl = allowed;
+        break;
       }
     }
 
@@ -240,8 +523,12 @@ function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: 
       externalSystem: vimmSystemToken,
       title: title || `Game ${id}`,
       year,
+      version,
+      languages,
+      region,
+      rating,
       externalUrl: buildDetailUrl(id),
-      thumbnailUrl: thumb,
+      thumbnailUrl,
       availability: avail.availability,
     };
   });
@@ -252,7 +539,6 @@ function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: 
 }
 
 export function detectSchemaChange(html: string): boolean {
-  // Basic heuristic – if HTML length very small or lacks expected vault markers and also lacks "No results", treat as schema change
   if (!html || html.length < 300) return true;
   const low = html.toLowerCase();
   if (!low.includes('vault') && !low.includes('vimm')) return true;
@@ -268,21 +554,13 @@ export function parseVimmSearch(
     throw makeParserError(200, 'Empty or invalid HTML passed to parseVimmSearch', 'html non-empty');
   }
 
-  // DOM path preferred in browser env
   if (hasDomParser()) {
-    const resOrErr = parseWithDom(html, crystalSystemId, vimmSystemToken);
-    if (Array.isArray(resOrErr)) return resOrErr;
-    // if ParserError – throw to let caller handle structured error
-    throw resOrErr;
+    return parseWithDom(html, crystalSystemId, vimmSystemToken);
   }
 
-  // Fallback regex
   if (detectSchemaChange(html) && !html.toLowerCase().includes('no results')) {
-    // still try regex – schema detection is weak, but if zero length it is error
     if (html.length < 200) throw makeParserError(200, 'Search page schema appears changed or empty', 'html length <200');
   }
 
-  const out = parseWithRegex(html, crystalSystemId, vimmSystemToken);
-  if (Array.isArray(out)) return out;
-  throw out; // ParserError
+  return parseWithRegex(html, crystalSystemId, vimmSystemToken);
 }

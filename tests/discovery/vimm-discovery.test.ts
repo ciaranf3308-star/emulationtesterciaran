@@ -42,10 +42,9 @@ describe('V8.4 discovery – Vimm route building (search URL encoding, detail UR
   });
 
   test('search URL empty query – list all for system', () => {
-    const url = buildSearchUrl('GBC', '');
-    expect(url).toContain('p=list');
-    expect(url).toContain('system=GBC');
-    expect(isValidVimmUrl(url)).toBe(true);
+    // V8.4.1: empty query MUST NOT produce a Vimm search URL – live audit says ?p=list&system=PS2 alone returns 404 / unreliable.
+    // Discovery should return empty locally instead of hitting network.
+    expect(() => buildSearchUrl('GBC', '')).toThrow(/Empty query/);
   });
 
   test('detail URL numeric id only', () => {
@@ -78,9 +77,15 @@ describe('V8.4 discovery – system mapping (Crystal->Vimm token, unsupported st
     expect(crystalToVimmToken('gbc')).toBe('GBC');
     expect(crystalToVimmToken('gba')).toBe('GBA');
     expect(crystalToVimmToken('gc')).toBeTruthy(); // GameCube variant
+    expect(crystalToVimmToken('psx')).toBe('PS1'); // Crystal psx -> Vimm PS1 (spec)
+    expect(crystalToVimmToken('n3ds')).toBe('3DS');
+    expect(crystalToVimmToken('genesis')).toBe('Genesis');
+    expect(crystalToVimmToken('megadrive')).toBe('Genesis'); // distinct Crystal IDs, same Vimm token
     expect(isSupportedCrystalSystem('ps2')).toBe(true);
     expect(isSupportedCrystalSystem('gb')).toBe(true);
     expect(isSupportedCrystalSystem('psp')).toBe(true);
+    expect(isSupportedCrystalSystem('psx')).toBe(true);
+    expect(isSupportedCrystalSystem('n3ds')).toBe(true);
   });
 
   test('unsupported explicit – steam', () => {

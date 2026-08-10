@@ -165,6 +165,10 @@ export class VimmProvider implements CatalogProvider {
     if (!this.supportsSystem(systemId)) {
       throw new Error(`System '${systemId}' unsupported for provider 'vimms' – no token (not supported by vimms)`);
     }
+    // Empty query MUST NOT trigger network – return empty locally
+    if (!query.trim()) {
+      return [];
+    }
     if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const token = crystalToVimmToken(systemId);
