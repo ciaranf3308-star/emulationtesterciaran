@@ -54,6 +54,7 @@ export type LibraryViewProps = {
   onBack: () => void
   onToggleFavorite?: (id: string) => void
   onMedia?: (id: string) => void
+  onDiscover?: (id: string) => void
   mediaResolving?: boolean
   logoUrl?: string | null
   stageNode?: React.ReactNode // RIGHT 60-66% hardware stage from SystemStage (null in real flow — we are chrome of SystemStage)
@@ -95,6 +96,7 @@ export function LibraryView({
   onBack,
   onToggleFavorite,
   onMedia,
+  onDiscover,
   mediaResolving,
   logoUrl,
   stageNode,
@@ -566,7 +568,7 @@ export function LibraryView({
                   />
                 </button>
 
-                {(onMedia || onToggleFavorite) && (
+                {(onMedia || onToggleFavorite || onDiscover) && (
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     {onMedia && (
                       <button
@@ -629,6 +631,31 @@ export function LibraryView({
                         }}
                       >
                         <span style={{ opacity: selectedGame.favorite ? 1 : 0.62, color: selectedGame.favorite ? (isDark ? '#ffd85a' : '#b77900') : undefined }}>Y</span> {selectedGame.favorite ? '★ FAVORITED' : 'FAVORITE'}
+                      </button>
+                    )}
+                    {onDiscover && (
+                      <button
+                        onClick={() => onDiscover(selectedGame.id)}
+                        title="Open Discover pre-filled with this title"
+                        style={{
+                          padding: '7px 12px',
+                          borderRadius: 999,
+                          border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+                          background: isDark ? 'rgba(125,249,255,0.10)' : 'rgba(70,130,255,0.10)',
+                          backdropFilter: 'blur(10px)',
+                          WebkitBackdropFilter: 'blur(10px)',
+                          color: isDark ? 'rgba(230,244,255,0.84)' : 'rgba(18,26,44,0.76)',
+                          fontFamily: 'var(--crystal-mono)',
+                          fontSize: 10.5,
+                          fontWeight: 600,
+                          letterSpacing: '0.04em',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <span style={{ fontWeight: 800, fontSize: 9.5, color: isDark ? '#7df9ff' : '#4a86ff' }}>[Y]</span> DISCOVER
                       </button>
                     )}
                   </div>

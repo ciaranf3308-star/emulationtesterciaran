@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 mod safety;
+mod discovery;
 
 use safety::{crystal_writable_root, ensure_writable_dirs, init_safe_mode_from_env, is_safe_mode, log_event};
 use serde::{Deserialize, Serialize};
@@ -1036,7 +1037,8 @@ pub fn run() {
             verify_media,
             launch_game,
             safety::get_safe_mode,
-            safety::get_crystal_writable_root
+            safety::get_crystal_writable_root,
+            discovery::fetch_vimm
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,13 +6,18 @@ const REPEAT_INTERVAL = 120
 
 type ButtonMap = Partial<Record<number, NavigationAction>>
 
+/**
+ * V8.4 DISCOVER — Y now maps to DISCOVER (search) to free elegant secondary entry
+ * Dual-menu safeguard: menu remains on Start (9) + Back+Start combo elsewhere; Y previously
+ * duplicated menu so we repurpose cleanly. Docs: Y = [Y] DISCOVER, X (2) = favorite, Start = menu.
+ */
 const DEFAULT_BUTTON_MAP: ButtonMap = {
   0: 'confirm',
   1: 'back',
   2: 'favorite',
-  3: 'menu',
-  8: 'search',
-  9: 'menu',
+  3: 'search', // V8.4: physical Y (Xbox) = SEARCH/DISCOVER — was menu duplicate, now discover
+  8: 'search', // Select/View still search secondary
+  9: 'menu',   // Start/Menu = settings retained single source
   4: 'previousSystem',
   5: 'nextSystem',
 }

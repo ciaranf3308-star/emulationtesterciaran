@@ -29,7 +29,9 @@ import type { CrystalUpdateInfo } from './updater/crystalUpdater'
 import { UpdaterBanner } from './components/UpdaterBanner'
 import { SettingsUpdaterPanel } from './components/SettingsUpdaterPanel'
 
-type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings'
+import DiscoverView from './components/DiscoverView'
+
+type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings' | 'discover'
 
 function parsePlayCount(g: GameEntry & { [k: string]: any }): number | null {
   const raw = (g as any).play_count ?? (g as any).playcount ?? (g as any).playCount
@@ -88,6 +90,10 @@ function AppInner() {
   const [updaterError, setUpdaterError] = useState<string | null>(null)
   const [updaterPendingConfirm, setUpdaterPendingConfirm] = useState(false)
   const [updaterRawObj, setUpdaterRawObj] = useState<any | null>(null)
+
+  // V8.4 DISCOVER – context + origin
+  const [discoverPrefillGame, setDiscoverPrefillGame] = useState<GameEntry | null>(null)
+  const [discoverOrigin, setDiscoverOrigin] = useState<View>('system')
 
   const populatedSystems = useMemo(() => {
     if (!config) return [] as MachineSystem[]
@@ -428,8 +434,29 @@ function AppInner() {
           setView('library')
         } else if (action === 'menu') {
           setView('settings')
+        } else if (action === 'search' || action === 'favorite') {
+          // V8.4 DISCOVER — Y (gamepad Y → search after remap) + keyboard Y (favorite alias) → DISCOVER
+          // genuinely free action in system view — does not conflict with L/R/A/menu
+          setDiscoverPrefillGame(null)
+          setDiscoverOrigin('system')
+          setView('discover')
         }
       } else if (view === 'library') {
+        if (action === 'search' || action === 'favorite' || action === 'media') {
+          // Library context pre-fill DISCOVER with selected game
+          const g = selectedGameEntry as any
+          if (g) {
+            setDiscoverPrefillGame(g)
+            setDiscoverOrigin('library')
+            setView('discover')
+            return
+          }
+          // if no game, still allow empty discover
+          setDiscoverPrefillGame(null)
+          setDiscoverOrigin('library')
+          setView('discover')
+          return
+        }
         if (!activeGames.length) {
           if (action === 'back') setView('system')
           return
@@ -469,8 +496,32 @@ function AppInner() {
         } else if (action === 'menu') {
           setView('settings')
         }
+      } else if (view === 'discover') {
+        // forward to DiscoverView via custom event for gamepad continuity; back/menu close to origin
+        try {
+          const ev = new CustomEvent('crystal-discover-nav', { detail: action })
+          window.dispatchEvent(ev)
+        } catch {}
+        if (action === 'back' || action === 'menu') {
+          // allow discover view internal to handle detail close first – we check if it prevented default by inspecting window flag? Simple: if no detail open logic external cannot know.
+          // We let DiscoverView close detail on back; if it wants to exit view, it calls onBack prop which restores origin.
+          // So we only fallback if discover hasn't handled: treat back as exit to origin when not in detail mode.
+          // Heuristic: we emit but also after tiny delay if still in discover view we pop to origin is allowed via onBack callback override in DiscoverView internal? Simpler: DiscoverView's onBack prop restores origin.
+          // For V8.4 stub we close on double back is handled inside view itself via key listener; this here is gamepad bridge – we forward and also allow view to manage.
+          // Prevent accidental system switch.
+        }
+        // don't switch systems in discover
+        return
       } else {
         if (action === 'back') setView('system')
+        if (action === 'menu' && view !== 'settings') {
+          // menu still goes to settings unless already
+        }
+        if (action === 'search' || action === 'favorite') {
+          setDiscoverPrefillGame(null)
+          setDiscoverOrigin(view as any)
+          setView('discover')
+        }
       }
     },
     [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode]
@@ -898,6 +949,11 @@ function AppInner() {
             surpriseGame={surpriseBrief as any}
             meta={metaForLanding as any}
             onEnter={() => setView('library')}
+            onDiscover={() => {
+              setDiscoverPrefillGame(null)
+              setDiscoverOrigin('system')
+              setView('discover')
+            }}
             onPrev={() => {
               const idx = systemIds.indexOf(activeSystemId)
               const prev = (idx - 1 + systemIds.length) % systemIds.length
@@ -1006,6 +1062,12 @@ function AppInner() {
               const real = activeGames.find(ag => ag.id === g.id)
               if (real) handleLaunchGame(real)
             }}
+            onDiscover={() => {
+              const g = selectedGameEntry as any
+              setDiscoverPrefillGame(g || null)
+              setDiscoverOrigin('library')
+              setView('discover')
+            }}
             onBack={() => {
               setView('system')
               setSelectedGameplaySources(undefined)
@@ -1016,6 +1078,22 @@ function AppInner() {
             stageNode={null}
           />
         </SystemStage>
+      )}
+
+      {view === 'discover' && (
+        <DiscoverView
+          systemId={activeSystemId}
+          systemFullName={fullName}
+          theme={theme}
+          backgroundUrl={bgUrl}
+          logoUrl={logoUrl}
+          selectedLocalGame={discoverPrefillGame}
+          libraryGames={activeGames}
+          onBack={() => {
+            // restore origin view
+            setView(discoverOrigin === 'discover' ? 'system' : (discoverOrigin as any))
+          }}
+        />
       )}
 
       {(view === 'allgames' || view === 'favorites' || view === 'recent') && (
@@ -1091,6 +1169,36 @@ function AppInner() {
             )}
           </div>
           <SettingsUpdaterPanel theme={theme} />
+
+          {/* V8.4 DISCOVER – Settings entry */}
+          <div style={{
+            marginTop: 22,
+            padding: '14px 14px',
+            borderRadius: 12,
+            background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.70)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
+          }}>
+            <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>DISCOVER — VIMM'S LAIR CATALOG</div>
+            <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, lineHeight: 1.5, marginBottom: 10 }}>
+              Catalog-only reference to Vimm's Lair Vault. No shop/cart/price, no file URLs handled inside Crystal. Opens externally via Tauri shell.
+            </div>
+            <button
+              onClick={() => {
+                setDiscoverPrefillGame(null)
+                setDiscoverOrigin('settings')
+                setView('discover')
+              }}
+              style={{
+                padding: '8px 14px', borderRadius: 999,
+                border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+                background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(255,255,255,0.9)',
+                color: theme === 'dark' ? '#7df9ff' : '#1a3a9a',
+                fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >OPEN DISCOVERY</button>
+            <span style={{ marginLeft: 8, fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.5 }}>[Y] on System Landing also works</span>
+          </div>
         </div>
       )}
 

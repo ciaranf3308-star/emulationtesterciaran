@@ -49,6 +49,7 @@ export type SystemLandingProps = {
   onEnter: () => void
   onPrev: () => void
   onNext: () => void
+  onDiscover?: () => void // V8.4 DISCOVER secondary
   onAllGames?: () => void
   onFavorites?: () => void
   onRecent?: () => void
@@ -81,12 +82,14 @@ export function SystemLanding({
   onEnter,
   onPrev,
   onNext,
+  onDiscover,
 }: SystemLandingProps) {
   const isDark = theme === 'dark'
   const resolvedMeta = meta || getSystemMeta(systemId)
   const [ctaHover, setCtaHover] = useState(false)
   const [ctaFocus, setCtaFocus] = useState(false)
   const [navHover, setNavHover] = useState<'prev' | 'next' | null>(null)
+  const [discoverHover, setDiscoverHover] = useState(false)
 
   // preload neighbours – smooth 250-400ms crossfade
   useEffect(() => {
@@ -600,6 +603,49 @@ export function SystemLanding({
             </span>
             <span style={{ fontWeight: 700, letterSpacing: '0.05em', lineHeight: 1 }}>ENTER YOUR {fullName.toUpperCase()} LIBRARY</span>
           </button>
+          {/* V8.4 DISCOVER secondary — elegant pill, boutique styling, Y allocated */}
+          {onDiscover && (
+            <button
+              onClick={onDiscover}
+              data-action="open-discover"
+              onMouseEnter={() => setDiscoverHover(true)}
+              onMouseLeave={() => setDiscoverHover(false)}
+              style={{
+                appearance: 'none',
+                marginTop: 9,
+                background: isDark
+                  ? discoverHover ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.032)'
+                  : discoverHover ? 'rgba(255,255,255,0.84)' : 'rgba(255,255,255,0.56)',
+                border: `1px solid ${discoverHover ? (isDark ? 'rgba(125,249,255,0.22)' : 'rgba(70,130,255,0.20)') : isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}`,
+                borderRadius: 999,
+                padding: '8px 13px',
+                fontFamily: 'var(--crystal-mono)',
+                fontSize: 10.2,
+                letterSpacing: '0.07em',
+                textTransform: 'uppercase' as const,
+                color: isDark ? 'rgba(230,244,255,0.86)' : 'rgba(18,26,44,0.72)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 9,
+                cursor: 'pointer',
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
+                boxShadow: discoverHover ? (isDark ? '0 4px 12px rgba(0,0,0,0.22), 0 0 0 1px rgba(125,249,255,0.06) inset' : '0 4px 12px rgba(18,26,44,0.08)') : 'none',
+                transition: 'all 200ms cubic-bezier(0.16,1,0.3,1)',
+              }}
+            >
+              <span style={{
+                width: 18, height: 18, borderRadius: '50%',
+                background: isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.14)',
+                border: `1px solid ${isDark ? 'rgba(125,249,255,0.24)' : 'rgba(70,130,255,0.22)'}`,
+                display: 'grid', placeItems: 'center',
+                fontWeight: 800, fontSize: 9.5, color: isDark ? '#7df9ff' : '#4a86ff',
+              }}>Y</span>
+              <span style={{ fontWeight: 600 }}>DISCOVER</span>
+              <span aria-hidden style={{ width: 1, height: 10, background: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.10)', display: 'inline-block' }} />
+              <span style={{ opacity: 0.62, fontWeight: 500, letterSpacing: '0.04em' }}>VIMM'S LAIR • CATALOG</span>
+            </button>
+          )}
           <div
             style={{
               fontFamily: 'var(--crystal-mono)',
@@ -611,7 +657,7 @@ export function SystemLanding({
               lineHeight: 1.3,
             }}
           >
-            LEFT / RIGHT switches platform • A enters • MENU settings
+            LEFT / RIGHT switches platform • A enters • Y discover • MENU settings
           </div>
         </div>
       </div>
