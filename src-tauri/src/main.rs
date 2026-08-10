@@ -1134,7 +1134,9 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn launch_game_with_handoff(request: LaunchBackendRequest) -> Result<launch_lifecycle::HandoffReady, String> {
+fn launch_game_with_handoff(
+    request: LaunchBackendRequest,
+) -> Result<launch_lifecycle::HandoffReady, String> {
     // SAFE_MODE guard remains authoritative – same as launch_game_internal but we repeat for explicit error
     if is_safe_mode() {
         log_event("warn", "launch_game_with_handoff blocked by SAFE_MODE");
@@ -1153,7 +1155,8 @@ fn launch_game_with_handoff(request: LaunchBackendRequest) -> Result<launch_life
         version: 1,
     };
 
-    let restore_path = launch_lifecycle::save_restore_state(&restore_state).map_err(|e| format!("RESTORE_SAVE_FAILED: {}", e))?;
+    let restore_path = launch_lifecycle::save_restore_state(&restore_state)
+        .map_err(|e| format!("RESTORE_SAVE_FAILED: {}", e))?;
 
     // Launch via single authority
     let child = launch_game_internal(request)?;
@@ -1167,7 +1170,10 @@ fn launch_game_with_handoff(request: LaunchBackendRequest) -> Result<launch_life
             std::mem::forget(child);
             log_event(
                 "info",
-                &format!("handoff_ready pid={} session={} restore={}", pid, handoff.session_id, handoff.restore_path),
+                &format!(
+                    "handoff_ready pid={} session={} restore={}",
+                    pid, handoff.session_id, handoff.restore_path
+                ),
             );
             Ok(handoff)
         }
@@ -1176,8 +1182,17 @@ fn launch_game_with_handoff(request: LaunchBackendRequest) -> Result<launch_life
             let mut c = child;
             let _ = c.kill();
             launch_lifecycle::clear_restore_state();
-            log_event("error", &format!("watcher_create_failed pid={} err={} – launch aborted, Crystal remains open", pid, e));
-            Err(format!("WATCHER_CREATE_FAILED: {} – Crystal remains open, no orphan", e))
+            log_event(
+                "error",
+                &format!(
+                    "watcher_create_failed pid={} err={} – launch aborted, Crystal remains open",
+                    pid, e
+                ),
+            );
+            Err(format!(
+                "WATCHER_CREATE_FAILED: {} – Crystal remains open, no orphan",
+                e
+            ))
         }
     }
 }

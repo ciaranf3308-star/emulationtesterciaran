@@ -34,7 +34,8 @@ fn now_ts() -> u64 {
 fn restore_file_path() -> Result<PathBuf, String> {
     let root = crystal_writable_root();
     let dir = root.join("state");
-    fs::create_dir_all(&dir).map_err(|e| format!("restore dir create failed '{}': {}", dir.display(), e))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("restore dir create failed '{}': {}", dir.display(), e))?;
     let p = dir.join("restore.json");
     is_safe_write_path(&p).map_err(|e| format!("restore path unsafe '{}': {}", p.display(), e))?;
     // reject symlink file itself
@@ -52,16 +53,29 @@ pub fn save_restore_state(state: &RestoreState) -> Result<PathBuf, String> {
     if state.system_id.trim().is_empty() || state.rom_basename.trim().is_empty() {
         return Err("RESTORE_FIELDS_EMPTY: system_id/rom_basename required".to_string());
     }
-    if state.system_id.contains('/') || state.system_id.contains('\\') || state.system_id.contains("..") {
+    if state.system_id.contains('/')
+        || state.system_id.contains('\\')
+        || state.system_id.contains("..")
+    {
         return Err(format!("RESTORE_SYSTEM_ID_INVALID: '{}'", state.system_id));
     }
     // basic filename sanity for rom_basename
-    if state.rom_basename.contains('/') || state.rom_basename.contains('\\') || state.rom_basename.contains(':') {
-        return Err(format!("RESTORE_BASENAME_INVALID: '{}'", state.rom_basename));
+    if state.rom_basename.contains('/')
+        || state.rom_basename.contains('\\')
+        || state.rom_basename.contains(':')
+    {
+        return Err(format!(
+            "RESTORE_BASENAME_INVALID: '{}'",
+            state.rom_basename
+        ));
     }
-    let json = serde_json::to_string(state).map_err(|e| format!("RESTORE_SERIALIZE_FAILED: {}", e))?;
+    let json =
+        serde_json::to_string(state).map_err(|e| format!("RESTORE_SERIALIZE_FAILED: {}", e))?;
     if json.len() > 2048 {
-        return Err(format!("RESTORE_BOUNDED_EXCEEDED: {} bytes > 2048", json.len()));
+        return Err(format!(
+            "RESTORE_BOUNDED_EXCEEDED: {} bytes > 2048",
+            json.len()
+        ));
     }
     if json.to_ascii_lowercase().contains("secret") || json.to_ascii_lowercase().contains("token") {
         return Err("RESTORE_REJECTED_SECRET_FIELD".to_string());
@@ -69,12 +83,19 @@ pub fn save_restore_state(state: &RestoreState) -> Result<PathBuf, String> {
     let path = restore_file_path()?;
     // atomic-ish via write temp then rename
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, json.as_bytes()).map_err(|e| format!("RESTORE_WRITE_TMP_FAILED: {} -> {}", tmp.display(), e))?;
+    fs::write(&tmp, json.as_bytes())
+        .map_err(|e| format!("RESTORE_WRITE_TMP_FAILED: {} -> {}", tmp.display(), e))?;
     fs::rename(&tmp, &path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("RESTORE_RENAME_FAILED: {}", e)
     })?;
-    log_event("info", &format!("restore_saved system={} rom={} ts={}", state.system_id, state.rom_basename, state.timestamp));
+    log_event(
+        "info",
+        &format!(
+            "restore_saved system={} rom={} ts={}",
+            state.system_id, state.rom_basename, state.timestamp
+        ),
+    );
     Ok(path)
 }
 
@@ -133,10 +154,16 @@ pub struct HandoffReady {
     pub restore_path: String,
 }
 
-pub fn spawn_watcher_for_pid(pid: u32, restore_path_opt: Option<PathBuf>) -> Result<HandoffReady, String> {
-    let crystal_exe_path = std::env::current_exe().map_err(|e| format!("WATCHER_CURRENT_EXE_FAILED: {}", e))?;
+pub fn spawn_watcher_for_pid(
+    pid: u32,
+    restore_path_opt: Option<PathBuf>,
+) -> Result<HandoffReady, String> {
+    let crystal_exe_path =
+        std::env::current_exe().map_err(|e| format!("WATCHER_CURRENT_EXE_FAILED: {}", e))?;
     let crystal_exe_str = crystal_exe_path.to_string_lossy().to_string();
-    let restore_path = restore_path_opt.unwrap_or_else(|| restore_file_path().unwrap_or_else(|_| PathBuf::from("state/restore.json")));
+    let restore_path = restore_path_opt.unwrap_or_else(|| {
+        restore_file_path().unwrap_or_else(|_| PathBuf::from("state/restore.json"))
+    });
     let restore_str = restore_path.to_string_lossy().to_string();
     let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -157,7 +184,9 @@ pub fn spawn_watcher_for_pid(pid: u32, restore_path_opt: Option<PathBuf>) -> Res
         .arg("--session")
         .arg(&session_id);
 
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     #[cfg(windows)]
     {
@@ -167,7 +196,12 @@ pub fn spawn_watcher_for_pid(pid: u32, restore_path_opt: Option<PathBuf>) -> Res
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
     }
 
-    let child = cmd.spawn().map_err(|e| format!("WATCHER_SPAWN_FAILED: {} exe='{}' pid={}", e, crystal_exe_str, pid))?;
+    let child = cmd.spawn().map_err(|e| {
+        format!(
+            "WATCHER_SPAWN_FAILED: {} exe='{}' pid={}",
+            e, crystal_exe_str, pid
+        )
+    })?;
 
     log_event(
         "info",
@@ -248,7 +282,10 @@ fn is_pid_alive(pid: u32) -> bool {
     // Fallback to tasklist on Windows if sysinfo fails (e.g., missing)
     use sysinfo::{Pid, System};
     let mut sys = System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[Pid::from(pid as usize)]), true);
+    sys.refresh_processes(
+        sysinfo::ProcessesToUpdate::Some(&[Pid::from(pid as usize)]),
+        true,
+    );
     sys.process(Pid::from(pid as usize)).is_some()
 }
 
@@ -332,7 +369,13 @@ pub fn run_watcher_mode(raw_args: Vec<String>) -> Result<(), String> {
 
         // timeout safety
         if poll_count > max_poll_secs {
-            log_event("warn", &format!("watcher_timeout session={} target_pid={}", args.session, args.target_pid));
+            log_event(
+                "warn",
+                &format!(
+                    "watcher_timeout session={} target_pid={}",
+                    args.session, args.target_pid
+                ),
+            );
             break;
         }
 
@@ -353,7 +396,7 @@ pub fn run_watcher_mode(raw_args: Vec<String>) -> Result<(), String> {
     // Duplicate instance guard: before relaunch check if Crystal exe already running (excluding self watcher)
     // Use sysinfo enumeration
     {
-        use sysinfo::{System, Pid};
+        use sysinfo::{Pid, System};
         let mut sys = System::new_all();
         sys.refresh_all();
         let crystal_name = args
@@ -377,7 +420,10 @@ pub fn run_watcher_mode(raw_args: Vec<String>) -> Result<(), String> {
                 .to_ascii_lowercase();
             let proc_name = proc_.name().to_string_lossy().to_ascii_lowercase();
             // match either exe file name or process name containing crystal
-            if exe_name == crystal_name || proc_name.contains(&crystal_name) || proc_name.contains("crystal") {
+            if exe_name == crystal_name
+                || proc_name.contains(&crystal_name)
+                || proc_name.contains("crystal")
+            {
                 // count as potential duplicate
                 existing_crystal += 1;
             }
@@ -402,7 +448,10 @@ pub fn run_watcher_mode(raw_args: Vec<String>) -> Result<(), String> {
                 if let Ok(entries) = fs::read_dir(state_dir) {
                     for e in entries.flatten() {
                         let fname = e.file_name().to_string_lossy().to_string();
-                        if fname.starts_with("watcher-") && fname.ends_with(".lock") && !fname.contains(&args.session) {
+                        if fname.starts_with("watcher-")
+                            && fname.ends_with(".lock")
+                            && !fname.contains(&args.session)
+                        {
                             if let Ok(meta) = fs::metadata(e.path()) {
                                 if let Ok(modified) = meta.modified() {
                                     if let Ok(elapsed) = modified.elapsed() {
@@ -436,7 +485,10 @@ pub fn run_watcher_mode(raw_args: Vec<String>) -> Result<(), String> {
         relaunch_cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_CONSOLE);
     }
 
-    relaunch_cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    relaunch_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     match relaunch_cmd.spawn() {
         Ok(c) => {
@@ -579,7 +631,12 @@ mod tests {
             huge.rom_path = "normal".to_string();
             huge.system_id = "a".repeat(3000);
             let err2 = save_restore_state(&huge).unwrap_err();
-            assert!(err2.contains("BOUNDED") || err2.contains("SYSTEM") || err2.contains("INVALID") || err2.contains("EMPTY") == false);
+            assert!(
+                err2.contains("BOUNDED")
+                    || err2.contains("SYSTEM")
+                    || err2.contains("INVALID")
+                    || err2.contains("EMPTY") == false
+            );
         })
     }
 
@@ -664,7 +721,9 @@ mod tests {
         // This test ensures safe mode guard still blocks launch_game (existing logic) – we replicate here
         let _guard = acquire_shared_test_env_lock();
         std::env::set_var("CRYSTAL_SAFE_MODE", "1");
-        crate::safety::set_test_writable_root_override(tempdir().unwrap().path().to_path_buf().join("CF"));
+        crate::safety::set_test_writable_root_override(
+            tempdir().unwrap().path().to_path_buf().join("CF"),
+        );
         // We don't actually call launch_game here to avoid heavy setup, just check is_safe_mode true
         assert!(crate::safety::is_safe_mode());
         std::env::remove_var("CRYSTAL_SAFE_MODE");

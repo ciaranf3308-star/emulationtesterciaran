@@ -76,6 +76,54 @@ function AppInner() {
   const [safeMode, setSafeMode] = useState(false)
   const [safeModeToast, setSafeModeToast] = useState<string | null>(null)
 
+  // V8.7 – restore on mount (fullscreen/focus/context return journey)
+  useEffect(() => {
+    let cancelled = false
+    async function tryRestore() {
+      try {
+        const mod = await import('./lifecycle/launchCycle')
+        const state = await mod.getRestoreState().catch(() => null)
+        if (cancelled) return
+        if (!state) return
+        // Must be recent (<5 min) and bounded – backend already validates sympathy
+        if (!mod.isRestoreRecent(state as any, 300)) {
+          // stale – clear to avoid loop
+          try { await mod.clearRestoreState() } catch {}
+          return
+        }
+        console.info('[lifecycle] restore_state recent', state.system_id, state.rom_basename)
+        // restore previous system where practical
+        if (state.system_id) {
+          setActiveSystemId(state.system_id)
+        }
+        // restore previous selected game where practical – defer until gameCache populated; we can attempt via id = system:basename
+        const plausibleId = `${state.system_id}:${state.rom_basename}`
+        // if cache has this id quickly, set it; otherwise let library view auto-select first then clear
+        try {
+          // optimistic – if not present, selection will be updated when library loads; failure to restore exact selection should NOT prevent launch
+          setSelectedGameId(plausibleId)
+        } catch {}
+        setView('library')
+        // recover focus – dispatcher will handle controller focus via autofocus of LibraryView
+        try {
+          window.dispatchEvent(new CustomEvent('crystal:restored' as any, { detail: state }))
+        } catch {}
+        // finally clear to avoid loop
+        try { await mod.clearRestoreState() } catch {}
+        // fullscreen – Tauri window should already be fullscreen, but ensure focus
+        try {
+          const tauriWin = (window as any).__TAURI__?.window?.getCurrentWindow?.()
+          if (tauriWin?.setFocus) await tauriWin.setFocus().catch(() => {})
+        } catch {}
+      } catch {
+        // non-fatal
+      }
+    }
+    // delay slightly to allow machine config to load
+    const t = window.setTimeout(tryRestore, 500)
+    return () => { cancelled = true; window.clearTimeout(t) }
+  }, [])
+
   const [gameCache, setGameCache] = useState<Map<string, GameEntry[]>>(() => new Map())
   const [cacheLoading, setCacheLoading] = useState<Set<string>>(() => new Set())
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
@@ -476,6 +524,40 @@ function AppInner() {
         selectedCommandLabel: sys.launchSelection.selectedLabel,
       })
       if (req.ok === false) return
+      // V8.7 – zero-overhead handoff + return watcher: attempt new path first, secure watcher BEFORE exit, keep Crystal open on failure
+      try {
+        const { launchWithHandoff, runPreExitCleanup, exitAfterHandoff } = await import('./lifecycle/launchCycle')
+        // Persist restore state implicitly inside backend (also does explicit save)
+        const handoff = await launchWithHandoff(req.backendRequest)
+        if (!handoff || !handoff.pid) throw new Error('Handoff missing pid')
+        // Pre-launch cleanup – close provider WebView, stop acquisition/video/animations/timers, release media
+        runPreExitCleanup((typeof providerSurf !== 'undefined' ? providerSurf : null) as any, (typeof crystalAcq !== 'undefined' ? crystalAcq : null) as any)
+        console.info('[lifecycle] handoff_ready pid=', handoff.pid, 'session=', handoff.session_id, '-> exiting Crystal')
+        await exitAfterHandoff().catch(() => {
+          // If exit command missing (old build), fall back to window close
+          try {
+            const win = (window as any).__TAURI__?.window?.getCurrentWindow?.()
+            if (win?.close) win.close()
+            else window.close()
+          } catch {}
+        })
+        return
+      } catch (e: any) {
+        const msg = e?.message || String(e)
+        // WATCHER_CREATE_FAILED or missing command – keep Crystal open, fallback to legacy launch if appropriate
+        if (msg.includes('SAFE_MODE_BLOCKED_LAUNCH')) {
+          console.warn('[lifecycle] handoff blocked by SAFE_MODE – staying open')
+          setSafeModeToast('SAFE MODE – launch blocked')
+          setTimeout(() => setSafeModeToast(null), 2400)
+          return
+        }
+        if (msg.includes('WATCHER_CREATE_FAILED') || msg.includes('RESTORE_SAVE_FAILED')) {
+          console.warn('[lifecycle] watcher creation failed – stay open, no orphan –', msg)
+          return
+        }
+        // If command not found (old binary) or other error, fallback to authoritative legacy launch
+        console.debug('[lifecycle] handoff not available or failed, fallback classic launch:', msg)
+      }
       try {
         await getLauncherBridge().launch(req.backendRequest)
       } catch {}

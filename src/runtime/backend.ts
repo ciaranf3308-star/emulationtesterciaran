@@ -111,3 +111,25 @@ export async function verifyMedia(systemId: string, romBasename: string, mediaTy
 export async function launchBackendGame(request: any): Promise<void> {
   return invokeBackend<void>('launch_game', { request })
 }
+
+// V8.7 – handoff path: spawns watcher BEFORE exit, returns session guard
+export async function launchBackendGameWithHandoff(request: any): Promise<any> {
+  return invokeBackend<any>('launch_game_with_handoff', { request })
+}
+
+export async function getLaunchRestoreState(): Promise<any | null> {
+  return invokeBackend<any | null>('get_launch_restore_state', {})
+}
+
+export async function saveLaunchRestoreState(systemId: string, romPath: string, romBasename: string): Promise<any> {
+  return invokeBackend<any>('save_launch_restore_state', { systemId, romPath, romBasename } as any)
+}
+
+export async function clearLaunchRestoreState(): Promise<void> {
+  return invokeBackend<void>('clear_launch_restore_state', {})
+}
+
+export async function exitCrystalAfterHandoff(): Promise<void> {
+  return invokeBackend<void>('exit_crystal_after_handoff', {})
+}
+
