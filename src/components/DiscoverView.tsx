@@ -13,9 +13,6 @@ import type { GameEntry } from '../runtime/backend'
 import discoveryService, { type DiscoveryResult, canonicalVaultUrl } from '../lib/discoveryService'
 import { isInLibrary } from '../lib/discoveryMatching'
 import SystemLogo from './SystemLogo'
-import { buildDetailUrl } from '../discovery/providers/vimm/vimmRoutes'
-import { validateOpenUrl } from '../discovery/providers/vimm/hostValidation'
-import { isTauriEnvironment } from '../runtime/environment'
 
 export type BeginAcquisitionRequest = {
   systemId: string
@@ -34,6 +31,8 @@ type DiscoverProps = {
   libraryGames?: GameEntry[] | null
   onOpenDiscoverGame?: (id: string) => void
   onBeginAcquisition?: (request: BeginAcquisitionRequest) => unknown
+  acquisitionActive?: boolean
+  acquisitionPhase?: string | null
 }
 
 export function DiscoverView({
@@ -46,6 +45,7 @@ export function DiscoverView({
   selectedLocalGame,
   libraryGames,
   onBeginAcquisition,
+  acquisitionActive,
 }: DiscoverProps) {
   const isDark = theme === 'dark'
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -217,83 +217,73 @@ export function DiscoverView({
     }
   }
 
-  // V8.6C3 – PRODUCTION BRIDGE – GET GAME → acquisition coordinator (watcher FIRST, then open canonical page)
-  const handleGetGame = useCallback(async () => {
-    if (!onBeginAcquisition) {
-      // No production wiring – fallback to plain open for dev QA
-      const fallbackId = (detailFull?.providerId || (detailFull as any)?.id || selectedDetail?.providerId || selectedDetail?.id) as string | undefined
-      if (fallbackId) {
-        try { await discoveryService.open(String(fallbackId)) } catch {}
-      }
+  // C3.1 – reentry guard (sync) and eligibility derivation
+  const startInFlightRef = useRef(false)
+
+  // Derive current availability / title for eligibility – uses detailFull fallback selectedDetail
+  const currentAvailability = (detailFull as any)?.availability ?? selectedDetail?.availability ?? null
+  const currentDetailTitle = (detailFull as any)?.title ?? selectedDetail?.title ?? ''
+  const alreadyInLibraryForDetail = useMemo(() => {
+    const t = String(currentDetailTitle || '').trim()
+    if (!t) return false
+    return inLibraryCheck(t)
+  }, [currentDetailTitle, inLibraryCheck])
+
+  const canGetGame = useMemo(() => {
+    // GET GAME eligible ONLY when available AND not already in local library
+    return currentAvailability === 'available' && !alreadyInLibraryForDetail
+  }, [currentAvailability, alreadyInLibraryForDetail])
+
+  // Clear in-flight guard when acquisition becomes inactive / detail closed
+  useEffect(() => {
+    if (!acquisitionActive) {
+      startInFlightRef.current = false
+    }
+  }, [acquisitionActive, showDetailPanel])
+
+  // V8.6C3.1 – PRODUCTION BRIDGE – corrected ownership: Discover selects + starts, discoveryService owns URL/open
+  const handleGetGame = useCallback(() => {
+    if (acquisitionActive) return
+    if (startInFlightRef.current) return
+    if (!onBeginAcquisition) return
+    // Eligibility gate
+    if (!canGetGame) return
+    // Provider ID numeric-only validation – reject full URL, path, query, empty, non-numeric
+    const rawProviderId = detailFull?.providerId ?? (detailFull as any)?.id ?? selectedDetail?.providerId ?? selectedDetail?.id
+    if (rawProviderId == null) {
+      setErrorMsg('Missing provider id – cannot start acquisition')
       return
     }
-
-    // Resolve numeric providerId – must be numeric per spec – authority from detailFull / selectedDetail
-    const rawProviderId = detailFull?.providerId ?? (detailFull as any)?.id ?? selectedDetail?.providerId ?? selectedDetail?.id
+    const idStr = String(rawProviderId).trim()
+    if (!/^\d+$/.test(idStr)) {
+      // Explicitly reject /vault/123, https://..., 123?foo, abc, empty – do not parse URL to recover
+      setErrorMsg(`Provider id must be numeric – got '${idStr.slice(0, 32)}'`)
+      return
+    }
     const titleRaw = detailFull?.title ?? selectedDetail?.title ?? ''
     const expectedTitle = String(titleRaw).trim()
     if (!expectedTitle) {
       setErrorMsg('Could not determine game title for acquisition')
       return
     }
-    if (rawProviderId == null) {
-      setErrorMsg('Missing provider id – cannot open canonical page')
-      return
-    }
-    const idStr = String(rawProviderId).trim()
-    if (!/^\d+$/.test(idStr)) {
-      setErrorMsg(`Provider id must be numeric – got '${idStr.slice(0, 32)}'`)
-      return
-    }
+    // Title already eligibility-gated via canGetGame, but double-check non-empty
+    // Build lazy callback – MUST NOT open eagerly
+    const openExternalPage = () => discoveryService.open(idStr)
 
-    let canonicalUrl: string
+    // Reentry guard set BEFORE call
+    startInFlightRef.current = true
     try {
-      canonicalUrl = buildDetailUrl(idStr)
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'Invalid provider id')
-      return
-    }
-    if (!validateOpenUrl(canonicalUrl)) {
-      setErrorMsg(`External open URL not allowed – ${canonicalUrl}`)
-      return
-    }
-
-    // Exact provider handoff – openExternalPage opens canonical detail page in normal browser (user clicks Download manually)
-    const openExternalPage = async () => {
-      const url = canonicalUrl // already validated
-      try {
-        if (isTauriEnvironment()) {
-          try {
-            const shellMod = await import('@tauri-apps/plugin-shell')
-            const openFn = (shellMod as any).open || (shellMod as any).default?.open
-            if (typeof openFn === 'function') {
-              await openFn(url)
-              return
-            }
-          } catch {
-            // fall through to window.open
-          }
-        }
-      } catch {}
-      try {
-        if (typeof window !== 'undefined') {
-          (window as any).open(url, '_blank', 'noopener')
-        }
-      } catch {}
-    }
-
-    try {
-      // Production bridge – use real imported app API, not window globals
       onBeginAcquisition({
         systemId,
         expectedTitle,
         openExternalPage,
       })
-      // Close detail – acquisition card now visible over library/system
+      // Close detail – acquisition card now visible; leave guard true until active propagates
       setShowDetailPanel(false)
       setSelectedDetail(null)
       setDetailFull(null)
     } catch (e: any) {
+      startInFlightRef.current = false
       const code = e?.code || e?.message
       if (code === 'EXTERNAL_ACQUISITION_ALREADY_ACTIVE') {
         setErrorMsg('Acquisition already active – one at a time')
@@ -301,11 +291,16 @@ export function DiscoverView({
         setErrorMsg(code ? String(code).slice(0, 120) : 'Could not start acquisition')
       }
     }
-  }, [detailFull, selectedDetail, systemId, onBeginAcquisition])
+  }, [acquisitionActive, canGetGame, detailFull, selectedDetail, systemId, onBeginAcquisition, alreadyInLibraryForDetail, currentAvailability])
 
-  // V8.4.1 deterministic controller + keyboard – C3 updated: A in detail now triggers GET GAME when prod wiring present
+  // V8.4.1 deterministic controller + keyboard – C3.1 updated: acquisitionActive input lock, A only eligible canGetGame
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (acquisitionActive) {
+        // C2/App is controller authority – Discover locked while acquisition active
+        e.preventDefault()
+        return
+      }
       if (showDetailPanel) {
         if (e.key === 'Escape' || e.key === 'Backspace') {
           e.preventDefault()
@@ -315,12 +310,9 @@ export function DiscoverView({
         }
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          // C3: GET GAME is primary when wired, else plain open
-          if (onBeginAcquisition) {
-            void handleGetGame()
-          } else {
-            const id = (detailFull?.providerId || (detailFull as any)?.id || selectedDetail?.id) as string
-            if (id) handleOpenVault(id)
+          // C3.1: A GET GAME only when eligible – no fallthrough to external-open for blocked cases
+          if (canGetGame) {
+            handleGetGame()
           }
           return
         }
@@ -355,6 +347,9 @@ export function DiscoverView({
     }
 
     const onDiscoverNav = (ev: any) => {
+      if (acquisitionActive) {
+        return
+      }
       const action = ev?.detail as string
       if (!action) return
       if (showDetailPanel) {
@@ -364,12 +359,8 @@ export function DiscoverView({
           return
         }
         if (action === 'confirm') {
-          // C3: A -> GET GAME (production glue) else OPEN ON VIMM'S LAIR
-          if (onBeginAcquisition) {
-            void handleGetGame()
-          } else {
-            const id = (detailFull?.providerId || (detailFull as any)?.id || selectedDetail?.id) as string
-            if (id) handleOpenVault(id)
+          if (canGetGame) {
+            handleGetGame()
           }
           return
         }
@@ -400,7 +391,7 @@ export function DiscoverView({
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('crystal-discover-nav' as any, onDiscoverNav)
     }
-  }, [results, focusedIdx, showDetailPanel, onBack, selectedDetail, detailFull, handleOpenVault, handleGetGame, onBeginAcquisition])
+  }, [results, focusedIdx, showDetailPanel, onBack, selectedDetail, detailFull, handleGetGame, canGetGame, acquisitionActive])
 
   const resultCountLabel = useMemo(() => {
     if (searching) return 'searching…'
@@ -745,11 +736,16 @@ export function DiscoverView({
                 )}
 
                 <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {onBeginAcquisition ? (
+                  {canGetGame && onBeginAcquisition ? (
                     <button
-                      onClick={() => void handleGetGame()}
+                      onClick={() => {
+                        if (acquisitionActive) return
+                        if (startInFlightRef.current) return
+                        handleGetGame()
+                      }}
                       autoFocus
-                      disabled={detailResolving}
+                      disabled={detailResolving || !!acquisitionActive}
+                      data-testid="get-game"
                       style={{
                         appearance: 'none',
                         padding: '11px 18px',
@@ -758,8 +754,8 @@ export function DiscoverView({
                         background: isDark ? '#7df9ff' : '#4a86ff',
                         color: isDark ? '#041018' : '#fff',
                         fontFamily: 'var(--crystal-mono)', fontSize: 11.5, fontWeight: 800,
-                        cursor: detailResolving ? 'wait' : 'pointer',
-                        opacity: detailResolving ? 0.72 : 1,
+                        cursor: detailResolving || acquisitionActive ? 'wait' : 'pointer',
+                        opacity: detailResolving || acquisitionActive ? 0.72 : 1,
                         boxShadow: isDark ? '0 8px 20px rgba(125,249,255,0.22)' : '0 8px 18px rgba(70,130,255,0.22)',
                         display: 'flex', alignItems: 'center', gap: 8,
                       }}
@@ -768,29 +764,51 @@ export function DiscoverView({
                       GET GAME
                     </button>
                   ) : null}
+                  {!canGetGame && alreadyInLibraryForDetail ? (
+                    <span data-testid="in-your-library" style={{
+                      fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 800,
+                      padding: '11px 16px', borderRadius: 999,
+                      background: isDark ? 'rgba(255,214,90,0.16)' : 'rgba(255,200,60,0.18)',
+                      border: `1px solid ${isDark ? 'rgba(255,214,90,0.22)' : 'rgba(255,180,0,0.24)'}`,
+                      color: isDark ? '#ffd85a' : '#8a5a00',
+                    }}>IN YOUR LIBRARY</span>
+                  ) : !canGetGame && (currentAvailability === 'unavailable' || currentAvailability === 'takedown') ? (
+                    <span data-testid="download-unavailable" style={{
+                      fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 800,
+                      padding: '11px 16px', borderRadius: 999,
+                      background: isDark ? 'rgba(255,120,120,0.14)' : 'rgba(255,120,120,0.16)',
+                      border: `1px solid ${isDark ? 'rgba(255,120,120,0.18)' : 'rgba(255,120,120,0.22)'}`,
+                      color: isDark ? '#ff9a9a' : '#8a2e2e',
+                    }}>DOWNLOAD UNAVAILABLE</span>
+                  ) : null}
                   <button
-                    onClick={() => handleOpenVault(selectedDetail.id)}
-                    autoFocus={onBeginAcquisition ? undefined : true as any}
+                    onClick={() => {
+                      if (acquisitionActive) return
+                      handleOpenVault(selectedDetail.id)
+                    }}
+                    autoFocus={canGetGame ? undefined : true as any}
+                    disabled={!!acquisitionActive}
+                    data-testid="open-vimm"
                     style={{
                       appearance: 'none',
-                      padding: onBeginAcquisition ? '10px 16px' : '11px 18px',
+                      padding: canGetGame ? '10px 16px' : '11px 18px',
                       borderRadius: 999,
-                      border: onBeginAcquisition ? `1px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}` : 'none',
-                      background: onBeginAcquisition ? (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)') : (isDark ? '#7df9ff' : '#4a86ff'),
-                      color: onBeginAcquisition ? (isDark ? '#eef7ff' : '#16213e') : (isDark ? '#041018' : '#fff'),
-                      fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: onBeginAcquisition ? 600 : 800,
-                      cursor: 'pointer',
-                      boxShadow: onBeginAcquisition ? 'none' : (isDark ? '0 8px 20px rgba(125,249,255,0.22)' : '0 8px 18px rgba(70,130,255,0.22)'),
+                      border: canGetGame ? `1px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}` : 'none',
+                      background: canGetGame ? (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)') : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)'),
+                      color: canGetGame ? (isDark ? '#eef7ff' : '#16213e') : (isDark ? '#eef7ff' : '#16213e'),
+                      fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: canGetGame ? 600 : 700,
+                      cursor: acquisitionActive ? 'not-allowed' : 'pointer',
+                      opacity: acquisitionActive ? 0.5 : 1,
+                      boxShadow: 'none',
                       display: 'flex', alignItems: 'center', gap: 8,
                     }}
                   >
-                    {!onBeginAcquisition && <span style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(0,0,0,0.12)', display: 'grid', placeItems: 'center', fontSize: 11 }}>A</span>}
                     OPEN ON VIMM'S LAIR
                   </button>
                   <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.52, maxWidth: 220 }}>
                     {canonicalVaultUrl(selectedDetail.id)}
                   </span>
-                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>{onBeginAcquisition ? '[A] GET • [B] CLOSE DETAIL • [B again] BACK TO LIBRARY' : '[B] CLOSE DETAIL – [B again] BACK TO LIBRARY'}</span>
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>{canGetGame ? '[A] GET • [B] CLOSE DETAIL • [B again] BACK TO LIBRARY' : '[B] CLOSE DETAIL – [B again] BACK TO LIBRARY'}</span>
                 </div>
 
                 {(detailFull?.availability === 'unavailable' || detailFull?.availability === 'takedown' || selectedDetail.availability === 'unavailable' || selectedDetail.availability === 'takedown') && (
