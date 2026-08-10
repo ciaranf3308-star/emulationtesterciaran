@@ -840,6 +840,8 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     use super::*;
     use std::fs;
     use std::path::PathBuf;
@@ -905,6 +907,7 @@ mod tests {
     where
         F: FnOnce(),
     {
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         // Save previous env var if any
         let prev = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
         std::env::set_var("CRYSTAL_MACHINE_CONFIG", cfg_path);
