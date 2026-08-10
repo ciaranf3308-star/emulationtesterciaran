@@ -183,6 +183,7 @@ class Impl {
 
   cancelled = false
   generation = 0
+  initialGeneration = 0
   statusFailureCount = 0
   maxStatusFailures = 3
 
@@ -309,6 +310,11 @@ class Impl {
   async start(): Promise<void> {
     const sleep = this.deps.sleep ?? defaultSleep
 
+    // 0. Immediate-cancel race fix – must be VERY FIRST
+    if (this.cancelled || this.generation !== this.initialGeneration || isTerminalPhase(this.phase)) {
+      return
+    }
+
     // ---- Frontend basic validation ----
     if (!this.systemId || !this.systemId.trim()) {
       this.setPhase("FAILED", {
@@ -336,6 +342,16 @@ class Impl {
     } catch (e) {
       const { code, message } = extractCode(e, "ACQUISITION_WATCH_START_FAILED")
       this.setPhase("FAILED", { errorCode: code, message })
+      return
+    }
+
+    // Guard if cancelled during beginAcquisitionWatch – respect cancellation, do not proceed to open
+    if (this.cancelled || this.generation !== this.initialGeneration || isTerminalPhase(this.phase)) {
+      // Ensure zombie watcher is cancelled best-effort if session was obtained
+      if (session.sessionId && !this.backendCancelCalled) {
+        this.backendCancelCalled = true
+        try { await this.deps.cancelAcquisitionWatch(session.sessionId) } catch {}
+      }
       return
     }
 
@@ -372,7 +388,10 @@ class Impl {
     }
 
     // After open success, set to waiting for download if still same generation
-    if (this.cancelled || this.generation !== 0 && this.generation > 0 && isTerminalPhase(this.phase)) {
+    if (this.cancelled || this.generation !== this.initialGeneration) {
+      return
+    }
+    if (isTerminalPhase(this.phase)) {
       return
     }
     if (!isTerminalPhase(this.phase)) {
