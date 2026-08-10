@@ -62,4 +62,53 @@ describe("V8.6B.1 acquisition matcher – identical to Rust", () => {
     expect(normalizeTitle("Super Mario World [USA]")).toBe("super mario world")
     expect(normalizeTitle("Super_Mario-World")).toBe("super mario world")
   })
+
+  test("Pokémon unicode parity – same normalized HIGH", () => {
+    const exp = normalizeTitle("Pokémon")
+    const cand = normalizeTitle("Pokémon (USA).zip")
+    // Both should normalize to same value containing é (unicode letter retained)
+    expect(exp.length).toBeGreaterThan(0)
+    expect(exp).toBe(cand.replace(/\.zip$/, "")) // after strip? actually cand already stripped via normalizeTitle handling of .zip inside? our normalize handles .zip ext earlier
+    // Direct equality via evaluate
+    const expN = normalizeTitle("Pokémon")
+    const candN = normalizeTitle("Pokémon (USA)")
+    expect(expN).toBe(candN)
+    expect(confidenceForCandidate(expN, candN)).toBe("HIGH")
+
+    const res = evaluateCandidates(expN, ["Pokémon (USA).zip"])
+    expect(res.result).toBe("HIGH")
+  })
+
+  test("Pokémon retains é not stripped to e", () => {
+    const norm = normalizeTitle("Pokémon")
+    // Rust char.is_alphanumeric keeps é as alphanumeric, lowercased keeps é
+    expect(norm.includes("é")).toBe(true)
+    expect(norm).toBe("pokémon")
+  })
+
+  test("non-Latin title retained consistently – Japanese/Korean etc", () => {
+    // Use a non-Latin script that Rust is_alphanumeric would keep
+    const titleJa = "スーパーマリオ" // Katakana / Kanji mix – letters in Unicode
+    const normJa = normalizeTitle(titleJa)
+    expect(normJa.length).toBeGreaterThan(0)
+    // Should retain the Japanese characters (not stripped)
+    expect(normJa).toBe(titleJa.toLowerCase())
+
+    const titleKo = "마리오" // Hangul
+    const normKo = normalizeTitle(titleKo)
+    expect(normKo).toBe(titleKo.toLowerCase())
+
+    // Evaluate HIGH for non-Latin same title with region suffix
+    const expJa = normalizeTitle("スーパーマリオ")
+    const candJa = normalizeTitle("スーパーマリオ (USA).zip")
+    expect(expJa).toBe(candJa.replace(/\s+/g, " ").trim().split(" ").join(" ")) // sanity
+    expect(confidenceForCandidate(expJa, normalizeTitle("スーパーマリオ (USA)"))).toBe("HIGH")
+  })
+
+  test("Pokémon vs Pokemon ASCII not equal – unicode matters", () => {
+    // Ensure unicode path is not collapsed to ASCII accidentally
+    const withAccent = normalizeTitle("Pokémon")
+    const withoutAccent = normalizeTitle("Pokemon")
+    expect(withAccent).not.toBe(withoutAccent)
+  })
 })

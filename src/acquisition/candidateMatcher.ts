@@ -1,20 +1,20 @@
 /**
  * Conservative title normalization – must mirror backend normalize_title exactly.
- * Backend authoritative logic:
+ * Backend authoritative logic (Rust char.is_alphanumeric = Unicode):
  *  - trim, strip archive ext .zip/.7z/.rar/.iso/.cue/.bin/.chd/.rvz/.wud/.wbfs case-insensitive
- *  - lowercase
+ *  - lowercase (Unicode-aware)
  *  - _ -> space
  *  - unicode apostrophes ’ ‘ ` ´ -> '
  *  - : - – — -> space
  *  - remove (...) and [...] entirely
- *  - any non-alphanumeric non-whitespace -> space (punctuation, ', ., ! etc)
+ *  - any non-alphanumeric non-whitespace -> space (punctuation, ', ., ! etc) – Unicode letters/numbers retained
  *  - collapse whitespace
  */
 
 import type { Confidence } from "./types"
 
 export function normalizeTitle(input: string): string {
-  if (!input || !input.trim()) return ""
+  if (!input || !(input.trim())) return ""
   let s = input.trim()
 
   const lowerExt = s.toLowerCase()
@@ -32,7 +32,9 @@ export function normalizeTitle(input: string): string {
   s = s.replace(/[:\-–—]/g, " ")
   s = s.replace(/\([^)]*\)/g, " ")
   s = s.replace(/\[[^\]]*\]/g, " ")
-  s = s.replace(/[^a-z0-9\s]/g, " ")
+  // Unicode-aware: keep letters (any script), numbers, whitespace; else -> space
+  // Mirrors Rust char.is_alphanumeric() which is Unicode
+  s = s.replace(/[^\p{L}\p{N}\s]/gu, " ")
   s = s.replace(/\s+/g, " ").trim()
 
   return s
@@ -54,6 +56,8 @@ export function confidenceForCandidate(
  * Super Mario World + vacation-photo.zip => REJECT
  * Mario + Mario Kart.zip => REJECT (not HIGH)
  * Mario with [Mario Kart.zip, Mario Tennis.zip] => no single HIGH auto-import
+ * Pokémon + Pokémon (USA).zip => HIGH (Unicode é retained)
+ * Non-Latin titles retain Unicode letters consistently with Rust
  */
 export function evaluateCandidates(
   normalizedExpected: string,
