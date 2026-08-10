@@ -1270,7 +1270,7 @@ function AppInner() {
   // Now early returns safe – all hooks already called unconditionally
   if (machineLoading || manifestLoading) {
     return (
-      <div style={{ width: '100vw', height: '100vh', display: 'grid', placeItems: 'center', background: 'var(--crystal-bg)', color: 'var(--crystal-ink)' }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: 'var(--crystal-bg)', color: 'var(--crystal-ink)' }}>
         <div style={{ opacity: 0.6, fontSize: 12, letterSpacing: '0.08em' }}>crystal frontend • loading machine…</div>
       </div>
     )
@@ -1279,7 +1279,7 @@ function AppInner() {
   if (machineError) {
     const isBlocking = !!(blockingError || (typeof machineError === 'string' && machineError.includes('Real machine configuration failed')))
     return (
-      <div style={{ width: '100vw', height: '100vh', display: 'grid', placeItems: 'center', background: 'var(--crystal-bg)', color: 'var(--crystal-ink)', padding: 24 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: 'var(--crystal-bg)', color: 'var(--crystal-ink)', padding: 24 }}>
         <div style={{ maxWidth: 640, fontSize: 13, lineHeight: 1.5, fontFamily: 'var(--crystal-mono)' }}>
           <div style={{ marginBottom: 10, fontFamily: 'var(--crystal-display)', fontSize: 14, fontWeight: 500, color: isBlocking ? '#ff7b7b' : 'var(--crystal-ink)' }}>{isBlocking ? 'Real machine configuration failed – blocking' : 'Machine manifest failed to load'}</div>
           <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, background: 'var(--crystal-glass)', border: `1px solid ${isBlocking ? 'rgba(255,107,107,0.25)' : 'var(--crystal-line)'}`, padding: 14, borderRadius: 10, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{machineError}</div>
@@ -1300,7 +1300,7 @@ function AppInner() {
 
   if (config && populatedSystems.length === 0) {
     return (
-      <div style={{ width: '100vw', height: '100vh', display: 'grid', placeItems: 'center', background: 'var(--crystal-bg,#0a0a0f)', color: 'var(--crystal-ink)', padding: 24 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: 'var(--crystal-bg,#0a0a0f)', color: 'var(--crystal-ink)', padding: 24 }}>
         <div style={{ maxWidth: 560, fontSize: 13, lineHeight: 1.6, fontFamily: 'var(--crystal-mono)', border: '1px solid var(--crystal-line)', background: 'var(--crystal-glass)', padding: 18, borderRadius: 12 }}>
           <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>Machine reports 0 populated systems</div>
         </div>
@@ -1309,7 +1309,7 @@ function AppInner() {
   }
 
   return (
-    <div className={`fullscreen-root ${theme}-theme`} style={{ width: '100vw', height: '100vh', overflow: 'hidden', position: 'relative', background: '#0a0a0f' }}>
+    <div className={`fullscreen-root ${theme}-theme`} style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative', background: '#0a0a0f' }}>
       {view === 'system' && (
         <div style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'hidden' }}>
           {bgUrl ? (

@@ -11,11 +11,13 @@
     "windows": [
       {
         "center": true,
+        "backgroundColor": "#0a0a0f",
         "decorations": false,
         "fullscreen": true,
         "height": 1080,
         "label": "main",
-        "resizable": true,
+        "resizable": false,
+        "shadow": false,
         "title": "Crystal Frontend",
         "width": 1920
       }
