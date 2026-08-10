@@ -28,5 +28,6 @@ reqwest = { version = "0.12", features = ["rustls-tls"], default-features = fals
 url = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+sevenz-rust = "0.6"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"

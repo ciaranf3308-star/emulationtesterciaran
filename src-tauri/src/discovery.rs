@@ -35,6 +35,18 @@ fn log_minimal(level: &str, msg: &str) {
     try_log(level, msg);
 }
 
+fn is_allowed_vault_path(path: &str) -> bool {
+    path == "/vault" || path == "/vault/" || path.starts_with("/vault/")
+}
+
+fn is_allowed_port(url: &Url) -> bool {
+    match url.port() {
+        None => true,
+        Some(443) => true,
+        Some(_) => false,
+    }
+}
+
 /// Custom redirect policy – only allow redirects staying on vimm.net host,
 /// with same path guard as primary fetch and no credentials.
 fn is_allowed_redirect(url: &Url) -> bool {
@@ -44,8 +56,12 @@ fn is_allowed_redirect(url: &Url) -> bool {
     if url.host_str() != Some("vimm.net") {
         return false;
     }
+    if !is_allowed_port(url) {
+        return false;
+    }
     // Must remain inside /vault – prevents open-redirect to other vimm paths
-    if !url.path().starts_with("/vault") {
+    // Strict: exact /vault or /vault/ prefix, not /vaultevil
+    if !is_allowed_vault_path(url.path()) {
         return false;
     }
     // Reject any embedded credentials (username / password)
@@ -106,8 +122,19 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
         }
     }
 
-    // Path must start with /vault (defense-in-depth)
-    if !parsed.path().starts_with("/vault") {
+    // Port must be default or 443 only
+    if !is_allowed_port(&parsed) {
+        let msg = format!(
+            "fetch_vimm rejects custom port {} for url '{}'",
+            parsed.port().unwrap_or(0),
+            url
+        );
+        log_minimal("warn", &msg);
+        return Err(msg);
+    }
+
+    // Path must be /vault family – exact or prefix with slash boundary
+    if !is_allowed_vault_path(parsed.path()) {
         let msg = format!(
             "fetch_vimm only allows /vault paths, got '{}' for url '{}'",
             parsed.path(),
@@ -197,23 +224,67 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
         return Err(msg);
     }
 
-    // Read body as string – cap to reasonable size (e.g., 2MB) to avoid DoS
-    let body = resp.text().await.map_err(|e| {
-        let msg = format!("fetch_vimm failed reading body: {}", e);
+    // Size guard – inspect Content-Length first when present
+    const MAX_BODY: u64 = 2_000_000;
+    const MAX_BODY_USIZE: usize = 2_000_000;
+
+    if let Some(declared) = resp.content_length() {
+        if declared > MAX_BODY {
+            let msg = format!(
+                "fetch_vimm body too large declared {} bytes > {} for url '{}' – rejecting",
+                declared, MAX_BODY, url
+            );
+            log_minimal("warn", &msg);
+            return Err(msg);
+        }
+    }
+
+    // Stream/read incrementally, stop after maximum + 1 byte, never accumulate unbounded response
+    // Uses reqwest chunk() API which does not require extra stream feature
+    let mut acc: Vec<u8> = Vec::with_capacity(std::cmp::min(
+        resp.content_length().unwrap_or(0) as usize,
+        MAX_BODY_USIZE + 1,
+    ));
+    let mut resp_mut = resp;
+    loop {
+        let chunk_opt = resp_mut.chunk().await.map_err(|e| {
+            let msg = format!("fetch_vimm failed reading body chunk: {}", e);
+            log_minimal("warn", &msg);
+            msg
+        })?;
+        match chunk_opt {
+            None => break,
+            Some(bytes) => {
+                if acc.len() + bytes.len() > MAX_BODY_USIZE + 1 {
+                    let msg = format!(
+                        "fetch_vimm body too large {}+ bytes > {} for url '{}' – rejecting",
+                        acc.len() + bytes.len(),
+                        MAX_BODY,
+                        url
+                    );
+                    log_minimal("warn", &msg);
+                    return Err(msg);
+                }
+                acc.extend_from_slice(&bytes);
+                if acc.len() > MAX_BODY_USIZE {
+                    let msg = format!(
+                        "fetch_vimm body too large {} bytes for url '{}' – rejecting",
+                        acc.len(),
+                        url
+                    );
+                    log_minimal("warn", &msg);
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    // Preserve UTF-8/string result semantics
+    let body = String::from_utf8(acc).map_err(|e| {
+        let msg = format!("fetch_vimm body not valid utf-8: {} for url '{}'", e, url);
         log_minimal("warn", &msg);
         msg
     })?;
-
-    // Size guard
-    if body.len() > 2_000_000 {
-        let msg = format!(
-            "fetch_vimm body too large {} bytes for url '{}' – rejecting",
-            body.len(),
-            url
-        );
-        log_minimal("warn", &msg);
-        return Err(msg);
-    }
 
     // Do NOT log HTML content, do NOT log cookies/headers
     Ok(body)
@@ -530,5 +601,100 @@ mod tests {
         // Ensure relative path itself is safe
         let abs = crate::safety::resolve_writable_path(&rel).unwrap();
         assert!(!abs.to_string_lossy().contains(".."));
+    }
+
+    #[test]
+    fn test_vault_path_boundary_strict() {
+        // Allowed: /vault, /vault/, /vault/...
+        let allowed = vec![
+            "https://vimm.net/vault",
+            "https://vimm.net/vault/",
+            "https://vimm.net/vault/12345",
+            "https://vimm.net/vault/?p=list&system=PS2&q=mario",
+            "https://vimm.net/vault/12345/",
+        ];
+        for url_str in allowed {
+            let u = Url::parse(url_str).unwrap();
+            assert!(is_allowed_vault_path(u.path()), "should allow {}", url_str);
+            assert!(is_allowed_port(&u), "port ok for {}", url_str);
+            // host and scheme also ok
+            assert!(
+                is_allowed_redirect(&u) || u.path() == "/vault" || u.path() == "/vault/",
+                "redirect check for {}",
+                url_str
+            );
+            // overall validate via is_allowed_vault_path + port + redirect combined: for primary allow we want path ok
+        }
+
+        // Rejected: vaultevil family
+        let rejected = vec![
+            "https://vimm.net/vaultevil",
+            "https://vimm.net/vault-evil",
+            "https://vimm.net/vaultfoo",
+            "https://vimm.net/vault_evil",
+            "https://vimm.net/vaultx/123",
+        ];
+        for url_str in rejected {
+            let u = Url::parse(url_str).unwrap();
+            assert!(
+                !is_allowed_vault_path(u.path()),
+                "should reject path {}",
+                url_str
+            );
+            assert!(
+                !is_allowed_redirect(&u),
+                "redirect should reject {}",
+                url_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_port_rejection() {
+        let bad_ports = vec![
+            "https://vimm.net:444/vault/123",
+            "https://vimm.net:8080/vault/",
+            "https://vimm.net:8443/vault/123",
+            "https://vimm.net:80/vault/",
+        ];
+        for url_str in bad_ports {
+            let u = Url::parse(url_str).unwrap();
+            assert!(!is_allowed_port(&u), "should reject port for {}", url_str);
+            assert!(
+                !is_allowed_redirect(&u),
+                "redirect should reject port {}",
+                url_str
+            );
+        }
+        let good_ports = vec![
+            "https://vimm.net/vault/123",     // default no port
+            "https://vimm.net:443/vault/123", // explicit 443 allowed
+            "https://vimm.net/vault/",
+        ];
+        for url_str in good_ports {
+            let u = Url::parse(url_str).unwrap();
+            assert!(is_allowed_port(&u), "should allow port for {}", url_str);
+        }
+    }
+
+    #[test]
+    fn test_credentials_rejected() {
+        let bad = vec![
+            "https://user:pass@vimm.net/vault/123",
+            "https://user@vimm.net/vault/123",
+        ];
+        for url_str in bad {
+            let u = Url::parse(url_str).unwrap();
+            assert!(
+                !u.username().is_empty() || u.password().is_some(),
+                "url {} has creds",
+                url_str
+            );
+            assert!(
+                !is_allowed_redirect(&u),
+                "redirect should reject creds {}",
+                url_str
+            );
+        }
     }
 }

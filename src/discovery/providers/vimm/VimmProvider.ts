@@ -45,6 +45,12 @@ async function tauriFetchVimm(url: string, signal?: AbortSignal): Promise<string
     const u = new URL(url);
     if (u.protocol !== 'https:') throw new Error(`Only https allowed, got ${u.protocol}`);
     if (u.hostname !== 'vimm.net') throw new Error(`Host must be vimm.net, got ${u.hostname}`);
+    if (u.port && u.port !== '' && u.port !== '443') throw new Error(`Custom port ${u.port} not allowed`);
+    if (u.username || u.password) throw new Error('Credentials not allowed');
+    const path = u.pathname;
+    if (path !== '/vault' && path !== '/vault/' && !path.startsWith('/vault/')) {
+      throw new Error(`Path must be /vault or /vault/..., got ${path} – vaultevil rejected`);
+    }
   } catch (e) {
     throw new Error(`Vimm URL validation failed: ${(e as Error).message}`);
   }

@@ -170,8 +170,12 @@ export function DiscoverView({
       }
     }
     doSearch()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      try { abortRef.current?.abort() } catch {}
+    }
   }, [debounced, systemId])
+
 
   // focus follow scroll
   useEffect(() => {

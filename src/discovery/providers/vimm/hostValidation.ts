@@ -19,8 +19,18 @@ export function validateHost(urlStr: string): { valid: boolean; reason?: string;
     if (!isAllowedHost(u.hostname)) {
       return { valid: false, reason: `host ${u.hostname} not allowed – only ${VIMM_HOST}` };
     }
-    if (!u.pathname.startsWith('/vault')) {
-      return { valid: false, reason: `path must start /vault, got ${u.pathname}` };
+    // Port: only default (empty) or 443 allowed
+    if (u.port && u.port !== '' && u.port !== '443') {
+      return { valid: false, reason: `custom port ${u.port} not allowed` };
+    }
+    // No credentials
+    if (u.username || u.password) {
+      return { valid: false, reason: `credentials not allowed` };
+    }
+    const path = u.pathname;
+    // Strict vault family: /vault, /vault/, /vault/...
+    if (path !== '/vault' && path !== '/vault/' && !path.startsWith('/vault/')) {
+      return { valid: false, reason: `path must be /vault or /vault/..., got ${path}` };
     }
     return { valid: true, parsed: u };
   } catch (e) {

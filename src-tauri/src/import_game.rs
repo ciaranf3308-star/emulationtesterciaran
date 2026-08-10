@@ -156,6 +156,116 @@ fn ensure_inside_staging(staging: &Path, candidate: &Path) -> Result<(), String>
     Ok(())
 }
 
+// V8.6H1 Windows destination component validation – fail closed, do NOT sanitize
+fn is_reserved_dos_basename(base: &str) -> bool {
+    let upper = base.to_ascii_uppercase();
+    // exact CON PRN AUX NUL
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // COM1-9 LPT1-9
+    if upper.len() == 4 {
+        if (upper.starts_with("COM") || upper.starts_with("LPT")) {
+            if let Some(c) = upper.chars().nth(3) {
+                if ('1'..='9').contains(&c) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_windows_reserved_component(comp_str: &str) -> bool {
+    // Trim? Windows reserved check uses stem before first dot
+    let stem = match comp_str.split('.').next() {
+        Some(s) => s,
+        None => comp_str,
+    };
+    if stem.is_empty() {
+        return false;
+    }
+    is_reserved_dos_basename(stem)
+}
+
+fn validate_windows_dest_component(comp: &std::ffi::OsStr) -> Result<(), String> {
+    let s = comp.to_string_lossy();
+    // Preserve Unicode – do NOT sanitize, only reject invalid patterns
+    if s.is_empty() {
+        return Err("WINDOWS_INVALID_DEST_COMPONENT: empty path component".to_string());
+    }
+    // Illegal chars < > : \" / \\ | ? * and control 0..=31
+    for ch in s.chars() {
+        if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+            return Err(format!(
+                "WINDOWS_INVALID_DEST_COMPONENT: illegal char '{}' in '{}'",
+                ch, s
+            ));
+        }
+        if (ch as u32) <= 31 {
+            return Err(format!(
+                "WINDOWS_INVALID_DEST_COMPONENT: control char in '{}'",
+                s
+            ));
+        }
+        if ch == '\0' {
+            return Err(format!(
+                "WINDOWS_INVALID_DEST_COMPONENT: null char in '{}'",
+                s
+            ));
+        }
+    }
+    // Trailing dot or space – Windows forbids and strips silently, leading to collisions; fail closed
+    if s.ends_with('.') {
+        return Err(format!(
+            "WINDOWS_INVALID_DEST_COMPONENT: trailing dot in '{}'",
+            s
+        ));
+    }
+    if s.ends_with(' ') {
+        return Err(format!(
+            "WINDOWS_INVALID_DEST_COMPONENT: trailing space in '{}'",
+            s
+        ));
+    }
+    // Reserved DOS names including with extensions
+    if is_windows_reserved_component(&s) {
+        return Err(format!(
+            "WINDOWS_INVALID_DEST_COMPONENT: reserved DOS name '{}'",
+            s
+        ));
+    }
+    Ok(())
+}
+
+fn validate_windows_dest_rel(rel: &Path) -> Result<(), String> {
+    // Check each normal component only – no traversal check here (done elsewhere)
+    for comp in rel.components() {
+        match comp {
+            std::path::Component::Normal(os) => {
+                validate_windows_dest_component(os)?;
+            }
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "WINDOWS_INVALID_DEST_COMPONENT: illegal component {:?} in '{}'",
+                    comp,
+                    rel.display()
+                ));
+            }
+            std::path::Component::CurDir => {
+                // "." components should not appear in our mapping but reject for safety
+                return Err(format!(
+                    "WINDOWS_INVALID_DEST_COMPONENT: curdir component in '{}'",
+                    rel.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn is_cue_file_ref_escaped(ref_name: &str) -> bool {
     let trimmed = ref_name.trim();
     if trimmed.is_empty() {
@@ -670,8 +780,293 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             ));
         }
     } else if src_ext.eq_ignore_ascii_case("7z") {
-        cleanup_staging(&staging_dir);
-        return Err("UNSUPPORTED_ARCHIVE_7Z_DEFERRED_TO_V86B".to_string());
+        // --- V8.6H1 SAFE 7z extraction (maintained sevenz-rust 0.6.1) ---
+        // Pre-scan archive entries for safety before any extraction
+        let archive = match sevenz_rust::Archive::open(&src_path) {
+            Ok(a) => a,
+            Err(e) => {
+                cleanup_staging(&staging_dir);
+                return Err(format!("7Z_INVALID: {}", e));
+            }
+        };
+
+        if archive.files.is_empty() {
+            cleanup_staging(&staging_dir);
+            return Err("EMPTY_ARCHIVE".to_string());
+        }
+        if archive.files.len() > MAX_ZIP_FILES {
+            cleanup_staging(&staging_dir);
+            return Err(format!(
+                "ZIP_TOO_MANY_FILES: {} > {}",
+                archive.files.len(),
+                MAX_ZIP_FILES
+            ));
+        }
+
+        let mut total_uncompressed: u64 = 0;
+        let mut stream_file_count = 0usize;
+        for entry in &archive.files {
+            if entry.is_anti_item() {
+                cleanup_staging(&staging_dir);
+                return Err(format!(
+                    "ZIP_TRAVERSAL_BLOCKED: anti-item '{}' rejected",
+                    entry.name()
+                ));
+            }
+            let name = entry.name();
+            if name.is_empty() {
+                continue;
+            }
+            if is_path_traversal_entry(name) {
+                cleanup_staging(&staging_dir);
+                return Err(format!("ZIP_TRAVERSAL_BLOCKED: entry '{}' rejected", name));
+            }
+            // Drive-qualified / colon / device / UNC blocking within archive entries
+            if name.contains(':') {
+                cleanup_staging(&staging_dir);
+                return Err(format!(
+                    "ZIP_TRAVERSAL_BLOCKED: entry '{}' colon/device rejected",
+                    name
+                ));
+            }
+            if entry.has_windows_attributes {
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
+                const FILE_ATTRIBUTE_DEVICE: u32 = 0x00000040;
+                if (entry.windows_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    cleanup_staging(&staging_dir);
+                    return Err(format!("7Z_SYMLINK_BLOCKED: entry '{}'", name));
+                }
+                if (entry.windows_attributes & FILE_ATTRIBUTE_DEVICE) != 0 {
+                    cleanup_staging(&staging_dir);
+                    return Err(format!("7Z_SPECIAL_FILE_BLOCKED: entry '{}'", name));
+                }
+            }
+            if entry.has_stream && !entry.is_directory {
+                stream_file_count += 1;
+                let sz = entry.size;
+                if sz > MAX_SINGLE_FILE {
+                    cleanup_staging(&staging_dir);
+                    return Err(format!("ZIP_FILE_TOO_LARGE: entry '{}' {} bytes", name, sz));
+                }
+                total_uncompressed = total_uncompressed.saturating_add(sz);
+                if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
+                    cleanup_staging(&staging_dir);
+                    return Err(format!(
+                        "ZIP_TOTAL_TOO_LARGE: {} bytes > {}",
+                        total_uncompressed, MAX_TOTAL_UNCOMPRESSED
+                    ));
+                }
+            }
+        }
+
+        // Decompress to staging only after validation
+        if let Err(e) = sevenz_rust::decompress_file(&src_path, &staging_dir) {
+            cleanup_staging(&staging_dir);
+            return Err(format!("7Z_DECOMPRESS_FAILED: {}", e));
+        }
+
+        // Mirror ZIP safety: ensure extracted files stay in staging (decompress_file should, but double-check via walk)
+        let mut valid_candidates_7z: Vec<PathBuf> = Vec::new();
+        let mut dirs_to_visit = vec![staging_dir.clone()];
+        while let Some(dir) = dirs_to_visit.pop() {
+            let entries = fs::read_dir(&dir).map_err(|e| {
+                cleanup_staging(&staging_dir);
+                format!("STAGING_READDIR_FAILED '{}': {}", dir.display(), e)
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|e| {
+                    cleanup_staging(&staging_dir);
+                    format!("STAGING_ENTRY_FAILED: {}", e)
+                })?;
+                let p = entry.path();
+                if p.is_dir() {
+                    // Ensure dir still inside staging
+                    if !p.starts_with(&staging_dir) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!("7Z_ESCAPE_BLOCKED: '{}'", p.display()));
+                    }
+                    dirs_to_visit.push(p);
+                } else if p.is_file() {
+                    if !p.starts_with(&staging_dir) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!("7Z_ESCAPE_BLOCKED: '{}'", p.display()));
+                    }
+                    let ext = ext_of_path(&p);
+                    if extension_allowed(&ext, &valid_exts) {
+                        valid_candidates_7z.push(p);
+                    }
+                } else {
+                    // symlink / special – reject
+                    if let Ok(meta) = fs::symlink_metadata(&p) {
+                        if meta.file_type().is_symlink() {
+                            cleanup_staging(&staging_dir);
+                            return Err(format!("7Z_SYMLINK_BLOCKED: '{}'", p.display()));
+                        }
+                    }
+                }
+            }
+        }
+
+        if valid_candidates_7z.is_empty() {
+            cleanup_staging(&staging_dir);
+            return Err("NO_VALID_ROM_IN_ARCHIVE".to_string());
+        }
+
+        // --- CUE handling (same semantics as ZIP) ---
+        let cue_candidates: Vec<_> = valid_candidates_7z
+            .iter()
+            .filter(|p| ext_of_path(p).eq_ignore_ascii_case("cue"))
+            .cloned()
+            .collect();
+
+        if cue_candidates.len() == 1 {
+            let cue_path = &cue_candidates[0];
+            let refs = parse_cue_referenced_files(cue_path).map_err(|e| {
+                cleanup_staging(&staging_dir);
+                e
+            })?;
+            if !refs.is_empty() {
+                let mut missing = Vec::new();
+                let mut referenced_full_paths = Vec::new();
+                for ref_name in &refs {
+                    if is_cue_file_ref_escaped(ref_name) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!("CUE_FILE_REF_ESCAPE_BLOCKED: '{}'", ref_name));
+                    }
+                    if is_path_traversal_entry(ref_name) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!("CUE_FILE_REF_ESCAPE_BLOCKED: '{}'", ref_name));
+                    }
+                    let cue_dir = cue_path.parent().unwrap_or(&staging_dir);
+                    let candidate_exact = cue_dir.join(ref_name);
+                    if !candidate_exact.starts_with(&staging_dir) {
+                        cleanup_staging(&staging_dir);
+                        return Err(format!(
+                            "CUE_FILE_REF_ESCAPE_BLOCKED: '{}' escapes staging",
+                            ref_name
+                        ));
+                    }
+                    let mut found_path: Option<PathBuf> = None;
+                    if candidate_exact.exists() && candidate_exact.is_file() {
+                        if let Ok(canonical) = candidate_exact.canonicalize() {
+                            if let Ok(staging_canon) = staging_dir.canonicalize() {
+                                if !canonical.starts_with(&staging_canon) {
+                                    cleanup_staging(&staging_dir);
+                                    return Err(format!(
+                                        "CUE_FILE_REF_ESCAPE_BLOCKED: '{}' escapes staging",
+                                        ref_name
+                                    ));
+                                }
+                            }
+                        }
+                        found_path = Some(candidate_exact);
+                    } else if let Ok(entries) = fs::read_dir(cue_dir) {
+                        for e in entries.flatten() {
+                            let p = e.path();
+                            if !p.is_file() {
+                                continue;
+                            }
+                            let rel_candidate = match p.strip_prefix(cue_dir) {
+                                Ok(r) => r.to_string_lossy().to_string(),
+                                Err(_) => continue,
+                            };
+                            if rel_candidate.eq_ignore_ascii_case(ref_name)
+                                || p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|fname| {
+                                        let ref_file = Path::new(ref_name)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or(ref_name);
+                                        fname.eq_ignore_ascii_case(ref_file) && {
+                                            let ref_parent = Path::new(ref_name).parent();
+                                            let cand_parent = p
+                                                .parent()
+                                                .and_then(|par| par.strip_prefix(cue_dir).ok());
+                                            match (ref_parent, cand_parent) {
+                                                (Some(rp), Some(cp)) => rp
+                                                    .to_string_lossy()
+                                                    .eq_ignore_ascii_case(&cp.to_string_lossy()),
+                                                (None, Some(cp)) => cp.as_os_str().is_empty(),
+                                                (Some(rp), None) => rp.as_os_str().is_empty(),
+                                                (None, None) => true,
+                                            }
+                                        }
+                                    })
+                                    .unwrap_or(false)
+                            {
+                                found_path = Some(p);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(fp) = found_path {
+                        referenced_full_paths.push(fp);
+                    } else {
+                        missing.push(ref_name.clone());
+                    }
+                }
+                if !missing.is_empty() {
+                    cleanup_staging(&staging_dir);
+                    return Err(format!("INCOMPLETE_CUE_SET: missing {:?}", missing));
+                }
+                let mut expected_set = HashSet::new();
+                expected_set.insert(cue_path.clone());
+                for rp in &referenced_full_paths {
+                    expected_set.insert(rp.clone());
+                }
+                let extra: Vec<_> = valid_candidates_7z
+                    .iter()
+                    .filter(|p| !expected_set.contains(*p))
+                    .cloned()
+                    .collect();
+                if !extra.is_empty() {
+                    cleanup_staging(&staging_dir);
+                    let extra_names: Vec<String> =
+                        extra.iter().map(|p| p.display().to_string()).collect();
+                    return Err(format!(
+                        "AMBIGUOUS_MULTIPLE_ROMS: extra files {:?}",
+                        extra_names
+                    ));
+                }
+                files_to_install = expected_set.into_iter().collect();
+                detected_files = files_to_install
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+            } else {
+                if valid_candidates_7z.len() > 1 {
+                    cleanup_staging(&staging_dir);
+                    return Err("AMBIGUOUS_MULTIPLE_ROMS".to_string());
+                }
+                files_to_install = valid_candidates_7z.clone();
+                detected_files = files_to_install
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+            }
+        } else if cue_candidates.len() > 1 {
+            cleanup_staging(&staging_dir);
+            return Err("AMBIGUOUS_MULTIPLE_CUE".to_string());
+        } else {
+            if valid_candidates_7z.len() > 1 {
+                cleanup_staging(&staging_dir);
+                return Err("AMBIGUOUS_MULTIPLE_ROMS".to_string());
+            }
+            files_to_install = valid_candidates_7z.clone();
+            detected_files = files_to_install
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+        }
+
+        if files_to_install.len() > MAX_FILES_TO_INSTALL {
+            cleanup_staging(&staging_dir);
+            return Err(format!(
+                "TOO_MANY_FILES_TO_INSTALL: {}",
+                files_to_install.len()
+            ));
+        }
     } else {
         cleanup_staging(&staging_dir);
         return Err(format!(
@@ -779,6 +1174,12 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             }
         }
 
+        // V8.6H1 Windows dest component validation – before any mkdir/create_new
+        if let Err(e) = validate_windows_dest_rel(&rel) {
+            cleanup_staging(&staging_dir);
+            return Err(e);
+        }
+
         let dest_path = rom_dir.join(&rel);
         if !dest_path.starts_with(&rom_dir) {
             cleanup_staging(&staging_dir);
@@ -820,13 +1221,18 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             cleanup_staging(&staging_dir);
             return Ok(res);
         } else if identical_count == dest_paths_to_copy.len() {
+            // V8.6H1: ALREADY_INSTALLED must return exact existing destination paths proven identical
+            let exact_paths: Vec<String> = dest_paths_to_copy
+                .iter()
+                .map(|(_, d)| d.display().to_string())
+                .collect();
             let already = ImportResult {
                 status: "ALREADY_INSTALLED".to_string(),
                 systemId: system_id.clone(),
-                installedPaths: vec![],
+                installedPaths: exact_paths.clone(),
                 detectedFiles: detected_files.clone(),
                 destinationDirectory: rom_dir.display().to_string(),
-                collisionPaths: collision_paths.clone(),
+                collisionPaths: exact_paths,
                 errorCode: Some("ALREADY_INSTALLED".to_string()),
                 message: Some(format!("File already exists in {}", rom_dir.display())),
             };
@@ -911,13 +1317,14 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
                 }
                 cleanup_staging(&staging_dir);
                 if is_identical && dest_paths_to_copy.len() == 1 {
+                    let exact = dest.display().to_string();
                     return Ok(ImportResult {
                         status: "ALREADY_INSTALLED".to_string(),
                         systemId: system_id.clone(),
-                        installedPaths: vec![],
+                        installedPaths: vec![exact.clone()],
                         detectedFiles: detected_files.clone(),
                         destinationDirectory: rom_dir.display().to_string(),
-                        collisionPaths: vec![dest.display().to_string()],
+                        collisionPaths: vec![exact],
                         errorCode: Some("ALREADY_INSTALLED".to_string()),
                         message: Some("File already exists with identical content".to_string()),
                     });

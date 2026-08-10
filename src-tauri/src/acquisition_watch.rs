@@ -293,6 +293,49 @@ fn validate_custom_watch_dir(path: &Path) -> Result<(), String> {
     if s == "/" || s == "\\" {
         return Err("CUSTOM_WATCH_INVALID: filesystem root not allowed".to_string());
     }
+    // V8.6H1: reject symlink / junction / reparse – do NOT canonicalize silently
+    let smeta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            return Err(format!(
+                "CUSTOM_WATCH_INVALID: cannot stat '{}': {}",
+                path.display(),
+                e
+            ))
+        }
+    };
+    if smeta.file_type().is_symlink() {
+        return Err(format!(
+            "CUSTOM_WATCH_INVALID: symlink not allowed '{}'",
+            path.display()
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
+        let attrs = smeta.file_attributes();
+        if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            return Err(format!(
+                "CUSTOM_WATCH_INVALID: junction/reparse-point not allowed '{}'",
+                path.display()
+            ));
+        }
+    }
+    // Post-metadata existence checks still apply – ensure directory
+    if !smeta.file_type().is_dir() && !path.is_dir() {
+        // is_dir via follow may differ for reparse points already rejected above
+        if !path.exists() {
+            return Err(format!(
+                "CUSTOM_WATCH_INVALID: directory does not exist '{}'",
+                path.display()
+            ));
+        }
+        return Err(format!(
+            "CUSTOM_WATCH_INVALID: not a directory '{}'",
+            path.display()
+        ));
+    }
     if !path.exists() {
         return Err(format!(
             "CUSTOM_WATCH_INVALID: directory does not exist '{}'",
