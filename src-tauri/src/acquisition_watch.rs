@@ -1,7 +1,8 @@
-/// CRYSTAL FRONTEND V8.6B Acquisition Watcher – Rust backend
+/// CRYSTAL FRONTEND V8.6B.1 Acquisition Watcher – Rust backend
 /// Generic local acquisition watcher, provider-agnostic, source-agnostic.
 /// No Vimm code, no network, no arbitrary filesystem watch.
 /// Single active session, polling-based, zero cost when inactive.
+/// V8.6B.1 correction: baseline fingerprint + semantic alignment + early fail + collision.
 use crate::import_game::{import_game_source, ImportRequest, ImportResult};
 use crate::machine_config::{
     find_system_in_config, get_rom_dir_and_exts, load_machine_config_json,
@@ -86,6 +87,12 @@ struct CandidateState {
     last_seen: SystemTime,
 }
 
+#[derive(Debug, Clone)]
+struct BaselineFingerprint {
+    size: u64,
+    mtime_secs: u64,
+}
+
 #[derive(Debug)]
 struct AcquisitionSessionInternal {
     session_id: String,
@@ -96,7 +103,7 @@ struct AcquisitionSessionInternal {
     started_at: SystemTime,
     started_at_epoch: u64,
     state: AcquisitionState,
-    candidate_paths: Vec<PathBuf>, // current detected (top-level)
+    candidate_paths: Vec<PathBuf>,
     selected_candidate: Option<PathBuf>,
     last_observed_size: Option<u64>,
     stable_since: Option<SystemTime>,
@@ -104,8 +111,9 @@ struct AcquisitionSessionInternal {
     import_result: Option<ImportResult>,
     error_code: Option<String>,
     message: Option<String>,
-    baseline_files: HashSet<String>, // lowercased file names
-    candidate_states: HashMap<String, CandidateState>, // key = full path string lower? use path string
+    baseline_fingerprints: HashMap<String, BaselineFingerprint>, // key = lowercased filename
+    disappeared_baseline: HashSet<String>, // lowercased filenames that vanished after start
+    candidate_states: HashMap<String, CandidateState>,
     timeout_duration: Duration,
 }
 
@@ -175,6 +183,7 @@ pub fn normalize_title(input: &str) -> String {
     }
     let mut s = input.trim().to_string();
 
+    // Strip archive extensions case-insensitive – authoritative list
     let lower_for_ext = s.to_lowercase();
     let archive_exts = [
         ".zip", ".7z", ".rar", ".iso", ".cue", ".bin", ".chd", ".rvz", ".wud", ".wbfs",
@@ -188,18 +197,21 @@ pub fn normalize_title(input: &str) -> String {
 
     s = s.to_lowercase();
     s = s.replace('_', " ");
+    // Unicode apostrophes -> '
     s = s
         .replace('’', "'")
         .replace('‘', "'")
         .replace('`', "'")
         .replace('´', "'");
 
+    // Dashes/colons -> space (done before bracket stripping to keep parens intact)
     s = s
         .replace(':', " ")
         .replace('-', " ")
         .replace('–', " ")
         .replace('—', " ");
 
+    // Remove region / revision / meta suffixes inside () and []
     if let Ok(re_paren) = Regex::new(r"\([^)]*\)") {
         s = re_paren.replace_all(&s, " ").to_string();
     }
@@ -207,6 +219,7 @@ pub fn normalize_title(input: &str) -> String {
         s = re_bracket.replace_all(&s, " ").to_string();
     }
 
+    // Any non-alphanumeric non-whitespace -> space (punctuation, apostrophes, dots etc)
     s = s
         .chars()
         .map(|c| {
@@ -351,25 +364,46 @@ fn is_allowed_candidate(path: &Path, system_id: &str) -> bool {
     allowed.iter().any(|a| a == &ext)
 }
 
-fn baseline_snapshot(watch_dir: &Path) -> HashSet<String> {
-    let mut set = HashSet::new();
+fn baseline_fingerprint_snapshot(watch_dir: &Path) -> HashMap<String, BaselineFingerprint> {
+    let mut map = HashMap::new();
     if let Ok(entries) = fs::read_dir(watch_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
             if !is_safe_regular_file(&p) {
                 continue;
             }
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                set.insert(name.to_lowercase());
-            }
+            let name = match p.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let meta = match fs::metadata(&p) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let size = meta.len();
+            let mtime_secs = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            map.insert(
+                name.to_lowercase(),
+                BaselineFingerprint { size, mtime_secs },
+            );
         }
     }
-    set
+    map
 }
 
+// Scan candidates respecting baseline fingerprint + disappeared set.
+// A file that truly remains unchanged from before session is ignored.
+// Old file that disappeared and then new file with same name appears is eligible.
+// Mere touch of old file (still present continuously) must NOT become HIGH automatically -> we ignore continuously-present baseline files entirely.
 fn scan_new_candidates(
     watch_dir: &Path,
-    baseline: &HashSet<String>,
+    baseline: &HashMap<String, BaselineFingerprint>,
+    disappeared: &HashSet<String>,
     system_id: &str,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -389,9 +423,18 @@ fn scan_new_candidates(
             Some(s) => s,
             None => continue,
         };
-        if baseline.contains(&name.to_lowercase()) {
-            continue;
+        let key = name.to_lowercase();
+
+        // Baseline handling
+        if let Some(_fp) = baseline.get(&key) {
+            // If this baseline filename has previously disappeared, treat reappearance as new
+            if !disappeared.contains(&key) {
+                // Still continuously present since session start -> IGNORE regardless of mtime/size touch
+                continue;
+            }
+            // Else: it disappeared earlier and now reappeared – allow as candidate (fall through)
         }
+
         if is_temp_file(name) {
             continue;
         }
@@ -401,6 +444,36 @@ fn scan_new_candidates(
         out.push(p);
     }
     out
+}
+
+fn update_disappeared_tracking(
+    watch_dir: &Path,
+    baseline_keys: &HashMap<String, BaselineFingerprint>,
+    disappeared: &mut HashSet<String>,
+) {
+    // If a baseline file is now missing, mark it disappeared
+    for key in baseline_keys.keys() {
+        let candidate_path = watch_dir.join(key);
+        // Also try case-insensitive glob: since key is lowercased, we need to check existence case-insensitively.
+        // Simplest: check if any entry in dir matches lowercased key.
+        let mut exists = candidate_path.exists();
+        if !exists {
+            // Case-insensitive check via dir scan (cheap enough)
+            if let Ok(entries) = fs::read_dir(watch_dir) {
+                for e in entries.flatten() {
+                    if let Some(n) = e.file_name().to_str() {
+                        if n.to_lowercase() == *key {
+                            exists = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if !exists {
+            disappeared.insert(key.clone());
+        }
+    }
 }
 
 fn candidate_normalized_title(path: &Path) -> String {
@@ -486,6 +559,31 @@ pub fn start_acquisition_watch(
     customWatchDirectory: Option<String>,
     replaceExisting: Option<bool>,
 ) -> Result<AcquisitionSessionResponse, String> {
+    // ---- Early validation: fail fast ----
+    if systemId.trim().is_empty() {
+        return Err("SYSTEM_ID_EMPTY".to_string());
+    }
+    if expectedTitle.trim().is_empty() {
+        return Err("EXPECTED_TITLE_EMPTY".to_string());
+    }
+    let normalized_early = normalize_title(&expectedTitle);
+    if normalized_early.is_empty() {
+        return Err("EXPECTED_TITLE_EMPTY".to_string());
+    }
+
+    // Validate system exists in authoritative machine config and validExtensions non-empty
+    let cfg = load_machine_config_json().map_err(|e| format!("SYSTEM_CONFIG_INVALID: {}", e))?;
+    let sys_json = find_system_in_config(&cfg, systemId.trim());
+    let sys_json = match sys_json {
+        Some(v) => v,
+        None => return Err("UNKNOWN_SYSTEM".to_string()),
+    };
+    let (_rom_dir, valid_exts) =
+        get_rom_dir_and_exts(sys_json).map_err(|e| format!("SYSTEM_CONFIG_INVALID: {}", e))?;
+    if valid_exts.is_empty() {
+        return Err("SYSTEM_CONFIG_INVALID".to_string());
+    }
+
     let replace = replaceExisting.unwrap_or(false);
     let guard = session_mutex();
     let mut opt = guard.lock().map_err(|e| format!("LOCK_POISONED: {}", e))?;
@@ -527,17 +625,17 @@ pub fn start_acquisition_watch(
         ));
     }
 
-    let baseline = baseline_snapshot(&watch_dir);
+    let baseline = baseline_fingerprint_snapshot(&watch_dir);
 
-    let normalized = normalize_title(&expectedTitle);
+    let normalized = normalized_early;
     let session_id = Uuid::new_v4().to_string();
     let now = SystemTime::now();
     let epoch = now_epoch_secs();
 
     let session = AcquisitionSessionInternal {
         session_id: session_id.clone(),
-        system_id: systemId,
-        expected_title: expectedTitle,
+        system_id: systemId.trim().to_string(),
+        expected_title: expectedTitle.trim().to_string(),
         normalized_expected: normalized,
         watch_directory: watch_dir.clone(),
         started_at: now,
@@ -551,7 +649,8 @@ pub fn start_acquisition_watch(
         import_result: None,
         error_code: None,
         message: None,
-        baseline_files: baseline,
+        baseline_fingerprints: baseline,
+        disappeared_baseline: HashSet::new(),
         candidate_states: HashMap::new(),
         timeout_duration: Duration::from_secs(25 * 60),
     };
@@ -623,9 +722,19 @@ pub fn get_acquisition_watch_status(
         }
     }
 
+    // Update disappeared tracking for baseline files that vanished after start
+    let watch_dir_clone = session.watch_directory.clone();
+    let baseline_clone = session.baseline_fingerprints.clone();
+    update_disappeared_tracking(
+        &watch_dir_clone,
+        &baseline_clone,
+        &mut session.disappeared_baseline,
+    );
+
     let candidates = scan_new_candidates(
         &session.watch_directory,
-        &session.baseline_files,
+        &session.baseline_fingerprints,
+        &session.disappeared_baseline,
         &session.system_id,
     );
 
@@ -800,23 +909,14 @@ pub fn get_acquisition_watch_status(
                     session.state = AcquisitionState::AlreadyInstalled;
                 }
                 "COLLISION" => {
-                    session.state = AcquisitionState::Failed;
-                    session.error_code = Some("COLLISION".to_string());
-                    session.message = res
-                        .message
-                        .clone()
-                        .or_else(|| Some("Collision detected".to_string()));
+                    session.state = AcquisitionState::Collision;
+                    session.error_code = res.errorCode.clone().or(Some("COLLISION".to_string()));
+                    session.message = res.message.clone();
                 }
                 _ => {
-                    if res.status == "INSTALLED" {
-                        session.state = AcquisitionState::Installed;
-                    } else if res.status == "ALREADY_INSTALLED" {
-                        session.state = AcquisitionState::AlreadyInstalled;
-                    } else {
-                        session.state = AcquisitionState::Failed;
-                        session.error_code = res.errorCode.clone().or(Some(res.status.clone()));
-                        session.message = res.message.clone();
-                    }
+                    session.state = AcquisitionState::Failed;
+                    session.error_code = res.errorCode.clone().or(Some(res.status.clone()));
+                    session.message = res.message.clone();
                 }
             }
             log_event(
@@ -835,7 +935,12 @@ pub fn get_acquisition_watch_status(
             } else {
                 e.clone()
             };
-            session.state = AcquisitionState::Failed;
+            // Detect collision via code string as well
+            if code.contains("COLLISION") {
+                session.state = AcquisitionState::Collision;
+            } else {
+                session.state = AcquisitionState::Failed;
+            }
             session.error_code = Some(code.clone());
             session.message = Some(e.clone());
             log_event(
@@ -934,7 +1039,9 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let _guard = acquire_shared_test_env_lock();
+        // Caller must hold acquire_shared_test_env_lock for env-var safety.
+        // This helper intentionally does NOT acquire the lock itself to avoid
+        // double-lock deadlocks when outer tests already hold it.
         let td = TempDir::new().unwrap();
         let cfg_path = td.path().join("crystal-machine-config.json");
         let cfg = create_mock_config(rom_dir, exts);
@@ -979,13 +1086,15 @@ mod tests {
 
     #[test]
     fn baseline_ignores_old_file() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let watch = td.path();
         fs::write(watch.join("old.zip"), b"old").unwrap();
-        let baseline = baseline_snapshot(watch);
-        assert!(baseline.contains("old.zip"));
+        let baseline = baseline_fingerprint_snapshot(watch);
+        assert!(baseline.contains_key("old.zip"));
 
-        let candidates = scan_new_candidates(watch, &baseline, "gbc");
+        let disappeared = HashSet::new();
+        let candidates = scan_new_candidates(watch, &baseline, &disappeared, "gbc");
         assert!(candidates.is_empty());
 
         fs::write(watch.join("new.zip"), b"new").unwrap();
@@ -993,7 +1102,7 @@ mod tests {
         let rom_dir = rom_td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
         let detected = with_test_config(&rom_dir, vec!["zip", "gbc", "gb"], || {
-            scan_new_candidates(watch, &baseline, "gbc")
+            scan_new_candidates(watch, &baseline, &disappeared, "gbc")
         });
         assert_eq!(detected.len(), 1);
         assert!(detected[0]
@@ -1004,10 +1113,69 @@ mod tests {
     }
 
     #[test]
-    fn new_valid_candidate_detected() {
+    fn baseline_same_name_new_download_after_old_removed_eligible() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let watch = td.path();
-        let baseline = baseline_snapshot(watch);
+        fs::write(watch.join("Game.zip"), b"oldcontent").unwrap();
+        let baseline = baseline_fingerprint_snapshot(watch);
+        assert!(baseline.contains_key("game.zip"));
+
+        // Simulate old file removed after session start
+        fs::remove_file(watch.join("Game.zip")).unwrap();
+        let mut disappeared = HashSet::new();
+        update_disappeared_tracking(watch, &baseline, &mut disappeared);
+        assert!(disappeared.contains("game.zip"));
+
+        // New file with same name created afterward
+        fs::write(watch.join("Game.zip"), b"newcontent genuinely new").unwrap();
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cands = with_test_config(&rom_dir, vec!["zip"], || {
+            scan_new_candidates(watch, &baseline, &disappeared, "gbc")
+        });
+        assert_eq!(
+            cands.len(),
+            1,
+            "new download after old removed must be eligible"
+        );
+        assert_eq!(cands[0].file_name().unwrap().to_string_lossy(), "Game.zip");
+    }
+
+    #[test]
+    fn baseline_mere_touch_not_auto_imported() {
+        let _guard = acquire_shared_test_env_lock();
+        let td = TempDir::new().unwrap();
+        let watch = td.path();
+        fs::write(watch.join("Game.zip"), b"content").unwrap();
+        let baseline = baseline_fingerprint_snapshot(watch);
+
+        // Simulate touch by updating modified time via writing same content again (size same but mtime changes)
+        // No deletion – disappeared stays empty
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Rewrite same bytes to bump mtime without changing disappearance status
+        fs::write(watch.join("Game.zip"), b"content").unwrap();
+
+        let disappeared = HashSet::new(); // never disappeared
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let cands = with_test_config(&rom_dir, vec!["zip"], || {
+            scan_new_candidates(watch, &baseline, &disappeared, "gbc")
+        });
+        assert!(
+            cands.is_empty(),
+            "mere touch of old file must NOT become candidate"
+        );
+    }
+
+    #[test]
+    fn new_valid_candidate_detected() {
+        let _guard = acquire_shared_test_env_lock();
+        let td = TempDir::new().unwrap();
+        let watch = td.path();
+        let baseline = baseline_fingerprint_snapshot(watch);
         assert!(baseline.is_empty());
 
         fs::write(watch.join("Super Mario World (USA).zip"), b"data").unwrap();
@@ -1015,29 +1183,33 @@ mod tests {
         let rom_dir = rom_td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
         let cands = with_test_config(&rom_dir, vec!["gbc", "zip"], || {
-            scan_new_candidates(watch, &baseline, "gbc")
+            let dis = HashSet::new();
+            scan_new_candidates(watch, &baseline, &dis, "gbc")
         });
         assert_eq!(cands.len(), 1);
     }
 
     #[test]
     fn browser_rename_temp_to_final() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let watch = td.path();
-        let baseline = baseline_snapshot(watch);
+        let baseline = baseline_fingerprint_snapshot(watch);
         fs::write(watch.join("Game.zip.crdownload"), b"partial").unwrap();
         let rom_td = TempDir::new().unwrap();
         let rom_dir = rom_td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
         let cands1 = with_test_config(&rom_dir, vec!["zip"], || {
-            scan_new_candidates(watch, &baseline, "gbc")
+            let dis = HashSet::new();
+            scan_new_candidates(watch, &baseline, &dis, "gbc")
         });
         assert!(cands1.is_empty());
 
         fs::remove_file(watch.join("Game.zip.crdownload")).unwrap();
         fs::write(watch.join("Game.zip"), b"final").unwrap();
         let cands2 = with_test_config(&rom_dir, vec!["zip"], || {
-            scan_new_candidates(watch, &baseline, "gbc")
+            let dis = HashSet::new();
+            scan_new_candidates(watch, &baseline, &dis, "gbc")
         });
         assert_eq!(cands2.len(), 1);
         assert_eq!(cands2[0].file_name().unwrap().to_string_lossy(), "Game.zip");
@@ -1063,7 +1235,7 @@ mod tests {
         let entry = map.get(&key).unwrap();
         assert!(entry.observed_count < 3);
 
-        let mut e = map.get_mut(&key).unwrap();
+        let e = map.get_mut(&key).unwrap();
         if e.size != 200 {
             e.size = 200;
             e.observed_count = 1;
@@ -1092,6 +1264,28 @@ mod tests {
 
         let unrelated = normalize_title("vacation-photo");
         assert_ne!(unrelated, exp);
+
+        // Documented fixture table
+        let fixtures = vec![
+            ("Super Mario World", "Super Mario World (USA).zip", true),
+            ("Super Mario World", "vacation-photo.zip", false),
+            ("Mario", "Mario Kart.zip", false),
+        ];
+        for (exp_raw, cand_raw, should_match) in fixtures {
+            let exp_n = normalize_title(exp_raw);
+            let cand_stem = Path::new(cand_raw)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(cand_raw);
+            let cand_n = normalize_title(cand_stem);
+            assert_eq!(
+                (exp_n == cand_n),
+                should_match,
+                "fixture exp='{}' cand='{}'",
+                exp_raw,
+                cand_raw
+            );
+        }
     }
 
     #[test]
@@ -1120,6 +1314,7 @@ mod tests {
 
     #[test]
     fn system_valid_ext_and_archive_allowed() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let rom_dir = td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
@@ -1133,27 +1328,30 @@ mod tests {
 
     #[test]
     fn no_recursive_symlink() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let watch = td.path();
         let sub = watch.join("subdir");
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("inner.zip"), b"inside").unwrap();
 
-        let baseline = baseline_snapshot(watch);
+        let baseline = baseline_fingerprint_snapshot(watch);
         let rom_td = TempDir::new().unwrap();
         let rom_dir = rom_td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
         let cands = with_test_config(&rom_dir, vec!["zip"], || {
-            scan_new_candidates(watch, &baseline, "gbc")
+            let dis = HashSet::new();
+            scan_new_candidates(watch, &baseline, &dis, "gbc")
         });
         assert!(cands.is_empty());
     }
 
     #[test]
     fn cancellation_stops_detection() {
+        let _guard = acquire_shared_test_env_lock();
         let dir = TempDir::new().unwrap();
         let watch_dir = dir.path().to_path_buf();
-        let baseline = HashSet::new();
+        let baseline = HashMap::new();
         let session = AcquisitionSessionInternal {
             session_id: "test-cancel-1".to_string(),
             system_id: "gbc".to_string(),
@@ -1171,7 +1369,8 @@ mod tests {
             import_result: None,
             error_code: None,
             message: None,
-            baseline_files: baseline,
+            baseline_fingerprints: baseline,
+            disappeared_baseline: HashSet::new(),
             candidate_states: HashMap::new(),
             timeout_duration: Duration::from_secs(1500),
         };
@@ -1205,37 +1404,178 @@ mod tests {
         let td = TempDir::new().unwrap();
         let watch_dir = td.path().to_path_buf();
 
-        let first = start_acquisition_watch(
-            "gbc".to_string(),
-            "Pokemon".to_string(),
-            None,
-            Some(watch_dir.to_string_lossy().to_string()),
-            None,
-        );
-        assert!(first.is_ok(), "first should succeed {:?}", first.err());
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        with_test_config(&rom_dir, vec!["zip", "gbc"], || {
+            let first = start_acquisition_watch(
+                "gbc".to_string(),
+                "Pokemon".to_string(),
+                None,
+                Some(watch_dir.to_string_lossy().to_string()),
+                None,
+            );
+            assert!(first.is_ok(), "first should succeed {:?}", first.err());
 
-        let second = start_acquisition_watch(
-            "gbc".to_string(),
-            "Mario".to_string(),
-            None,
-            Some(watch_dir.to_string_lossy().to_string()),
-            None,
-        );
-        assert!(second.is_err());
-        assert!(second.unwrap_err().contains("ACQUISITION_ALREADY_ACTIVE"));
+            let second = start_acquisition_watch(
+                "gbc".to_string(),
+                "Mario".to_string(),
+                None,
+                Some(watch_dir.to_string_lossy().to_string()),
+                None,
+            );
+            assert!(second.is_err());
+            assert!(second.unwrap_err().contains("ACQUISITION_ALREADY_ACTIVE"));
 
-        let third = start_acquisition_watch(
-            "gbc".to_string(),
-            "Zelda".to_string(),
+            let third = start_acquisition_watch(
+                "gbc".to_string(),
+                "Zelda".to_string(),
+                None,
+                Some(watch_dir.to_string_lossy().to_string()),
+                Some(true),
+            );
+            assert!(third.is_ok());
+
+            if let Ok(s) = third {
+                let _ = cancel_acquisition_watch(s.sessionId);
+            }
+        });
+
+        {
+            let guard = session_mutex();
+            let mut opt = guard.lock().unwrap();
+            *opt = None;
+        }
+    }
+
+    #[test]
+    fn early_fail_empty_title() {
+        let _guard = acquire_shared_test_env_lock();
+        {
+            let guard = session_mutex();
+            let mut opt = guard.lock().unwrap();
+            *opt = None;
+        }
+        let td = TempDir::new().unwrap();
+        let watch_dir = td.path().to_path_buf();
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let res = with_test_config(&rom_dir, vec!["zip"], || {
+            start_acquisition_watch(
+                "gbc".to_string(),
+                "".to_string(),
+                None,
+                Some(watch_dir.to_string_lossy().to_string()),
+                Some(true),
+            )
+        });
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(
+            err.contains("EXPECTED_TITLE_EMPTY"),
+            "expected EXPECTED_TITLE_EMPTY got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn early_fail_empty_system() {
+        let _guard = acquire_shared_test_env_lock();
+        {
+            let guard = session_mutex();
+            let mut opt = guard.lock().unwrap();
+            *opt = None;
+        }
+        let td = TempDir::new().unwrap();
+        let watch_dir = td.path().to_path_buf();
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let res = with_test_config(&rom_dir, vec!["zip"], || {
+            start_acquisition_watch(
+                "".to_string(),
+                "Game".to_string(),
+                None,
+                Some(watch_dir.to_string_lossy().to_string()),
+                Some(true),
+            )
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("SYSTEM_ID_EMPTY"));
+    }
+
+    #[test]
+    fn early_fail_unknown_system() {
+        let _guard = acquire_shared_test_env_lock();
+        {
+            let guard = session_mutex();
+            let mut opt = guard.lock().unwrap();
+            *opt = None;
+        }
+        let td = TempDir::new().unwrap();
+        let watch_dir = td.path().to_path_buf();
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        let res = with_test_config(&rom_dir, vec!["zip"], || {
+            start_acquisition_watch(
+                "unknown_system_xyz".to_string(),
+                "Game".to_string(),
+                None,
+                Some(watch_dir.to_string_lossy().to_string()),
+                Some(true),
+            )
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("UNKNOWN_SYSTEM"));
+    }
+
+    #[test]
+    fn early_fail_empty_valid_extensions() {
+        let _guard = acquire_shared_test_env_lock();
+        {
+            let guard = session_mutex();
+            let mut opt = guard.lock().unwrap();
+            *opt = None;
+        }
+        let td = TempDir::new().unwrap();
+        let watch_dir = td.path().to_path_buf();
+        let rom_td = TempDir::new().unwrap();
+        let rom_dir = rom_td.path().join("roms");
+        fs::create_dir_all(&rom_dir).unwrap();
+        // Config with empty validExtensions
+        let cfg = serde_json::json!({
+            "schemaVersion": 1,
+            "machineNameWindows": "TestRig",
+            "systems": [{
+                "id": "emptyext",
+                "romDirectory": rom_dir.to_string_lossy().to_string(),
+                "validExtensions": []
+            }]
+        });
+        let cfg_td = TempDir::new().unwrap();
+        let cfg_path = cfg_td.path().join("cfg.json");
+        fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+        let prev = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
+        std::env::set_var("CRYSTAL_MACHINE_CONFIG", &cfg_path);
+        let res = start_acquisition_watch(
+            "emptyext".to_string(),
+            "Game".to_string(),
             None,
             Some(watch_dir.to_string_lossy().to_string()),
             Some(true),
         );
-        assert!(third.is_ok());
-
-        if let Ok(s) = third {
-            let _ = cancel_acquisition_watch(s.sessionId);
+        if let Some(p) = prev {
+            std::env::set_var("CRYSTAL_MACHINE_CONFIG", p);
+        } else {
+            std::env::remove_var("CRYSTAL_MACHINE_CONFIG");
         }
+        assert!(res.is_err());
+        assert!(
+            res.unwrap_err().contains("SYSTEM_CONFIG_INVALID"),
+            "empty ext must fail"
+        );
         {
             let guard = session_mutex();
             let mut opt = guard.lock().unwrap();
@@ -1245,11 +1585,15 @@ mod tests {
 
     #[test]
     fn downloads_source_remains_after_import_simulated() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let watch = td.path();
         let rom_td = TempDir::new().unwrap();
         let rom_dir = rom_td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
+        let writable_td = TempDir::new().unwrap();
+        crate::safety::set_test_writable_root_override(writable_td.path());
+
         let src = watch.join("Game.zip");
         fs::write(&src, b"data").unwrap();
 
@@ -1258,11 +1602,6 @@ mod tests {
         fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
         let prev = std::env::var("CRYSTAL_MACHINE_CONFIG").ok();
         std::env::set_var("CRYSTAL_MACHINE_CONFIG", &cfg_path);
-
-        let staging = td.path().join("staging");
-        fs::create_dir_all(&staging).unwrap();
-        let prev_cache = std::env::var("CRYSTAL_CACHE_DIR").ok();
-        std::env::set_var("CRYSTAL_CACHE_DIR", &staging);
 
         let req = ImportRequest {
             systemId: "gbc".to_string(),
@@ -1278,27 +1617,25 @@ mod tests {
         } else {
             std::env::remove_var("CRYSTAL_MACHINE_CONFIG");
         }
-        if let Some(p) = prev_cache {
-            std::env::set_var("CRYSTAL_CACHE_DIR", p);
-        } else {
-            std::env::remove_var("CRYSTAL_CACHE_DIR");
-        }
+        crate::safety::clear_test_writable_root_override();
     }
 
     #[test]
     fn privacy_no_recursive() {
+        let _guard = acquire_shared_test_env_lock();
         let td = TempDir::new().unwrap();
         let watch = td.path();
         fs::write(watch.join("a.zip"), b"a").unwrap();
         let sub = watch.join("sub");
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("b.zip"), b"b").unwrap();
-        let baseline = HashSet::new();
+        let baseline = HashMap::new();
         let rom_td = TempDir::new().unwrap();
         let rom_dir = rom_td.path().join("roms");
         fs::create_dir_all(&rom_dir).unwrap();
         let cands = with_test_config(&rom_dir, vec!["zip"], || {
-            scan_new_candidates(watch, &baseline, "gbc")
+            let dis = HashSet::new();
+            scan_new_candidates(watch, &baseline, &dis, "gbc")
         });
         assert_eq!(cands.len(), 1, "non-recursive only top level");
     }

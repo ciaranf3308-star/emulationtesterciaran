@@ -1179,9 +1179,11 @@ fn main() {
 #[cfg(test)]
 mod backend_launch_guard_tests {
     use super::*;
+    use crate::test_env_lock::acquire_shared_test_env_lock;
 
     #[test]
     fn backend_safe_mode_blocks_before_process_spawn() {
+        let _guard = acquire_shared_test_env_lock();
         std::env::set_var("CRYSTAL_SAFE_MODE", "1");
         let request = LaunchBackendRequest {
             systemId: "ps2".into(),
@@ -1207,5 +1209,7 @@ mod backend_launch_guard_tests {
             launch_game(request).expect_err("safe mode must reject the backend launch path");
         assert!(error.starts_with("SAFE_MODE_BLOCKED_LAUNCH"));
         std::env::remove_var("CRYSTAL_SAFE_MODE");
+        // Ensure SAFE_MODE static reset for subsequent tests
+        crate::safety::set_safe_mode_for_tests(false);
     }
 }
