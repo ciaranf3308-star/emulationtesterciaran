@@ -79,6 +79,9 @@ function AppInner() {
   const [mediaResolving, setMediaResolving] = useState(false)
   const mediaRequestIdRef = useRef(0)
   const debounceRef = useRef<number | null>(null)
+  // V8.4.1 FINAL: Media cycle now REAL – store full candidate list to rotate via X
+  const availableGameplayCandidatesRef = useRef<Array<{ url: string; type: 'video' | 'screenshot' }>>([])
+  const gameplayCycleIndexRef = useRef(0)
   const [collectionGames, setCollectionGames] = useState<GameEntry[] | null>(null)
   const [collectionLoading, setCollectionLoading] = useState(false)
   const [collectionError, setCollectionError] = useState<string | null>(null)
@@ -344,25 +347,34 @@ function AppInner() {
           const isTauri = isTauriEnvironment()
           // V8.2 fixture media for web QA – DEV ONLY, never overrides real Tauri verification in prod
           if (!isTauri || !isRealMachine) {
-            // attempt fixture media for populated screenshot
+            // attempt fixture media for populated screenshot – build candidate list for REAL X cycle
             const fix = fixtureMediaForGame(game.id)
             if (fix) {
               if (curId !== mediaRequestIdRef.current) return
-              // screenshot -> gameplay source (preserve layers)
               const regions = stageConfig.gameplayRegions
-              if (regions && regions.length > 0 && fix.screenshot) {
-                setSelectedGameplaySources([
-                  { regionId: regions[0].id, url: fix.screenshot, mediaType: 'screenshot' as any },
-                ])
-              } else if (fix.cover) {
-                const r0 = regions && regions[0]
-                if (r0) setSelectedGameplaySources([{ regionId: r0.id, url: fix.cover, mediaType: 'screenshot' as any }])
+              const candidates: Array<{ url: string; type: 'video' | 'screenshot' }> = []
+              if (fix.screenshot) candidates.push({ url: fix.screenshot, type: 'screenshot' })
+              if (fix.cover) candidates.push({ url: fix.cover, type: 'screenshot' })
+              availableGameplayCandidatesRef.current = candidates.length ? candidates : (fix.screenshot ? [{ url: fix.screenshot, type: 'screenshot' }] : [])
+              gameplayCycleIndexRef.current = 0
+              if (regions && regions.length > 0) {
+                const first = availableGameplayCandidatesRef.current[0]
+                if (first) {
+                  setSelectedGameplaySources([{ regionId: regions[0].id, url: first.url, mediaType: first.type as any }])
+                } else if (fix.screenshot) {
+                  setSelectedGameplaySources([{ regionId: regions[0].id, url: fix.screenshot, mediaType: 'screenshot' as any }])
+                } else if (fix.cover) {
+                  const r0 = regions && regions[0]
+                  if (r0) setSelectedGameplaySources([{ regionId: r0.id, url: fix.cover, mediaType: 'screenshot' as any }])
+                }
               }
               if (fix.physical) setSelectedPhysicalUrl(fix.physical)
               setMediaResolving(false)
               return
             }
             setMediaResolving(false)
+            availableGameplayCandidatesRef.current = []
+            gameplayCycleIndexRef.current = 0
             return
           }
           const verification = await verifyMedia(game.system_id, game.rom_basename, ['videos', 'screenshots', 'titlescreens', 'miximages', 'covers', 'physicalmedia', 'marquees', 'fanart', '3dboxes'])
@@ -390,19 +402,36 @@ function AppInner() {
           if (resolved.physicalMedia) setSelectedPhysicalUrl(resolved.physicalMedia)
           else setSelectedPhysicalUrl(undefined)
           const pick = pickGameplayFromResolved(resolved)
-           // dual-screen truthful primary only
+           // dual-screen truthful primary only – but also build full candidate list for X cycle
           const regions = stageConfig.gameplayRegions
+          // Build ordered gameplay candidates: video > screenshot > title > mix > cover
+          const allCandidates: Array<{ url: string; type: 'video'|'screenshot' }> = []
+          if (resolved.video) allCandidates.push({ url: resolved.video, type: 'video' })
+          if (resolved.screenshot) allCandidates.push({ url: resolved.screenshot, type: 'screenshot' })
+          if ((resolved as any).titleScreen) allCandidates.push({ url: (resolved as any).titleScreen as string, type: 'screenshot' })
+          if ((resolved as any).mixImage) allCandidates.push({ url: (resolved as any).mixImage as string, type: 'screenshot' })
+          if ((resolved as any).cover) allCandidates.push({ url: (resolved as any).cover as string, type: 'screenshot' })
+          // If pick primary exists but not in list (edge), ensure it leads
+          if (pick.primaryUrl && pick.primaryType !== 'none' && !allCandidates.some(c => c.url === pick.primaryUrl)) {
+            allCandidates.unshift({ url: pick.primaryUrl as string, type: pick.primaryType === 'video' ? 'video' : 'screenshot' })
+          }
+          availableGameplayCandidatesRef.current = allCandidates
+          gameplayCycleIndexRef.current = 0
           if (!regions || regions.length === 0) {
             setSelectedGameplaySources(undefined)
           } else if (regions.length === 1) {
             if (pick.primaryUrl && pick.primaryType !== 'none') {
               setSelectedGameplaySources([{ regionId: regions[0].id, url: pick.primaryUrl!, mediaType: pick.primaryType === 'video' ? 'video' : 'screenshot' }])
+            } else if (allCandidates[0]) {
+              setSelectedGameplaySources([{ regionId: regions[0].id, url: allCandidates[0].url, mediaType: allCandidates[0].type as any }])
             } else {
               setSelectedGameplaySources(undefined)
             }
           } else {
             if (pick.primaryUrl) {
               setSelectedGameplaySources([{ regionId: regions[0].id, url: pick.primaryUrl!, mediaType: pick.primaryType === 'video' ? 'video' : 'screenshot' }])
+            } else if (allCandidates[0]) {
+              setSelectedGameplaySources([{ regionId: regions[0].id, url: allCandidates[0].url, mediaType: allCandidates[0].type as any }])
             } else {
               setSelectedGameplaySources(undefined)
             }
@@ -411,6 +440,8 @@ function AppInner() {
           if (curId !== mediaRequestIdRef.current) return
           setSelectedGameplaySources(undefined)
           setSelectedPhysicalUrl(undefined)
+          availableGameplayCandidatesRef.current = []
+          gameplayCycleIndexRef.current = 0
         } finally {
           if (curId === mediaRequestIdRef.current) setMediaResolving(false)
         }
@@ -473,12 +504,29 @@ function AppInner() {
           return
         }
         if (action === 'media') {
-          // Library X – media cycle preserved – do NOT open Discover
+          // Library X – REAL media cycle V8.4.1: rotate through available gameplay candidates
           try {
-            // let LibraryView cycle handled via its own nextMediaRegion concept? For now rotate gameplay region index if present via synthetic DOM event for debugging.
-            const ev = new CustomEvent('crystal-library-media-cycle' as any)
-            window.dispatchEvent(ev)
-            console.info('[Library] media cycle requested')
+            const candidates = availableGameplayCandidatesRef.current
+            if (!candidates || candidates.length <= 1) {
+              // No alternative media – still acknowledge but no visual change if single; if zero, nothing to do
+              if (candidates && candidates.length === 1) {
+                console.info('[Library] media cycle single source – no alternative')
+              } else {
+                console.info('[Library] media cycle requested – no media')
+              }
+              return
+            }
+            const regions = stageConfig.gameplayRegions
+            if (!regions || regions.length === 0) return
+            gameplayCycleIndexRef.current = (gameplayCycleIndexRef.current + 1) % candidates.length
+            const next = candidates[gameplayCycleIndexRef.current]
+            setSelectedGameplaySources([{ regionId: regions[0].id, url: next.url, mediaType: next.type as any }])
+            console.info('[Library] media cycle ->', gameplayCycleIndexRef.current, next.url.slice(-40))
+            // also dispatch legacy event for any external consumers / tests that still listen
+            try {
+              const ev = new CustomEvent('crystal-library-media-cycle' as any, { detail: { index: gameplayCycleIndexRef.current, url: next.url } })
+              window.dispatchEvent(ev)
+            } catch {}
           } catch {}
           return
         }
@@ -549,7 +597,7 @@ function AppInner() {
         }
       }
     },
-    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode]
+    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig]
   )
 
   // Effects – must be unconditional and before any early returns

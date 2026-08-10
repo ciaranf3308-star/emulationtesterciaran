@@ -169,6 +169,113 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     Ok(body)
 }
 
+/// ---------- Discovery cache (narrowly scoped, guarded) ----------
+
+fn sanitize_discovery_key(key: &str) -> Result<String, String> {
+    let t = key.trim();
+    if t.is_empty() {
+        return Err("discovery cache key empty".to_string());
+    }
+    if t.len() > 200 {
+        return Err(format!("discovery cache key too long {} > 200", t.len()));
+    }
+    if t.contains("..") {
+        return Err("discovery cache key contains '..' traversal".to_string());
+    }
+    if t.contains('/') || t.contains('\\') {
+        return Err("discovery cache key must not contain path separators – use ':' delimiter".to_string());
+    }
+    // Allowed chars: alphanumeric, '-', '_', ':', '.'
+    // We deliberately reject spaces and other symbols which the frontend sanitizes via safeCacheKeyPart.
+    if !t.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ':' || c == '.') {
+        return Err(format!("discovery cache key contains forbidden character '{}': only alphanumeric _ - : . allowed", t));
+    }
+    // Reject empty segments (e.g., "::" or leading/trailing ":")
+    let segs: Vec<&str> = t.split(':').collect();
+    if segs.iter().any(|s| s.is_empty()) {
+        return Err("discovery cache key contains empty segment (e.g. 'a::b' or leading/trailing ':')".to_string());
+    }
+    if segs.len() < 2 || segs.len() > 3 {
+        return Err(format!("discovery cache key must have 2-3 colon-separated segments, got {} in '{}'", segs.len(), t));
+    }
+    // First segment must be provider (e.g., vimms)
+    // No strict enforcement beyond non-empty, but we keep minimal.
+    let sanitized = t.replace(':', "/");
+    if sanitized.contains("..") {
+        return Err("sanitized discovery path contains '..' after replace – rejected".to_string());
+    }
+    Ok(sanitized)
+}
+
+fn discovery_relative_path(sanitized: &str) -> String {
+    format!("cache/discovery/{}.json", sanitized)
+}
+
+#[tauri::command]
+pub fn discovery_cache_read(key: String) -> Result<Option<String>, String> {
+    let sanitized = sanitize_discovery_key(&key)?;
+    let rel = discovery_relative_path(&sanitized);
+
+    // Ensure writable root dirs exist first (creates cache/discovery hierarchy lazily for read – harmless)
+    // but for read we don't want to create unless needed; we will use root join + safe check manually.
+    let root = crate::safety::crystal_writable_root();
+    let abs = root.join(&rel);
+
+    // Validate absolute path is inside approved writable root via existing guard
+    // Using is_safe_write_path (which accepts absolute descendant as ok) – we use same guard even for reads
+    // to prevent path escape via symlink tricks or prefix spoof.
+    crate::safety::is_safe_write_path(&abs).map_err(|e| format!("discovery cache read safety reject '{}': {}", abs.display(), e))?;
+
+    // Additional defense: ensure rel still starts with cache/discovery/
+    if !rel.starts_with("cache/discovery/") {
+        return Err(format!("discovery cache rel path must start with cache/discovery/, got '{}'", rel));
+    }
+
+    if !abs.exists() {
+        // Log minimal – provider prefix safe
+        crate::safety::log_event("info", &format!("discovery_cache_read miss key='{}' sanitized='{}'", key, sanitized));
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&abs).map_err(|e| {
+        format!("discovery_cache_read failed reading '{}': {}", abs.display(), e)
+    })?;
+
+    // Size guard – similar to fetcher 2MB, cache entries small but cap
+    if content.len() > 2_000_000 {
+        return Err(format!("discovery cache entry too large {} bytes for key '{}'", content.len(), key));
+    }
+
+    crate::safety::log_event("info", &format!("discovery_cache_read hit key='{}' bytes={}", key, content.len()));
+    Ok(Some(content))
+}
+
+#[tauri::command]
+pub fn discovery_cache_write(key: String, content: String) -> Result<(), String> {
+    let sanitized = sanitize_discovery_key(&key)?;
+    let rel = discovery_relative_path(&sanitized);
+
+    if !rel.starts_with("cache/discovery/") {
+        return Err(format!("discovery cache rel path must start with cache/discovery/, got '{}'", rel));
+    }
+
+    if content.len() > 2_000_000 {
+        return Err(format!("discovery cache write too large {} bytes for key '{}' – max 2MB", content.len(), key));
+    }
+
+    // resolve_writable_path ensures parent dirs exist and validates safety via is_safe_write_path internally.
+    // It also ensures %LOCALAPPDATA%\\CrystalFrontend\\ cache\\discovery structure.
+    let abs = crate::safety::resolve_writable_path(&rel).map_err(|e| format!("discovery cache write resolve failed for rel='{}': {}", rel, e))?;
+
+    // Double-validate final absolute path
+    crate::safety::is_safe_write_path(&abs).map_err(|e| format!("discovery cache write safety reject '{}': {}", abs.display(), e))?;
+
+    std::fs::write(&abs, content.as_bytes()).map_err(|e| format!("discovery cache write failed for '{}': {}", abs.display(), e))?;
+
+    crate::safety::log_event("info", &format!("discovery_cache_write ok key='{}' file='{}' bytes={}", key, abs.display(), content.len()));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +317,67 @@ mod tests {
         assert!(!is_allowed_redirect(&bad));
         let http_bad = Url::parse("http://vimm.net/vault/123").unwrap();
         assert!(!is_allowed_redirect(&http_bad));
+    }
+
+    #[test]
+    fn test_discovery_cache_key_sanitize_valid() {
+        let valid = vec![
+            "vimms:ps2:mario",
+            "vimms:gbc:__empty__",
+            "vimms:detail:12345",
+            "vimms:gc:f-zero",
+        ];
+        for k in valid {
+            let s = sanitize_discovery_key(k);
+            assert!(s.is_ok(), "valid key '{}' should pass, got err {:?}", k, s.err());
+        }
+    }
+
+    #[test]
+    fn test_discovery_cache_key_rejects_traversal() {
+        let bad = vec![
+            "vimms:..:evil",
+            "vimms:ps2:../../../etc",
+            "vimms:ps2:bad/../evil",
+            "vimms:ps2:slash/bad",
+            "vimms:ps2:back\\slash",
+            "vimms::emptyseg",
+            ":leadingcolon",
+            "trailingcolon:",
+        ];
+        for k in bad {
+            assert!(sanitize_discovery_key(k).is_err(), "bad key '{}' should be rejected", k);
+        }
+    }
+
+    #[test]
+    fn test_discovery_cache_resolves_under_crystal_root() {
+        // Use sanitize then resolve_writable_path to prove location is under existing Crystal writable root
+        let key = "vimms:ps2:test123";
+        let sanitized = sanitize_discovery_key(key).expect("sanitize should ok");
+        let rel = discovery_relative_path(&sanitized);
+        assert!(rel.starts_with("cache/discovery/"), "rel must start cache/discovery/: {}", rel);
+        let abs = crate::safety::resolve_writable_path(&rel).expect("resolve should succeed");
+        let root = crate::safety::crystal_writable_root();
+        assert!(abs.starts_with(&root), "abs {:?} must start with root {:?}", abs, root);
+        // Also prove is_safe_write_path passes
+        assert!(crate::safety::is_safe_write_path(&abs).is_ok(), "safe_write_path should allow cache file");
+        // Ensure not AppLocalData assumption – root must be CrystalFrontend not com.crystal.frontend
+        let root_str = root.to_string_lossy().to_lowercase();
+        assert!(root_str.contains("crystalfrontend") || root_str.contains("crystal_frontend") || root_str.ends_with("crystalfrontend"), "root should be CrystalFrontend based, got {}", root.display());
+    }
+
+    #[test]
+    fn test_discovery_cache_no_external_write() {
+        // Ensure our sanitizer never allows paths that would be outside allowed tree
+        let key = "vimms:ps2:valid";
+        let sanitized = sanitize_discovery_key(key).unwrap();
+        let rel = discovery_relative_path(&sanitized);
+        // simulate an attempt to spoof ../ via allowed chars? Our sanitizer rejects ".." so following should fail
+        let outside_attempt = "vimms:ps2:.._evil";
+        assert!(sanitize_discovery_key(outside_attempt).is_err());
+        // Ensure relative path itself is safe
+        let abs = crate::safety::resolve_writable_path(&rel).unwrap();
+        assert!(!abs.to_string_lossy().contains(".."));
     }
 }

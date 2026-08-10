@@ -996,7 +996,7 @@ pub fn run() {
             log_event(
                 "info",
                 &format!(
-                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.3.1",
+                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.4.1",
                     safe,
                     root.display()
                 ),
@@ -1038,7 +1038,9 @@ pub fn run() {
             launch_game,
             safety::get_safe_mode,
             safety::get_crystal_writable_root,
-            discovery::fetch_vimm
+            discovery::fetch_vimm,
+            discovery::discovery_cache_read,
+            discovery::discovery_cache_write
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

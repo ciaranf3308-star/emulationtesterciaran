@@ -63,7 +63,7 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
       initialDelay: opts?.initialDelay ?? INITIAL_DELAY,
       repeatInterval: opts?.repeatInterval ?? REPEAT_INTERVAL,
     }
-    const all: NavigationAction[] = ['up','down','left','right','confirm','back','menu','favorite','search','nextSystem','previousSystem']
+    const all: NavigationAction[] = ['up','down','left','right','confirm','back','menu','favorite','search','nextSystem','previousSystem','media']
     for (const a of all) {
       this.actionState.set(a, { pressed: false, lastEmit: 0, repeatTimeoutId: null, repeatIntervalId: null, firstPressAt: null })
     }

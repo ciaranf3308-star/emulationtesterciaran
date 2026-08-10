@@ -1,12 +1,23 @@
 /**
- * cache – in-memory + Tauri fs cache for discovery
- * Safety: All writes limited to %LOCALAPPDATA%\CrystalFrontend\cache\discovery\ via plugin-fs AppLocalData baseDir.
- * No writes outside approved tree. Validates paths.
- * TTL: search 20m, detail 24h – persistent across restart via Tauri fs.
+ * cache – in-memory + Tauri-backed cache for discovery
+ * V8.4.1 FINAL FIX: Discovery persistence MUST use existing Crystal write root
+ *   %LOCALAPPDATA%\CrystalFrontend\cache\discovery\
+ * NOT BaseDirectory.AppLocalData (which resolves to com.crystal.frontend / AppLocalData id).
+ * Rust safety architecture enforces this via crystal_writable_root + resolve_writable_path.
+ *
+ * Frontend now talks to narrowly scoped Tauri commands:
+ *   discovery_cache_read(key) -> Option<String>
+ *   discovery_cache_write(key, content)
+ * which internally guard to CrystalFrontend/cache/discovery only.
+ * No generic arbitrary fs command is introduced, no V8.1 weakening.
+ *
+ * Falls back to localStorage when not in Tauri (browser dev / tests).
  */
 
 import type { DiscoveryResult, DiscoveryGameDetail, SearchCacheEntry, DetailCacheEntry } from './types';
 import { DETAIL_TTL_MS, SEARCH_TTL_MS_DEFAULT } from './types';
+import { getTauriInvoker } from '../runtime/tauri';
+import { isTauriEnvironment } from '../runtime/environment';
 
 const MEMORY_SEARCH = new Map<string, SearchCacheEntry>();
 const MEMORY_DETAIL = new Map<string, DetailCacheEntry>();
@@ -46,91 +57,70 @@ function lsRemove(key: string) {
   } catch {}
 }
 
-type FsModule = {
-  writeTextFile: (path: string, data: string, opts: { baseDir: any }) => Promise<void>;
-  readTextFile: (path: string, opts: { baseDir: any }) => Promise<string>;
-  exists: (path: string, opts: { baseDir: any }) => Promise<boolean>;
-  mkdir: (path: string, opts: { baseDir: any; recursive?: boolean }) => Promise<void>;
-  BaseDirectory: any;
-};
+// ---------- Safe rel-path validation ----------
+// Mirrors Rust discovery_relative_path + safety expectations.
 
-async function getFsModule(): Promise<FsModule | null> {
-  try {
-    // Proper dynamic import – works when @tauri-apps/plugin-fs is installed (Tauri v2)
-    // In browser dev (no Tauri) this will reject and we fall back to localStorage.
-    const mod = await import('@tauri-apps/plugin-fs');
-    return mod as unknown as FsModule;
-  } catch {
-    return null;
-  }
+export function getExpectedRelPath(key: string): string | null {
+  // key is colon-delimited e.g. "vimms:ps2:mario"
+  if (!key || typeof key !== 'string') return null;
+  if (key.length > 200) return null;
+  if (key.includes('..') || key.includes('/') || key.includes('\\')) return null;
+  if (!/^[A-Za-z0-9_\-:.]+$/.test(key)) return null;
+  const segs = key.split(':');
+  if (segs.some(s => s.length === 0)) return null;
+  if (segs.length < 2 || segs.length > 3) return null;
+  const sanitized = key.replace(/:/g, '/');
+  return `cache/discovery/${sanitized}.json`;
 }
 
 function isSafeRelPath(relPath: string): boolean {
   const lower = relPath.toLowerCase();
-  // Must start with exact approved prefix
   if (!lower.startsWith('cache/discovery/')) return false;
-  // Reject traversal
   if (lower.includes('..')) return false;
-  // Reject sibling / external markers
   if (lower.includes('emudeck') || lower.includes('es-de') || lower.includes('emulationstation')) return false;
-  if (lower.includes('roms') && !lower.includes('crystalfrontend')) {
-    // Disallow roms folder reference outside our tree – extra safety
-    // Our approved path never contains roms, so reject any containing roms segment
-    return false;
-  }
-  // Reject absolute-looking
+  if (lower.includes('roms') && !lower.includes('crystalfrontend')) return false;
   if (relPath.startsWith('/') || relPath.startsWith('\\')) return false;
-  if (relPath.includes(':')) return false; // no drive prefix in relative
+  if (relPath.includes(':')) return false;
+  // Must be under cache/discovery/ with .json suffix (our scheme)
+  if (!relPath.endsWith('.json')) return false;
   return true;
 }
 
-async function tauriFsWrite(key: string, data: string): Promise<boolean> {
+// ---------- Tauri narrow-scoped cache via safety-guarded commands ----------
+
+async function tauriCacheWrite(key: string, data: string): Promise<boolean> {
   try {
-    const fsMod = await getFsModule();
-    if (!fsMod) return false;
+    if (!isTauriEnvironment()) return false;
+    const inv = await getTauriInvoker();
+    if (!inv) return false;
 
-    const { writeTextFile, BaseDirectory, exists, mkdir } = fsMod;
+    // Validate rel path locally before sending – defense-in-depth, ensures we never ask outside root
+    const rel = getExpectedRelPath(key);
+    if (!rel) return false;
+    if (!isSafeRelPath(rel)) return false;
 
-    if (key.includes('..') || key.includes('/') || key.includes('\\')) {
-      return false;
-    }
-
-    const sanitized = key.replace(/:/g, '/');
-    if (sanitized.includes('..')) return false;
-    const relPath = `cache/discovery/${sanitized}.json`;
-
-    if (!isSafeRelPath(relPath)) return false;
-
-    try {
-      if (typeof exists === 'function' && typeof mkdir === 'function') {
-        const dirPart = relPath.slice(0, relPath.lastIndexOf('/'));
-        if (dirPart) {
-          const dirExists = await exists(dirPart, { baseDir: BaseDirectory.AppLocalData }).catch(() => false);
-          if (!dirExists) {
-            await mkdir(dirPart, { baseDir: BaseDirectory.AppLocalData, recursive: true }).catch(() => {});
-          }
-        }
-      }
-    } catch {}
-
-    await writeTextFile(relPath, data, { baseDir: BaseDirectory.AppLocalData });
+    // invoke Rust command discovery_cache_write(key, content)
+    await inv<void>('discovery_cache_write', { key, content: data });
     return true;
   } catch {
     return false;
   }
 }
 
-async function tauriFsRead(key: string): Promise<string | null> {
+async function tauriCacheRead(key: string): Promise<string | null> {
   try {
-    const fsMod = await getFsModule();
-    if (!fsMod) return null;
-    const { readTextFile, BaseDirectory } = fsMod;
-    const sanitized = key.replace(/:/g, '/');
-    if (sanitized.includes('..')) return null;
-    const relPath = `cache/discovery/${sanitized}.json`;
-    if (!isSafeRelPath(relPath)) return null;
-    const content = await readTextFile(relPath, { baseDir: BaseDirectory.AppLocalData });
-    return typeof content === 'string' ? content : null;
+    if (!isTauriEnvironment()) return null;
+    const inv = await getTauriInvoker();
+    if (!inv) return null;
+
+    const rel = getExpectedRelPath(key);
+    if (!rel) return null;
+    if (!isSafeRelPath(rel)) return null;
+
+    // Rust returns Option<String> – Tauri maps None → null / undefined
+    const res = await inv<string | null>('discovery_cache_read', { key });
+    if (res == null) return null;
+    return typeof res === 'string' ? res : null;
   } catch {
     return null;
   }
@@ -150,10 +140,10 @@ export async function getCachedSearch(
     MEMORY_SEARCH.delete(key);
   }
 
-  const fsText = await tauriFsRead(key);
-  if (fsText) {
+  const tauriText = await tauriCacheRead(key);
+  if (tauriText) {
     try {
-      const parsed = JSON.parse(fsText) as SearchCacheEntry;
+      const parsed = JSON.parse(tauriText) as SearchCacheEntry;
       if (parsed && Array.isArray(parsed.data) && typeof parsed.timestamp === 'number') {
         if (!isExpired(parsed, now)) {
           MEMORY_SEARCH.set(key, parsed);
@@ -199,7 +189,7 @@ export async function setCachedSearch(
 
   try {
     const text = JSON.stringify(entry);
-    const wrote = await tauriFsWrite(key, text);
+    const wrote = await tauriCacheWrite(key, text);
     if (!wrote) {
       lsSet(key, text);
     }
@@ -223,10 +213,10 @@ export async function getCachedDetail(
     MEMORY_DETAIL.delete(key);
   }
 
-  const fsText = await tauriFsRead(key);
-  if (fsText) {
+  const tauriText = await tauriCacheRead(key);
+  if (tauriText) {
     try {
-      const parsed = JSON.parse(fsText) as DetailCacheEntry;
+      const parsed = JSON.parse(tauriText) as DetailCacheEntry;
       if (parsed && parsed.data && typeof parsed.timestamp === 'number') {
         if (!isExpired(parsed, now)) {
           MEMORY_DETAIL.set(key, parsed);
@@ -268,7 +258,7 @@ export async function setCachedDetail(
   MEMORY_DETAIL.set(key, entry);
   try {
     const text = JSON.stringify(entry);
-    const wrote = await tauriFsWrite(key, text);
+    const wrote = await tauriCacheWrite(key, text);
     if (!wrote) lsSet(key, text);
   } catch {
     try {
@@ -291,3 +281,9 @@ export function clearMemoryCache(): void {
 export function isSafeCachePath(relPath: string): boolean {
   return isSafeRelPath(relPath);
 }
+
+// Export helpers for testing regression
+export const __test__ = {
+  getExpectedRelPath,
+  isSafeRelPath,
+};
