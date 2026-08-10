@@ -51,7 +51,15 @@ const KEY_MAP: Record<string, NavigationAction> = {
 
 const NAV_KEYS_BLOCK_SCROLL = new Set(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Spacebar','PageUp','PageDown'])
 
+export function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  const el = target as (EventTarget & { tagName?: string; isContentEditable?: boolean }) | null
+  if (!el) return false
+  const tag = String(el.tagName || '').toLowerCase()
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || !!el.isContentEditable
+}
+
 export function keyboardToAction(e: KeyboardEvent): NavigationAction | null {
+  if (isEditableKeyboardTarget(e.target)) return null
   if (e.key === 'Tab') return null
   const direct = KEY_MAP[e.key]
   if (direct) return direct
@@ -90,6 +98,7 @@ export function createKeyboardAdapter(onAction: InputHandler): KeyboardAdapter {
   }
 
   function handleKeyDown(ev: KeyboardEvent) {
+    if (isEditableKeyboardTarget(ev.target)) return
     const action = keyboardToAction(ev)
     if (!action) return
     if (NAV_KEYS_BLOCK_SCROLL.has(ev.key) || action === 'up' || action === 'down' || action === 'left' || action === 'right') {

@@ -178,21 +178,23 @@ export function LibraryView({
         <div
           className="library-left"
           style={{
-            width: '30%',
-            minWidth: '28%',
-            maxWidth: '32%',
+            width: '25%',
+            minWidth: '25%',
+            maxWidth: '25%',
             height: '100%',
             overflowY: 'auto',
             overflowX: 'hidden',
-            padding: '18px 14px 18px 14px',
+            scrollbarWidth: 'thin',
+            scrollbarColor: isDark ? 'rgba(125,249,255,0.20) transparent' : 'rgba(70,130,255,0.20) transparent',
+            padding: '16px 12px 16px 14px',
             boxSizing: 'border-box',
             display: 'flex',
             flexDirection: 'column',
             gap: 12,
             // feathered to transparent — no giant translucent rectangle, no visible column boundary
             background: isDark
-              ? 'linear-gradient(90deg, rgba(8,12,20,0.22) 0%, rgba(8,12,20,0.12) 44%, rgba(8,12,20,0.04) 76%, transparent 100%)'
-              : 'linear-gradient(90deg, rgba(250,252,255,0.42) 0%, rgba(250,252,255,0.18) 48%, rgba(250,252,255,0.06) 78%, transparent 100%)',
+              ? 'linear-gradient(90deg, rgba(6,10,18,0.48) 0%, rgba(8,12,20,0.34) 64%, rgba(8,12,20,0.08) 90%, transparent 100%)'
+              : 'linear-gradient(90deg, rgba(241,245,252,0.66) 0%, rgba(245,248,253,0.44) 64%, rgba(245,248,253,0.10) 90%, transparent 100%)',
             position: 'relative',
           }}
         >
@@ -241,9 +243,10 @@ export function LibraryView({
         @keyframes crystal-spin { to { transform: rotate(360deg); } }
         .library-left { scrollbar-width: thin; }
         .library-left::-webkit-scrollbar { width: 6px; }
+        .library-left::-webkit-scrollbar-track { background: transparent; }
         .library-left::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.12); border-radius: 999px; }
         @media (max-width: 1280px) {
-          .golden-library.v85 .library-left { min-width: 300px !important; max-width: 34% !important; }
+          .golden-library.v85 .library-left { min-width: 280px !important; width: 27% !important; max-width: 27% !important; }
         }
         @media (max-height: 720px) {
           .golden-library.v85 .library-left { gap: 8px !important; padding: 12px 10px 10px 12px !important; }

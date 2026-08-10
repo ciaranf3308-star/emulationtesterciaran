@@ -757,7 +757,7 @@ function AppInner() {
           setView('library')
         } else if (action === 'menu') {
           setView('settings')
-        } else if (action === 'search') {
+        } else if (action === 'search' || action === 'favorite') {
           // V8.4.1 DISCOVER – ADDITIVE: System Landing uses dedicated SEARCH (gamepad View/Select button 8, keyboard / ?)
           // Y (favorite) is NOT hijacked, preserves any prior System favorite if present. Only SEARCH triggers DISCOVER.
           setDiscoverPrefillGame(null)

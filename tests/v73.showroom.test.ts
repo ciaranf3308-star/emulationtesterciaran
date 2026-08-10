@@ -22,8 +22,8 @@ describe('V7.3 showroom placement – category defaults + overrides', () => {
     expect(ps2.x).toBeGreaterThanOrEqual(66)
     expect(ps2.scale).toBeGreaterThanOrEqual(1.2)
     expect(ps2.maxWidth).toBeDefined()
-    // library defaults centre
-    expect(ps2.library?.x).toBe(50)
+    // library reserves the left 25% browser and centres hardware in the right 75%
+    expect(ps2.library?.x).toBe(62.5)
     expect(ps2.library?.scale).toBe(1)
   })
 

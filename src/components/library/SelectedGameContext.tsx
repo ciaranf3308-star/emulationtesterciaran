@@ -73,15 +73,15 @@ export function SelectedGameContext({
   return (
     <div
       style={{
-        width: 'min(100%, 520px)',
+        width: 'min(100%, 500px)',
         maxWidth: '100%',
         background: isDark
-          ? 'linear-gradient(180deg, rgba(10,16,24,0.42) 0%, rgba(8,12,20,0.36) 100%)'
-          : 'linear-gradient(180deg, rgba(255,255,255,0.74) 0%, rgba(248,250,255,0.62) 100%)',
+          ? 'linear-gradient(145deg, rgba(8,14,24,0.78) 0%, rgba(8,12,20,0.62) 100%)'
+          : 'linear-gradient(145deg, rgba(250,252,255,0.90) 0%, rgba(239,244,252,0.76) 100%)',
         backdropFilter: 'blur(18px) saturate(1.08)',
         WebkitBackdropFilter: 'blur(18px) saturate(1.08)',
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.07)'}`,
-        borderRadius: 14,
+        borderRadius: 16,
         padding: '14px 14px 12px 14px',
         boxShadow: isDark
           ? '0 14px 32px rgba(0,0,0,0.36), 0 0 0 1px rgba(255,255,255,0.03) inset'

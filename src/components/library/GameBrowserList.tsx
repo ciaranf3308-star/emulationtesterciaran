@@ -18,7 +18,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: 6,
+        gap: 7,
         padding: 0,
         margin: 0,
         overflowY: 'auto',
@@ -42,12 +42,12 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
               width: '100%',
               display: 'flex',
               alignItems: 'center',
-              gap: 12,
-              padding: '10px 12px',
-              height: 84,
-              minHeight: 84,
+              gap: 10,
+              padding: '8px 10px',
+              height: 72,
+              minHeight: 72,
               boxSizing: 'border-box',
-              borderRadius: 10,
+              borderRadius: 12,
               border: isSel
                 ? `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`
                 : `1px solid transparent`,
@@ -56,10 +56,10 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
                   ? 'rgba(125,249,255,0.12)'
                   : 'rgba(70,130,255,0.10)'
                 : isDark
-                ? 'rgba(255,255,255,0.02)'
-                : 'rgba(255,255,255,0.52)',
-              backdropFilter: isSel ? 'blur(10px) saturate(1.1)' : 'none',
-              WebkitBackdropFilter: isSel ? 'blur(10px) saturate(1.1)' : 'none',
+                ? 'linear-gradient(90deg, rgba(13,19,30,0.58), rgba(13,19,30,0.28))'
+                : 'linear-gradient(90deg, rgba(255,255,255,0.70), rgba(255,255,255,0.44))',
+              backdropFilter: 'blur(12px) saturate(1.08)',
+              WebkitBackdropFilter: 'blur(12px) saturate(1.08)',
               boxShadow: isSel
                 ? isDark
                   ? '0 0 22px rgba(125,249,255,0.14), inset 0 1px 0 rgba(255,255,255,0.06)'
@@ -80,8 +80,8 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
           >
             <div
               style={{
-                width: 56,
-                height: 56,
+                width: 48,
+                height: 52,
                 borderRadius: 8,
                 overflow: 'hidden',
                 flexShrink: 0,

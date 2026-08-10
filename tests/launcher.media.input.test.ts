@@ -110,6 +110,12 @@ describe('input architecture', ()=>{
     expect(keyboardToAction({ key:'Tab', code:'Tab' } as any)).toBeNull()
   })
 
+  test('keyboard shortcuts do not consume text-field typing', ()=>{
+    const input = { tagName: 'INPUT', isContentEditable: false }
+    expect(keyboardToAction({ key:'a', code:'KeyA', target: input } as any)).toBeNull()
+    expect(keyboardToAction({ key:'m', code:'KeyM', target: input } as any)).toBeNull()
+  })
+
   test('gamepad constants deadzone repeat', ()=>{
     expect(ANALOG_DEADZONE).toBe(0.25)
     expect(GAMEPAD_INITIAL_DELAY).toBe(400)

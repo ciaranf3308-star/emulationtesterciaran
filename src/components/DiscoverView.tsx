@@ -301,6 +301,9 @@ export function DiscoverView({
   // V8.4.1 deterministic controller + keyboard – C3.1 updated: acquisitionActive input lock, A only eligible canGetGame
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTyping = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      if (isTyping) return
       if (acquisitionActive) {
         // C2/App is controller authority – Discover locked while acquisition active
         e.preventDefault()

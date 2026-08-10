@@ -114,7 +114,7 @@ export function resolveShowroomPlacement(systemId: string, presentationType?: st
       ...(over.library || {}),
       ...(explicit?.library || {}),
       // defaults library to centred hero when not specified
-      x: explicit?.library?.x ?? over.library?.x ?? base.library?.x ?? 50,
+      x: explicit?.library?.x ?? over.library?.x ?? base.library?.x ?? 62.5,
       y: explicit?.library?.y ?? over.library?.y ?? base.library?.y ?? 50,
       scale: explicit?.library?.scale ?? over.library?.scale ?? base.library?.scale ?? 1,
     },
