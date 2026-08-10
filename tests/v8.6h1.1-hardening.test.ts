@@ -212,7 +212,9 @@ describe('V8.6H1.1 – STRICT FIXTURE GATE – shim actual behavior', () => {
     expect(Array.isArray(results)).toBe(true)
     expect(results.length).toBe(6)
     expect(results[0].title.toLowerCase().includes('mario')).toBe(true)
-    expect(results[0].externalUrl.includes('https://vimm.net/vault/')).toBe(true)
+    // V8.6D1 primary provider is ROMsFun – externalUrl must be romsfun.com/roms/* (dormant Vimm path still isolated)
+    expect(results[0].externalUrl.includes('https://romsfun.com/roms/')).toBe(true)
+    expect(results[0].provider).toBe('romsfun')
   })
 
   it('non-exact fixtures must NOT activate synthetic discovery', async () => {
@@ -290,7 +292,9 @@ describe('V8.6H1.1 – STRICT FIXTURE GATE – shim actual behavior', () => {
     const d = await shimDetail('999001', 'gc')
     expect(d).not.toBeNull()
     expect(d?.title).toBeTruthy()
-    expect(d?.externalUrl.includes('https://vimm.net/vault/')).toBe(true)
+    // V8.6D1 primary is romsfun – detail externalUrl points to romsfun.com canonical
+    expect(d?.externalUrl.includes('https://romsfun.com/roms/')).toBe(true)
+    expect(d?.provider).toBe('romsfun')
 
     setLocationSearch('?fixture=somethingelse')
     const d2 = await shimDetail('999002', 'gc')

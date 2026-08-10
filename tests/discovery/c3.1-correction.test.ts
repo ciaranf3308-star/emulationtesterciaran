@@ -152,14 +152,20 @@ describe("V8.6C3.1 – DiscoverView source ownership", () => {
     expect(txt.includes('data-testid="in-your-library"')).toBe(true)
   })
 
-  test("App wiring passes acquisitionActive and crystalAcq.begin via React prop no window globals", () => {
+  test("App wiring passes acquisitionActive and provider surface primary via React prop no window globals – V8.6D1 supersedes Vimm C3.1 direct crystalAcq.begin", () => {
     const app = src("src/App.tsx")
-    expect(app.includes("onBeginAcquisition={crystalAcq.begin}")).toBe(true)
-    expect(app.includes("acquisitionActive={crystalAcq.active}")).toBe(true)
+    // V8.6D1 primary is provider surface (in-app child webview ROMsFun), not external-browser watcher alone
+    // App should wire DiscoverView to handleBeginProviderAcquisition / providerSurf.begin, and include both active states
+    const hasProviderWiring = app.includes("handleBeginProviderAcquisition") || app.includes("providerSurf.begin") || app.includes("onBeginAcquisition={(req: any) => handleBeginProviderAcquisition")
+    expect(hasProviderWiring).toBe(true)
+    expect(app.includes("acquisitionActive={!!(crystalAcq.active")).toBe(true) // combined active guard
     // ensure App DiscoverView section does not use __beginCrystalAcquisition for prod
     const discoverSectionIdx = app.indexOf("<DiscoverView")
     const discoverSection = app.slice(discoverSectionIdx, discoverSectionIdx + 800)
     expect(discoverSection.includes("__beginCrystalAcquisition")).toBe(false)
+    // Vimm dormant: external acquisition coordinator (crystalAcq) remains intact as fallback/reference but not primary GET GAME path
+    expect(app.includes("crystalAcq")).toBe(true) // still present as fallback
+    expect(app.includes("providerSurf")).toBe(true)
   })
 })
 

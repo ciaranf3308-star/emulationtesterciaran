@@ -1,7 +1,9 @@
 mod acquisition_watch;
 mod discovery;
 mod import_game;
+mod launch_lifecycle;
 mod machine_config;
+mod provider_surface;
 mod safety;
 mod test_env_lock;
 
@@ -873,8 +875,9 @@ fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
     (prog, cleaned_args)
 }
 
-#[tauri::command]
-fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
+// ---------- Launch internal – single authority for spawn ----------
+
+fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::Child, String> {
     // SAFE MODE guard – must be first
     if is_safe_mode() {
         let msg = format!(
@@ -1054,7 +1057,26 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
                         program, args
                     ),
                 );
-                return Ok(());
+                // Dry-run on non-windows: return a dummy child? For desktop validation we need a real Child.
+                // Spawn a short-lived no-op shell that exits quickly so watcher logic can be tested.
+                // Use `sleep 0` equivalent via `true` (unix) or `cmd /C echo`
+                #[cfg(not(windows))]
+                {
+                    let mut dummy = std::process::Command::new("true");
+                    if let Ok(child) = dummy.spawn() {
+                        return Ok(child);
+                    }
+                    return Err("DRYRUN_TRUE_SPAWN_FAILED".to_string());
+                }
+                #[cfg(windows)]
+                {
+                    let mut dummy = std::process::Command::new("cmd");
+                    dummy.args(["/C", "echo", "dry-run"]);
+                    if let Ok(child) = dummy.spawn() {
+                        return Ok(child);
+                    }
+                    return Err("DRYRUN_CMD_SPAWN_FAILED".to_string());
+                }
             }
         }
     }
@@ -1078,17 +1100,18 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
     }
 
     match cmd.spawn() {
-        Ok(_child) => {
+        Ok(child) => {
             log_event(
                 "info",
                 &format!(
-                    "launch_success program='{}' wd='{}' safe_mode={}",
+                    "launch_success program='{}' wd='{}' safe_mode={} pid={}",
                     program,
                     default_wd.display(),
-                    is_safe_mode()
+                    is_safe_mode(),
+                    child.id()
                 ),
             );
-            Ok(())
+            Ok(child)
         }
         Err(e) => {
             let err = format!(
@@ -1101,10 +1124,84 @@ fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn launch_game(request: LaunchBackendRequest) -> Result<(), String> {
+    let child = launch_game_internal(request)?;
+    // Original path deliberately discards child – authoritative behavior unchanged
+    // Keep child alive: detach by forgetting? Child dropped but OS process continues (spawned)
+    std::mem::forget(child);
+    Ok(())
+}
+
+#[tauri::command]
+fn launch_game_with_handoff(request: LaunchBackendRequest) -> Result<launch_lifecycle::HandoffReady, String> {
+    // SAFE_MODE guard remains authoritative – same as launch_game_internal but we repeat for explicit error
+    if is_safe_mode() {
+        log_event("warn", "launch_game_with_handoff blocked by SAFE_MODE");
+        return Err("SAFE_MODE_BLOCKED_LAUNCH: Crystal SAFE MODE active – launch blocked. Disable CRYSTAL_SAFE_MODE to allow launching.".to_string());
+    }
+
+    // Persist small bounded restore state BEFORE launch – required for return journey
+    let restore_state = launch_lifecycle::RestoreState {
+        system_id: request.systemId.clone(),
+        rom_path: request.romPath.clone(),
+        rom_basename: request.romBasename.clone(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        version: 1,
+    };
+
+    let restore_path = launch_lifecycle::save_restore_state(&restore_state).map_err(|e| format!("RESTORE_SAVE_FAILED: {}", e))?;
+
+    // Launch via single authority
+    let child = launch_game_internal(request)?;
+
+    let pid = child.id();
+
+    // Secure watcher BEFORE allowing Crystal to terminate – if fails, keep Crystal open and kill game
+    match launch_lifecycle::spawn_watcher_for_pid(pid, Some(restore_path.clone())) {
+        Ok(handoff) => {
+            // Do NOT wait – process continues; we keep child stored by forgetting to avoid killing on drop? On Unix dropping Child does not kill; but for safety we detach.
+            std::mem::forget(child);
+            log_event(
+                "info",
+                &format!("handoff_ready pid={} session={} restore={}", pid, handoff.session_id, handoff.restore_path),
+            );
+            Ok(handoff)
+        }
+        Err(e) => {
+            // Cleanup: attempt kill, clear restore, no orphan watcher
+            let mut c = child;
+            let _ = c.kill();
+            launch_lifecycle::clear_restore_state();
+            log_event("error", &format!("watcher_create_failed pid={} err={} – launch aborted, Crystal remains open", pid, e));
+            Err(format!("WATCHER_CREATE_FAILED: {} – Crystal remains open, no orphan", e))
+        }
+    }
+}
+
+// ---------- Lifecycle + restore commands ----------
+// Note: primary restore/exit commands live in launch_lifecycle module to keep single authority
+// The local helpers `prepare_launch_restore_state` etc are intentionally not duplicated here.
+
 // ---------- Entry ----------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // --- WATCHER MODE EARLY DETECTION (before Tauri builder) ---
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args.iter().any(|a| a == "--crystal-watcher") {
+        match launch_lifecycle::run_watcher_mode(raw_args) {
+            Ok(_) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("crystal watcher failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Init SAFE MODE before anything else – sets static from env var
     let safe = init_safe_mode_from_env();
     // Ensure writable dirs exist early; this is inside allowed root only
@@ -1114,9 +1211,11 @@ pub fn run() {
             log_event(
                 "info",
                 &format!(
-                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.5.0",
+                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.5.0 restored_boot={} args={:?}",
                     safe,
-                    root.display()
+                    root.display(),
+                    raw_args.iter().any(|a| a == "--crystal-restored"),
+                    raw_args
                 ),
             );
         }
@@ -1127,6 +1226,11 @@ pub fn run() {
 
     if safe {
         log_event("warn", "SAFE MODE is active – emulator launching disabled");
+    }
+
+    // If this is a restored boot (--crystal-restored) we keep restore.json until frontend loads and clears it
+    if raw_args.iter().any(|a| a == "--crystal-restored") {
+        log_event("info", "crystal_restored_boot detected – restore.json will be offered to frontend then cleared");
     }
 
     tauri::Builder::default()
@@ -1154,9 +1258,11 @@ pub fn run() {
             get_recently_played,
             verify_media,
             launch_game,
+            launch_game_with_handoff,
             safety::get_safe_mode,
             safety::get_crystal_writable_root,
             discovery::fetch_vimm,
+            discovery::fetch_romsfun,
             discovery::discovery_cache_read,
             discovery::discovery_cache_write,
             import_game::import_game_source,
@@ -1166,7 +1272,16 @@ pub fn run() {
             acquisition_watch::cancel_acquisition_watch,
             acquisition_watch::get_acquisition_settings,
             acquisition_watch::set_acquisition_custom_watch_directory,
-            acquisition_watch::clear_acquisition_custom_watch_directory
+            acquisition_watch::clear_acquisition_custom_watch_directory,
+            provider_surface::create_provider_surface,
+            provider_surface::close_provider_surface,
+            provider_surface::close_provider_surface_with_app,
+            provider_surface::resize_provider_surface,
+            provider_surface::get_provider_surface_status,
+            launch_lifecycle::get_launch_restore_state,
+            launch_lifecycle::save_launch_restore_state,
+            launch_lifecycle::clear_launch_restore_state,
+            launch_lifecycle::exit_crystal_after_handoff
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,6 +17,8 @@ import SystemLogo from './SystemLogo'
 export type BeginAcquisitionRequest = {
   systemId: string
   expectedTitle: string
+  providerId?: string
+  initialUrl?: string
   openExternalPage: () => Promise<void>
 }
 
@@ -245,23 +247,23 @@ export function DiscoverView({
     }
   }, [acquisitionActive, showDetailPanel])
 
-  // V8.6C3.1 – PRODUCTION BRIDGE – corrected ownership: Discover selects + starts, discoveryService owns URL/open
+  // V8.6D1 – PLAN C – in-app provider surface – ROMsFun slug + legacy numeric (Vimm dormant)
+  // New flow: A GET GAME → Crystal opens provider surface INSIDE existing fullscreen window
   const handleGetGame = useCallback(() => {
     if (acquisitionActive) return
     if (startInFlightRef.current) return
     if (!onBeginAcquisition) return
-    // Eligibility gate
     if (!canGetGame) return
-    // Provider ID numeric-only validation – reject full URL, path, query, empty, non-numeric
     const rawProviderId = detailFull?.providerId ?? (detailFull as any)?.id ?? selectedDetail?.providerId ?? selectedDetail?.id
     if (rawProviderId == null) {
       setErrorMsg('Missing provider id – cannot start acquisition')
       return
     }
     const idStr = String(rawProviderId).trim()
-    if (!/^\d+$/.test(idStr)) {
-      // Explicitly reject /vault/123, https://..., 123?foo, abc, empty – do not parse URL to recover
-      setErrorMsg(`Provider id must be numeric – got '${idStr.slice(0, 32)}'`)
+    // V8.6D1 ROMsFun slugs look like roms/<system>/title-slug or system/id-slug – allow slash but no protocol/traversal/UNC
+    const isRomsFunSlug = idStr.includes('/') && !idStr.includes('://') && !idStr.includes('..') && !idStr.startsWith('/') && !idStr.startsWith('\\')
+    if (!isRomsFunSlug && !/^\d+$/.test(idStr)) {
+      setErrorMsg(`Provider id must be romsfun slug or numeric – got '${idStr.slice(0, 48)}'`)
       return
     }
     const titleRaw = detailFull?.title ?? selectedDetail?.title ?? ''
@@ -270,29 +272,28 @@ export function DiscoverView({
       setErrorMsg('Could not determine game title for acquisition')
       return
     }
-    // Title already eligibility-gated via canGetGame, but double-check non-empty
-    // Build lazy callback – MUST NOT open eagerly
+    // Build lazy external-page callback – MUST NOT open Edge eagerly; primary ROMsFun flow uses in-app surface instead
     const openExternalPage = () => discoveryService.open(idStr)
 
-    // Reentry guard set BEFORE call
     startInFlightRef.current = true
     try {
       onBeginAcquisition({
         systemId,
         expectedTitle,
+        providerId: idStr,
+        initialUrl: idStr.includes('/') ? `https://romsfun.com/roms/${idStr.replace(/^roms\//,'')}` : undefined,
         openExternalPage,
       })
-      // Close detail – acquisition card now visible; leave guard true until active propagates
       setShowDetailPanel(false)
       setSelectedDetail(null)
       setDetailFull(null)
     } catch (e: any) {
       startInFlightRef.current = false
       const code = e?.code || e?.message
-      if (code === 'EXTERNAL_ACQUISITION_ALREADY_ACTIVE') {
+      if (code === 'EXTERNAL_ACQUISITION_ALREADY_ACTIVE' || code === 'PROVIDER_SURFACE_ALREADY_ACTIVE') {
         setErrorMsg('Acquisition already active – one at a time')
       } else {
-        setErrorMsg(code ? String(code).slice(0, 120) : 'Could not start acquisition')
+        setErrorMsg(code ? String(code).slice(0, 140) : 'Could not start acquisition')
       }
     }
   }, [acquisitionActive, canGetGame, detailFull, selectedDetail, systemId, onBeginAcquisition, alreadyInLibraryForDetail, currentAvailability])

@@ -110,6 +110,230 @@ fn is_allowed_redirect(url: &Url) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// ROMsFun fetch – metadata only, strict host/path/port, no download URL extraction
+// ---------------------------------------------------------------------------
+
+fn is_allowed_romsfun_host(host: &str) -> bool {
+    matches!(host, "romsfun.com" | "www.romsfun.com")
+}
+
+fn is_allowed_romsfun_path(path: &str) -> bool {
+    // Allow:
+    // "/" (home)
+    // "/roms", "/roms/", "/roms/<...>"
+    // "/search..."? Actually romsfun search uses /roms/search or ? Possibly broad.
+    // For safety we allow "/" family and "/roms" family – no /vault.
+    if path == "/" || path == "" {
+        return true;
+    }
+    if path == "/roms" || path == "/roms/" {
+        return true;
+    }
+    if path.starts_with("/roms/") {
+        // Reject traversal, backslash, double slash tricky?
+        if path.contains("..") {
+            return false;
+        }
+        if path.contains('\\') {
+            return false;
+        }
+        if path.contains("//") && !path.starts_with("//") {
+            // double slash inside path (e.g., /roms//evil) reject
+            // but allow query? path component only – query not included
+            if path.matches("//").count() > 0 {
+                // Allow only single slashes; "//" appears as part of path would be suspicious
+                // For strict, reject any "//" inside path
+                return false;
+            }
+        }
+        return true;
+    }
+    // Also allow /roms/search-ish? Could be /search etc – but to preserve legitimate browsing we also allow
+    // any path that starts with "/roms/" is sufficient for catalog; we also allow plain "/" for home.
+    // Reject others (e.g., unrelated advertising paths) – they will be blocked by navigation policy anyway.
+    // For fetch purposes, we allow only "/" and "/roms*" per above.
+    false
+}
+
+fn is_allowed_romsfun_redirect(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    match url.host_str() {
+        Some(h) if is_allowed_romsfun_host(h) => {}
+        _ => return false,
+    }
+    if !is_allowed_port(url) {
+        return false;
+    }
+    if !is_allowed_romsfun_path(url.path()) {
+        return false;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    true
+}
+
+#[tauri::command]
+pub async fn fetch_romsfun(url: String) -> Result<String, String> {
+    let parsed = Url::parse(&url).map_err(|e| {
+        let msg = format!("fetch_romsfun invalid URL '{}': {}", url, e);
+        log_minimal(
+            "warn",
+            &format!("fetch_romsfun reject invalid_url url='{}' err='{}'", url, e),
+        );
+        msg
+    })?;
+
+    if parsed.scheme() != "https" {
+        let msg = format!(
+            "fetch_romsfun only allows https, got '{}' for url '{}'",
+            parsed.scheme(),
+            url
+        );
+        log_minimal(
+            "warn",
+            &format!(
+                "fetch_romsfun reject scheme='{}' url='{}'",
+                parsed.scheme(),
+                url
+            ),
+        );
+        return Err(msg);
+    }
+
+    match parsed.host_str() {
+        Some(h) if is_allowed_romsfun_host(h) => {}
+        Some(other) => {
+            let msg = format!("fetch_romsfun only allows host romsfun.com / www.romsfun.com, got '{}' for url '{}'", other, url);
+            log_minimal(
+                "warn",
+                &format!("fetch_romsfun reject host='{}' url='{}'", other, url),
+            );
+            return Err(msg);
+        }
+        None => {
+            let msg = format!("fetch_romsfun missing host for url '{}'", url);
+            log_minimal("warn", &msg);
+            return Err(msg);
+        }
+    }
+
+    if !is_allowed_port(&parsed) {
+        let msg = format!(
+            "fetch_romsfun rejects custom port {} for url '{}'",
+            parsed.port().unwrap_or(0),
+            url
+        );
+        log_minimal("warn", &msg);
+        return Err(msg);
+    }
+
+    if !is_allowed_romsfun_path(parsed.path()) {
+        let msg = format!(
+            "fetch_romsfun only allows / and /roms paths, got '{}' for url '{}'",
+            parsed.path(),
+            url
+        );
+        log_minimal("warn", &msg);
+        return Err(msg);
+    }
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("fetch_romsfun rejects URL with credentials".to_string());
+    }
+
+    let app_version = env!("CARGO_PKG_VERSION");
+    let ua = format!(
+        "CrystalFrontend/{} (Discovery) - catalog reference only, no automated ROM download",
+        app_version
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if !is_allowed_romsfun_redirect(attempt.url()) {
+                return attempt.stop();
+            }
+            attempt.follow()
+        }))
+        .user_agent(ua)
+        .build()
+        .map_err(|e| {
+            let msg = format!("fetch_romsfun failed to build client: {}", e);
+            log_minimal("error", &msg);
+            msg
+        })?;
+
+    let resp = client.get(parsed.clone()).send().await.map_err(|e| {
+        let msg = format!("fetch_romsfun request failed for '{}': {}", url, e);
+        log_minimal(
+            "warn",
+            &format!("fetch_romsfun network fail url='{}' err='{}'", url, e),
+        );
+        msg
+    })?;
+
+    let status = resp.status().as_u16();
+    log_minimal(
+        "info",
+        &format!(
+            "fetch_romsfun provider=romsfun route=catalog status={} url='{}'",
+            status, url
+        ),
+    );
+
+    if !resp.status().is_success() {
+        let msg = format!("fetch_romsfun http status {} for url '{}'", status, url);
+        log_minimal("warn", &msg);
+        return Err(msg);
+    }
+
+    if let Some(declared) = resp.content_length() {
+        if let Err(e) = validate_declared_length(declared) {
+            let msg = format!("{} for url '{}' – rejecting", e, url);
+            log_minimal("warn", &msg);
+            return Err(msg);
+        }
+    }
+
+    let mut acc: Vec<u8> = Vec::with_capacity(std::cmp::min(
+        resp.content_length().unwrap_or(0) as usize,
+        VIMM_MAX_BODY_USIZE + 1,
+    ));
+    let mut resp_mut = resp;
+    loop {
+        let chunk_opt = resp_mut.chunk().await.map_err(|e| {
+            let msg = format!("fetch_romsfun failed reading body chunk: {}", e);
+            log_minimal("warn", &msg);
+            msg
+        })?;
+        match chunk_opt {
+            None => break,
+            Some(bytes) => {
+                if let Err(e) = check_bounded_accumulation(acc.len(), bytes.len()) {
+                    let msg = format!("{} for url '{}' – rejecting", e, url);
+                    log_minimal("warn", &msg);
+                    return Err(msg);
+                }
+                acc.extend_from_slice(&bytes);
+            }
+        }
+    }
+
+    let body = String::from_utf8(acc).map_err(|e| {
+        let msg = format!(
+            "fetch_romsfun body not valid utf-8: {} for url '{}'",
+            e, url
+        );
+        log_minimal("warn", &msg);
+        msg
+    })?;
+
+    Ok(body)
+}
+
 #[tauri::command]
 pub async fn fetch_vimm(url: String) -> Result<String, String> {
     // Validate URL parseable

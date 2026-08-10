@@ -25,7 +25,10 @@ import { getTauriInvoker } from './runtime/tauri'
 import { getFixtureGames, toGameEntry, fixtureMediaForGame, getFixtureSystems } from './dev/fixtures/goldenFixture'
 import { isFixtureEnabled, isDevFixtureAllowed } from './dev/fixtures/fixtureMode'
 import { useCrystalAcquisition } from './acquisition/useCrystalAcquisition'
+import { useProviderSurface } from './acquisition/useProviderSurface'
 import AcquisitionStatusCard from './acquisition/AcquisitionStatusCard'
+import ProviderSurfaceView from './components/ProviderSurfaceView'
+import { buildCanonicalDetailUrl as buildRomsFunCanonicalForBegin } from './discovery/providers/romsfun/romsfunRoutes'
 // V8.3.1 signed updater – official Tauri v2 plugin – non-blocking startup check, restrained UI, manual Settings entry
 import { checkForUpdate } from './updater/crystalUpdater'
 import type { CrystalUpdateInfo } from './updater/crystalUpdater'
@@ -126,6 +129,93 @@ function AppInner() {
     onRefreshComplete: (_sid: string, _games: any) => {},
   })
 
+  // V8.6D1 – Provider surface primary (in-app ROMsFun child webview → browser download capture)
+  const providerSurf = useProviderSurface({
+    refreshLibrary: async (sid: string) => {
+      if (!isTauriEnvironment() || !isRealMachine) {
+        const cached = gameCache.get(sid)
+        if (cached) return cached
+        return []
+      }
+      const games = await listGames(sid)
+      setGameCache(prev => {
+        const m = new Map(prev)
+        m.set(sid, games)
+        return m
+      })
+      return games
+    },
+    onGameFound: (sid: string, game: any) => {
+      setActiveSystemId(sid)
+      setSelectedGameId(game.id)
+      setView('library')
+    },
+    onRefreshComplete: (_sid: string, _games: any) => {},
+  })
+
+  const handleBeginProviderAcquisition = useCallback(async (req: any) => {
+    // req from DiscoverView: { systemId, expectedTitle, providerId?, initialUrl?, openExternalPage }
+    // Primary Plan C: do NOT open Edge/shell.open, do NOT use fallback watcher, use in-app provider surface
+    try {
+      let canonical: string | null = null
+      const pid = (req.providerId || '').trim()
+      if (pid) {
+        // pid may be slug roms/<system>/title or system/slug etc
+        try {
+          // If pid looks like full slug with roms/ prefix
+          if (pid.startsWith('roms/')) {
+            const stripped = pid.replace(/^roms\//, '')
+            canonical = buildRomsFunCanonicalForBegin(stripped)
+          } else if (pid.includes('/')) {
+            canonical = buildRomsFunCanonicalForBegin(pid)
+          } else if (/^\d+$/.test(pid)) {
+            // legacy Vimm numeric – dormant path, but if triggered via romsfun provider this should not happen
+            // For safety keep dormant: we don't open romsfun via numeric, reject
+            throw new Error(`Numeric provider id '${pid}' not valid for ROMsFun primary – Vimm dormant`)
+          } else {
+            canonical = buildRomsFunCanonicalForBegin(pid)
+          }
+        } catch (e: any) {
+          // If construction fails, try initialUrl if provided and validated as romsfun
+          if (req.initialUrl && typeof req.initialUrl === 'string') {
+            try {
+              const u = new URL(req.initialUrl)
+              if (u.hostname === 'romsfun.com' || u.hostname === 'www.romsfun.com') {
+                canonical = req.initialUrl
+              }
+            } catch {}
+          }
+          if (!canonical) throw e
+        }
+      } else if (req.initialUrl) {
+        canonical = req.initialUrl
+      }
+
+      if (!canonical) {
+        console.error('[D1] provider surface begin – no canonical URL could be built', req)
+        return
+      }
+
+      // Block galaxylanes explicitly – do NOT allowlist
+      try {
+        const u = new URL(canonical)
+        if (u.hostname.toLowerCase().includes('galaxylanesandgames.com')) {
+          console.error('[D1] blocked – galaxylanes URL not allowed', canonical)
+          return
+        }
+      } catch {}
+
+      await providerSurf.begin({
+        systemId: req.systemId,
+        expectedTitle: req.expectedTitle,
+        initialUrl: canonical,
+      })
+    } catch (e: any) {
+      console.error('[D1] provider surface begin failed', e)
+      // fallback to legacy if needed? primary flow must NOT open Edge – we keep legacy intact but not call it automatically
+    }
+  }, [providerSurf])
+
   // Expose generic entry – DEV ONLY – production Tauri build must NOT expose window globals
   useEffect(() => {
     try {
@@ -134,12 +224,16 @@ function AppInner() {
         // ensure prod does not leak dev hooks
         try { delete (window as any).__beginCrystalAcquisition } catch {}
         try { delete (window as any).__crystalAcquisition } catch {}
+        try { delete (window as any).__beginProviderSurface } catch {}
+        try { delete (window as any).__providerSurface } catch {}
         return
       }
       ;(window as any).__beginCrystalAcquisition = (req: any) => crystalAcq.begin(req)
       ;(window as any).__crystalAcquisition = crystalAcq
+      ;(window as any).__beginProviderSurface = (req: any) => providerSurf.begin(req)
+      ;(window as any).__providerSurface = providerSurf
     } catch {}
-  }, [crystalAcq])
+  }, [crystalAcq, providerSurf])
 
 
 
@@ -512,6 +606,25 @@ function AppInner() {
 
   const onNav = useCallback(
     (action: NavigationAction) => {
+      // V8.6D1 provider surface guard – Discover list must not react underneath while surface active
+      try {
+        if (providerSurf?.active) {
+          const ph = providerSurf.phase as any
+          // While BROWSING_PROVIDER / download phases, controller minimal B/Back recovery only
+          if (action === 'back' || action === 'menu') {
+            try { providerSurf.cancel?.() } catch {}
+            return
+          }
+          if (ph === 'READY_TO_PLAY' && action === 'confirm') {
+            const fg = (providerSurf as any).foundGame
+            if (fg) { handleLaunchGame(fg as any); return }
+            return
+          }
+          // Block left/right/system navigation underneath – no accidental A PLAY
+          if (['left','right','up','down','previousSystem','nextSystem','search','favorite','media'].includes(action as any)) return
+        }
+      } catch {}
+
       // V8.6C2.1 – Acquisition controller input guard – deterministic semantics, no dead-end on ALREADY
       try {
         const ext = (crystalAcq as any)?.externalState
@@ -694,7 +807,7 @@ function AppInner() {
         }
       }
     },
-    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, handleLaunchGame]
+    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame]
   )
 
   // Effects – must be unconditional and before any early returns
@@ -1380,12 +1493,31 @@ function AppInner() {
           logoUrl={logoUrl}
           selectedLocalGame={discoverPrefillGame}
           libraryGames={activeGames}
-          onBeginAcquisition={crystalAcq.begin}
-          acquisitionActive={crystalAcq.active}
-          acquisitionPhase={crystalAcq.crystalPhase as any}
+          onBeginAcquisition={(req: any) => handleBeginProviderAcquisition(req)}
+          acquisitionActive={!!(crystalAcq.active || providerSurf.active)}
+          acquisitionPhase={(providerSurf.phase !== 'IDLE' ? providerSurf.phase : crystalAcq.crystalPhase) as any}
           onBack={() => {
-            // restore origin view
+            // Crystal B/Back must remain recoverable while provider surface active – block Discover exit underneath?
+            if (providerSurf.active) {
+              try { providerSurf.cancel(); } catch {}
+              return
+            }
             setView(discoverOrigin === 'discover' ? 'system' : (discoverOrigin as any))
+          }}
+        />
+      )}
+
+      {providerSurf.active && providerSurf.state && (
+        <ProviderSurfaceView
+          theme={theme as any}
+          systemId={providerSurf.state.systemId}
+          expectedTitle={providerSurf.state.expectedTitle}
+          currentUrl={providerSurf.state.currentUrl}
+          phase={providerSurf.phase}
+          blockedUrl={providerSurf.state.providerBlockedUrl}
+          errorMessage={providerSurf.state.message || providerSurf.errorDetail || undefined}
+          onBack={() => {
+            try { providerSurf.cancel(); } catch {}
           }}
         />
       )}
