@@ -176,6 +176,7 @@ export function LibraryView({
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative', minHeight: 0 }}>
         {/* LEFT — feathered, no hard wall, shared scene */}
         <div
+          className="library-left"
           style={{
             width: '30%',
             minWidth: '28%',
@@ -220,7 +221,7 @@ export function LibraryView({
         </div>
 
         {/* RIGHT HERO — more room, pushed right via paddingLeft in LibraryHero, SystemStage hardware stable */}
-        <LibraryHero theme={theme}>
+        <LibraryHero theme={theme} systemId={systemId}>
           <SelectedGameContext
             theme={theme}
             game={selectedGame}
@@ -238,6 +239,15 @@ export function LibraryView({
       {/* keyframes reused */}
       <style>{`
         @keyframes crystal-spin { to { transform: rotate(360deg); } }
+        .library-left { scrollbar-width: thin; }
+        .library-left::-webkit-scrollbar { width: 6px; }
+        .library-left::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.12); border-radius: 999px; }
+        @media (max-width: 1280px) {
+          .golden-library.v85 .library-left { min-width: 300px !important; max-width: 34% !important; }
+        }
+        @media (max-height: 720px) {
+          .golden-library.v85 .library-left { gap: 8px !important; padding: 12px 10px 10px 12px !important; }
+        }
       `}</style>
     </div>
   )

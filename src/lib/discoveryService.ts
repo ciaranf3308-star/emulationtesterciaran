@@ -55,6 +55,49 @@ export function isAllowedOpenUrl(url: string): boolean {
 }
 
 export async function search(params: DiscoverySearchParams): Promise<DiscoveryResult[]> {
+  // V8.5 fixture mock: in browser dev with ?fixture=golden we cannot reach Tauri Vimm fetch, so synthesize catalog results for visual QA
+  try {
+    if (!isTauriEnvironment()) {
+      const loc = typeof window !== 'undefined' ? window.location.search : ''
+      const isFixture = loc.includes('fixture=golden') || loc.includes('fixture')
+      if (isFixture || (typeof (globalThis as any).__CRYSTAL_FIXTURE_MOCK !== 'undefined')) {
+        const q = params.query.trim()
+        if (q.length >= 1) {
+          // steam unsupported check – return empty to demonstrate unsupported UX
+          if (params.systemId === 'steam') {
+            throw new Error(`System '${params.systemId}' unsupported for provider 'vimm'`)
+          }
+          // build 6 mock results
+          const sys = params.systemId.toUpperCase()
+          const mocks: DiscoveryResult[] = Array.from({ length: 6 }, (_, i) => {
+            const id = `${9000000000000000000 + i + q.length}`
+            return {
+              id: String(id),
+              providerId: String(id),
+              title: `${q[0].toUpperCase()+q.slice(1)} ${['Quest','Legends','Turbo','Party','Collection','Remix'][i]} – ${sys}`,
+              systemId: params.systemId,
+              system: params.systemId,
+              externalSystem: sys,
+              region: ['USA','EUR','JPN'][i%3],
+              year: 2000 + i,
+              availability: 'available' as any,
+              externalUrl: `https://vimm.net/vault/${id}`,
+              thumbnailUrl: null,
+              provider: 'vimm',
+            }
+          })
+          // small artificial delay to mimic searching
+          await new Promise(r => setTimeout(r, 120))
+          return mocks
+        }
+      }
+    }
+  } catch (e) {
+    // if we intentionally threw unsupported, propagate
+    if ((e as any)?.message?.includes('unsupported')) throw e
+    // fall through to real provider
+  }
+
   const res: AuthResult[] = await service.search(params.systemId, params.query, { signal: params.signal });
   return res.map((r): DiscoveryResult => ({
     id: r.providerId || (r as any).id,
@@ -74,6 +117,31 @@ export async function search(params: DiscoverySearchParams): Promise<DiscoveryRe
 }
 
 export async function detail(id: string, systemId?: string): Promise<DiscoveryGameDetail | null> {
+  try {
+    if (!isTauriEnvironment()) {
+      const loc = typeof window !== 'undefined' ? window.location.search : ''
+      const isFixture = loc.includes('fixture=golden') || loc.includes('fixture')
+      if (isFixture) {
+        // synthetic detail
+        await new Promise(r => setTimeout(r, 180))
+        return {
+          providerId: id,
+          title: `Discovery Detail ${id.slice(-4)}`,
+          systemId: systemId || 'gc',
+          description: 'Premium catalog entry – synthetic fixture detail for V8.5 visual QA. Shows graphite / silver / cyan acrylic glass premium gaming OS presentation. No ROM fetch – catalog only.',
+          year: 2002,
+          developer: 'Nintendo',
+          publisher: 'Nintendo',
+          genre: 'Action-Adventure',
+          players: '1-4',
+          region: 'USA',
+          discCount: 1,
+          externalUrl: `https://vimm.net/vault/${id}`,
+        } as any
+      }
+    }
+  } catch {}
+
   try {
     const d = await service.getDetail(id, systemId);
     return d;

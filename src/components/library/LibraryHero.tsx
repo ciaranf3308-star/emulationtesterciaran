@@ -2,10 +2,11 @@ import React from 'react'
 
 export type LibraryHeroProps = {
   theme: 'light' | 'dark'
+  systemId?: string
   children?: React.ReactNode // selected game context overlay
 }
 
-export function LibraryHero({ theme, children }: LibraryHeroProps) {
+export function LibraryHero({ theme, systemId, children }: LibraryHeroProps) {
   const isDark = theme === 'dark'
   return (
     <div
@@ -17,8 +18,9 @@ export function LibraryHero({ theme, children }: LibraryHeroProps) {
         display: 'flex',
         alignItems: 'stretch',
         justifyContent: 'stretch',
-        // push hero slightly right via internal padding to give breathing room once carousel removed
-        paddingLeft: 18,
+        // V8.5 per-system tuning preserved from V7.3 showroomPlacement
+        // gc purple cube slightly larger after carousel removal, gbc/gba tighter
+        paddingLeft: systemId === 'gc' ? 22 : systemId === 'gbc' || systemId === 'gba' ? 14 : 18,
         boxSizing: 'border-box',
       }}
     >

@@ -108,6 +108,7 @@ function AppInner() {
     // V8.2 fixture DEV-only – merge fixture systems for web QA populated fidelity
     // Never overrides Tauri real machine truth alone; real machine still uses truth only,
     // but for browser dev with ?fixture=golden we inject gbc/ps2/gc (7 games each)
+    // V8.5 extended: also include requested systemId (nds/gba/steam etc) even if not in golden fixture so screenshots never fallback to GBC
     try {
       const fm = isFixtureEnabled()
       if (fm.enabled) {
@@ -119,8 +120,22 @@ function AppInner() {
         for (const fid of fixtureIds) {
           if (!existing.has(fid)) {
             merged.push({ id: fid, fullName: fid } as unknown as MachineSystem)
+            existing.add(fid)
           }
         }
+        // V8.5: ensure requested systemId (nds/steam/etc) is present even if not in golden list
+        if (fm.systemId && !existing.has(fm.systemId)) {
+          merged.push({ id: fm.systemId, fullName: fm.systemId } as unknown as MachineSystem)
+          existing.add(fm.systemId)
+        }
+        // also check rawParams for system that might not be parsed due to extended set mismatch (safety)
+        try {
+          const sp = fm.rawParams
+          const rawSys = sp?.get('system')
+          if (rawSys && !existing.has(rawSys)) {
+            merged.push({ id: rawSys, fullName: rawSys } as unknown as MachineSystem)
+          }
+        } catch {}
         // if no base (config null and manifest null), still return fixture systems as fallback so screenshots never blank
         if (merged.length === 0) {
           return fixtureIds.map(id => ({ id, fullName: id } as unknown as MachineSystem))
@@ -610,16 +625,32 @@ function AppInner() {
     } catch {}
   }, [])
 
-  // Fixture mode ?fixture=golden&system=gbc|ps2|gc&view=system|library&theme=light|dark (DEV only)
+  // Fixture mode ?fixture=golden&system=gbc|ps2|gc&view=system|library&theme=light|dark (DEV only) – V8.5 extended for discover/settings/nds/steam
   useEffect(() => {
     try {
       const fm = isFixtureEnabled()
-      if (!fm.enabled) return
+      if (!fm.enabled) {
+        // V8.5: also allow direct ?view=discover|settings|library|system without fixture for rapid QA (if dev)
+        try {
+          const sp = new URLSearchParams(window.location.search)
+          const rawView = sp.get('view')
+          const rawSystem = sp.get('system')
+          const rawTheme = sp.get('theme')
+          if (rawSystem) setActiveSystemId(rawSystem)
+          if (rawView && ['system','library','discover','settings','allgames','favorites','recent'].includes(rawView)) {
+            setView(rawView as any)
+          }
+          if (rawTheme && rawTheme !== theme) {
+            setTimeout(() => { try { toggle() } catch {} }, 0)
+          }
+        } catch {}
+        return
+      }
       if (fm.systemId) {
         // default gbc but allow override
         setActiveSystemId(fm.systemId)
       }
-      if (fm.view && (fm.view === 'system' || fm.view === 'library')) {
+      if (fm.view && (['system','library','discover','settings','allgames','favorites','recent'] as any).includes(fm.view)) {
         setView(fm.view as any)
       }
       if (fm.theme && (fm.theme === 'light' || fm.theme === 'dark')) {
@@ -644,6 +675,16 @@ function AppInner() {
           }
         } catch {}
       }
+      // V8.5: if q present + discover view, we pass via window global for DiscoverView to pick up
+      try {
+        const sp = fm.rawParams
+        const q = sp?.get('q')
+        if (q) {
+          // store for discover prefill reading (DiscoverView will look at window.__crystal_discover_prefill)
+          ;(window as any).__crystal_discover_prefill_q = q
+          // also if discover view, attempt to set query via custom event after delay – Discover component will handle empty, we rely on its own reading of this global
+        }
+      } catch {}
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

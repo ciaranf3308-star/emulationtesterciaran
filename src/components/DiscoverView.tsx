@@ -42,6 +42,15 @@ export function DiscoverView({
 
   const prefill = useMemo(() => {
     if (selectedLocalGame?.name) return selectedLocalGame.name
+    try {
+      if (typeof window !== 'undefined') {
+        const w = window as any
+        if (w.__crystal_discover_prefill_q) return String(w.__crystal_discover_prefill_q)
+        const sp = new URLSearchParams(window.location.search)
+        const q = sp.get('q')
+        if (q) return q
+      }
+    } catch {}
     return ''
   }, [selectedLocalGame])
 
@@ -64,6 +73,15 @@ export function DiscoverView({
 
   // Abort controller for stale searches
   const abortRef = useRef<AbortController | null>(null)
+
+  // V8.5: when prefill comes from URL ?q= after mount (fixture effect), sync into query once
+  useEffect(() => {
+    if (prefill && prefill !== query) {
+      setQuery(prefill)
+      setDebounced(prefill)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill])
 
   // autoFocus desktop
   useEffect(() => {

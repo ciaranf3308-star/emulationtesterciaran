@@ -11,8 +11,8 @@
  */
 import { isTauriEnvironment } from '../../runtime/environment'
 
-export type FixtureSystemId = 'gbc' | 'ps2' | 'gc'
-export type FixtureView = 'system' | 'library'
+export type FixtureSystemId = 'gbc' | 'ps2' | 'gc' | 'nds' | 'gba' | 'steam' | 'gc' | 'psx' | 'n64' | 'snes'
+export type FixtureView = 'system' | 'library' | 'discover' | 'settings' | 'allgames' | 'favorites' | 'recent'
 export type FixtureTheme = 'light' | 'dark'
 
 export type FixtureModeResult = {
@@ -87,11 +87,15 @@ export function isFixtureEnabled(): FixtureModeResult {
   const viewRaw = sp.get('view')
   const themeRaw = sp.get('theme')
 
+  // V8.5 extended: allow nds, gba, steam, psx etc for screenshot matrix even though fixture data may be synthetic
+  const allowedSystems = new Set(['gbc','ps2','gc','nds','gba','steam','psx','n64','snes','genesis','gb','gba','wii','psp','xbox','n3ds','dreamcast','wiiu','xbox360'])
   let systemId: FixtureSystemId = 'gbc'
-  if (sysRaw === 'gbc' || sysRaw === 'ps2' || sysRaw === 'gc') systemId = sysRaw
+  if (sysRaw && allowedSystems.has(sysRaw)) systemId = sysRaw as any
+  else if (sysRaw === 'gbc' || sysRaw === 'ps2' || sysRaw === 'gc') systemId = sysRaw
 
+  const allowedViews = new Set(['system','library','discover','settings','allgames','favorites','recent'])
   let view: FixtureView | undefined
-  if (viewRaw === 'system' || viewRaw === 'library') view = viewRaw
+  if (viewRaw && allowedViews.has(viewRaw)) view = viewRaw as any
   else view = 'system' // default view system
 
   let theme: FixtureTheme | undefined

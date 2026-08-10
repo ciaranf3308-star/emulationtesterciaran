@@ -57,7 +57,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
                   : 'rgba(70,130,255,0.10)'
                 : isDark
                 ? 'rgba(255,255,255,0.02)'
-                : 'rgba(255,255,255,0.42)',
+                : 'rgba(255,255,255,0.52)',
               backdropFilter: isSel ? 'blur(10px) saturate(1.1)' : 'none',
               WebkitBackdropFilter: isSel ? 'blur(10px) saturate(1.1)' : 'none',
               boxShadow: isSel
@@ -86,7 +86,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
                 overflow: 'hidden',
                 flexShrink: 0,
                 background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
-                border: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
+                border: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.09)'}`,
                 boxShadow: isSel ? '0 4px 12px rgba(0,0,0,0.24)' : 'none',
               }}
             >
