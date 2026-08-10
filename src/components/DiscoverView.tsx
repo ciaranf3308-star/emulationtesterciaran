@@ -43,7 +43,7 @@ export function DiscoverView({
 
   const [query, setQuery] = useState(prefill)
   const [debounced, setDebounced] = useState(prefill)
-  const [results, setResults] = useState<DiscoveryResult[]>([])
+  const [results, setResults] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [searching, setSearching] = useState(false)
   const [offline, setOffline] = useState(false)
@@ -102,13 +102,20 @@ export function DiscoverView({
       setSchemaChanged(false)
       setErrorMsg(null)
       try {
-        const res = await discoveryService.search({ systemId, query: debounced, limit: 24, signal: ac.signal })
+        const res: any = await discoveryService.search({ systemId, query: debounced, limit: 24, signal: ac.signal })
         if (cancelled || ac.signal.aborted) return
-        setResults(res.results)
-        setTotal(res.total)
-        setOffline(!!res.offline)
-        setSchemaChanged(!!res.schemaChanged)
-        if (res.error && !res.offline && !res.schemaChanged) setErrorMsg(res.error)
+        if (Array.isArray(res)) {
+          setResults(res)
+          setTotal(res.length)
+          setOffline(false)
+          setSchemaChanged(false)
+        } else {
+          setResults(res.results)
+          setTotal(res.total)
+          setOffline(!!res.offline)
+          setSchemaChanged(!!res.schemaChanged)
+          if (res.error && !res.offline && !res.schemaChanged) setErrorMsg(res.error)
+        }
       } catch (e: any) {
         if (cancelled) return
         if (e?.name === 'AbortError') return

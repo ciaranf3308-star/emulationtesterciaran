@@ -26,7 +26,7 @@ import { isSafeWriteInsideRoot, assertSafeCacheWrite } from '../../src/discovery
 import { StaleQueryGuard, createStaleGuard } from '../../src/discovery/providers/vimm/staleGuard';
 import { matchLocalLibrary, isInLibrary as isInLibraryConservative, batchMatch } from '../../src/discovery/providers/vimm/matcher';
 import { RATE_LIMIT_MS, getBackoffDelayMs, classifyFetchError } from '../../src/discovery/providers/vimm/rateLimit';
-import { VimmProvider } from '../../src/discovery/providers/vimm/vimmProvider';
+import { VimmProvider } from '../../src/discovery/providers/vimm/VimmProvider';
 
 describe('V8.4 discovery – Vimm route building (search URL encoding, detail URL)', () => {
   test('search URL encodes query, includes system token, validates host', () => {

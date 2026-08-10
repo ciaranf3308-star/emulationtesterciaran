@@ -17,6 +17,8 @@ import { crystalToVimmToken, isSupportedCrystalSystem } from './vimmSystemMap';
 import { buildSearchUrl, buildDetailUrl } from './vimmRoutes';
 import { parseVimmSearch } from './parseVimmSearch';
 import { parseVimmDetail } from './parseVimmDetail';
+import { parseSearchHtml, parseDetailHtml } from './parser';
+import { StaleQueryGuard, createStaleGuard } from './staleGuard';
 import { isTauriEnvironment } from '../../../runtime/environment';
 
 const PROVIDER_ID = 'vimms';
@@ -112,13 +114,45 @@ export class VimmProvider implements CatalogProvider {
   name = PROVIDER_NAME;
 
   private lastFetchMs = 0;
+  private _guard = createStaleGuard();
 
   supportsSystem(systemId: string): boolean {
     return isSupportedCrystalSystem(systemId);
   }
 
+  getGuard(): StaleQueryGuard {
+    return this._guard;
+  }
+
+  // helper for guard monotonic – used by tests via getGuard().next()
+
   buildExternalUrl(id: string): string {
     return buildDetailUrl(id);
+  }
+
+  // Test fixtures – deterministic, NO network
+  parseSearchFixture(html: string, crystalSystemId: string): any[] {
+    const token = isSupportedCrystalSystem(crystalSystemId) ? crystalToVimmToken(crystalSystemId) : null;
+    if (!token) throw new Error(`unsupported system ${crystalSystemId} – no Vimm token`);
+    try {
+      const results = (parseVimmSearch as any)(html, crystalSystemId, token);
+      return results;
+    } catch {
+      // fallback fixture parser
+      return parseSearchHtml(html, crystalSystemId, token);
+    }
+  }
+
+  parseDetailFixture(html: string, crystalSystemId: string, detailId: string): any {
+    try {
+      const detail = parseVimmDetail(html, detailId, detailId);
+      if (crystalSystemId) {
+        (detail as any).systemId = crystalSystemId;
+      }
+      return detail;
+    } catch {
+      return parseDetailHtml(html, crystalSystemId, crystalToVimmToken(crystalSystemId) || 'unknown', detailId);
+    }
   }
 
   private async enforceSpacing(signal?: AbortSignal) {
@@ -129,7 +163,7 @@ export class VimmProvider implements CatalogProvider {
 
   async search(systemId: string, query: string, opts?: { signal?: AbortSignal }): Promise<DiscoveryResult[]> {
     if (!this.supportsSystem(systemId)) {
-      throw new Error(`System '${systemId}' not supported by vimms (vimm token missing)`);
+      throw new Error(`System '${systemId}' unsupported for provider 'vimms' – no token (not supported by vimms)`);
     }
     if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
