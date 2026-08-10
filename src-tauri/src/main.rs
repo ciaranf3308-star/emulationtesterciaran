@@ -996,7 +996,7 @@ pub fn run() {
             log_event(
                 "info",
                 &format!(
-                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.4.1",
+                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.5.0",
                     safe,
                     root.display()
                 ),

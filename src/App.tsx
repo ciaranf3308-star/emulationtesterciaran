@@ -15,6 +15,7 @@ import type { GameplaySource } from './stage/types'
 import SystemLanding, { type LandingGameBrief } from './components/SystemLanding'
 import LibraryView, { type LibraryGameDetail } from './components/LibraryView'
 import { type CarouselGame } from './components/GameBoxCarousel'
+import SystemLogo from './components/SystemLogo'
 import { getSystemMeta } from './presentation/systemMeta'
 import { deriveSystemSummary, getRecent, getMostPlayed, getSurprise } from './presentation/systemSummary'
 import { useSemanticInput } from './hooks/useSemanticInput'
@@ -1169,108 +1170,477 @@ function AppInner() {
         />
       )}
 
-      {(view === 'allgames' || view === 'favorites' || view === 'recent') && (
-        <div style={{ position: 'absolute', inset: 0, background: theme === 'dark' ? '#0a0a0f' : '#f4f6fb', zIndex: 6, overflowY: 'auto', padding: '22px 22px', pointerEvents: 'auto', color: theme === 'dark' ? '#eef7ff' : '#16213e' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <h2 style={{ margin: 0, fontFamily: 'var(--crystal-display)', fontWeight: 500 }}>
-              {view === 'allgames' ? 'All Games' : view === 'favorites' ? 'Favorites' : 'Recently Played'} {collectionGames ? `• ${collectionGames.length}` : ''}
-            </h2>
-            <button
-              onClick={() => setView('system')}
-              style={{ padding: '6px 12px', borderRadius: 999, border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.8)', color: theme === 'dark' ? '#eef7ff' : '#16213e' }}
-            >
-              Back
-            </button>
+            {(view === 'allgames' || view === 'favorites' || view === 'recent') && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 6,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            background: theme === 'dark' ? '#0a0a0f' : '#f2f4f8',
+            color: theme === 'dark' ? '#eef7ff' : '#14151a',
+          }}
+        >
+          {/* Background – same language as Discover / Library */}
+          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+            {bgUrl ? (
+              <img
+                src={bgUrl}
+                alt=""
+                style={{
+                  position: 'absolute',
+                  inset: '-8%',
+                  width: '116%',
+                  height: '116%',
+                  objectFit: 'cover',
+                  filter: 'blur(32px) saturate(0.84) brightness(0.68)',
+                  transform: 'scale(1.08)',
+                  opacity: theme === 'dark' ? 0.9 : 0.62,
+                }}
+              />
+            ) : (
+              <div style={{ position: 'absolute', inset: 0, background: theme === 'dark' ? '#12131a' : '#eceef8' }} />
+            )}
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background:
+                  theme === 'dark'
+                    ? 'linear-gradient(180deg, rgba(10,12,18,0.36), rgba(8,10,16,0.58)), radial-gradient(86% 70% at 50% 18%, transparent 10%, rgba(6,9,14,0.42) 78%)'
+                    : 'linear-gradient(180deg, rgba(251,253,255,0.68), rgba(244,247,255,0.76)), radial-gradient(86% 70% at 50% 18%, transparent 8%, rgba(232,238,248,0.44) 72%)',
+              }}
+            />
+            <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse at center, transparent 58%, rgba(0,0,0,0.18) 100%)', opacity: theme === 'dark' ? 0.5 : 0.2 }} />
           </div>
-          {collectionLoading && <div style={{ fontSize: 11, opacity: 0.6, fontFamily: 'var(--crystal-mono)' }}>Loading…</div>}
-          {collectionError && <div style={{ fontSize: 11, color: '#ff7b7b' }}>{collectionError}</div>}
-          {!collectionLoading && !collectionError && collectionGames && collectionGames.length === 0 && (
-            <div style={{ fontSize: 11, opacity: 0.6, fontFamily: 'var(--crystal-mono)' }}>No games – real Tauri runtime shows real library only. No fake data.</div>
-          )}
-          {!collectionLoading && collectionGames && collectionGames.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {collectionGames.map(g => (
-                <div key={g.id} onClick={() => handleLaunchGame(g)} style={{ padding: '8px 12px', borderRadius: 8, background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.72)', border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`, cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>{g.name} <span style={{ opacity: 0.6, fontSize: 10 }}>({g.system_id})</span></div>
-                    <div style={{ fontSize: 10, opacity: 0.6, fontFamily: 'var(--crystal-mono)' }}>{g.rom_basename}{g.extension}</div>
-                  </div>
-                  <span style={{ fontSize: 10, opacity: 0.6 }}>↗</span>
+
+          {/* Top chrome */}
+          <div
+            style={{
+              position: 'relative',
+              zIndex: 2,
+              height: 84,
+              minHeight: 84,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 24px',
+              borderBottom: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
+              backdropFilter: 'blur(22px) saturate(1.12)',
+              WebkitBackdropFilter: 'blur(22px) saturate(1.12)',
+              background: theme === 'dark' ? 'rgba(10,12,18,0.32)' : 'rgba(255,255,255,0.56)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <button
+                onClick={() => setView('system')}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 999,
+                  border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                  background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)',
+                  color: theme === 'dark' ? '#eef7ff' : '#16213e',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                  fontFamily: 'var(--crystal-mono)',
+                  fontSize: 13,
+                }}
+              >
+                ←
+              </button>
+              <div>
+                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, letterSpacing: '0.11em', opacity: 0.56, textTransform: 'uppercase' }}>
+                  CRYSTAL • COLLECTION
                 </div>
-              ))}
+                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 20, fontWeight: 720, letterSpacing: '-0.02em', marginTop: 2, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {view === 'allgames' ? 'All Games' : view === 'favorites' ? 'Favorites' : 'Recently Played'}
+                  <span
+                    style={{
+                      fontFamily: 'var(--crystal-mono)',
+                      fontSize: 10,
+                      padding: '3px 9px',
+                      borderRadius: 999,
+                      background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)',
+                      border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+                      color: theme === 'dark' ? 'rgba(230,244,255,0.88)' : 'rgba(22,33,62,0.82)',
+                    }}
+                  >
+                    {(collectionGames?.length ?? '—')} TITLES
+                  </span>
+                </div>
+              </div>
             </div>
-          )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.54, letterSpacing: '0.08em' }}>
+                [B] BACK • [A] PLAY • D-PAD NAV
+              </div>
+              {logoUrl && (
+                <div style={{ opacity: 0.88 }}>
+                  <SystemLogo systemId={activeSystemId} logoUrl={logoUrl} fallbackName={fullName} theme={theme} style={{ minWidth: 120, maxWidth: 180, minHeight: 28 }} isSelected />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Content */}
+          <div style={{ position: 'relative', zIndex: 2, flex: 1, overflowY: 'auto', padding: '22px 24px' }}>
+            {collectionLoading && (
+              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 12, opacity: 0.6, padding: '32px 8px' }}>Loading collection…</div>
+            )}
+            {collectionError && (
+              <div
+                style={{
+                  fontFamily: 'var(--crystal-mono)',
+                  fontSize: 11,
+                  color: '#ff8a8a',
+                  background: theme === 'dark' ? 'rgba(255,80,80,0.08)' : 'rgba(255,80,80,0.08)',
+                  border: '1px solid rgba(255,80,80,0.16)',
+                  padding: '12px 14px',
+                  borderRadius: 12,
+                }}
+              >
+                {collectionError}
+              </div>
+            )}
+            {!collectionLoading && !collectionError && collectionGames && collectionGames.length === 0 && (
+              <div
+                style={{
+                  marginTop: 24,
+                  padding: '28px 22px',
+                  borderRadius: 16,
+                  background: theme === 'dark' ? 'rgba(20,24,36,0.56)' : 'rgba(255,255,255,0.72)',
+                  border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
+                  fontFamily: 'var(--crystal-mono)',
+                  fontSize: 11,
+                  lineHeight: 1.6,
+                  opacity: 0.72,
+                }}
+              >
+                No titles here — Tauri runtime reports no games for this collection. Real machine truth only, no synthetic fallback. Connect your ROG Ally X library to see real titles.
+              </div>
+            )}
+            {!collectionLoading && collectionGames && collectionGames.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 10 }}>
+                {collectionGames.map(g => (
+                  <div
+                    key={g.id}
+                    onClick={() => handleLaunchGame(g)}
+                    style={{
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'center',
+                      padding: '12px 14px',
+                      borderRadius: 14,
+                      background:
+                        theme === 'dark'
+                          ? 'linear-gradient(180deg, rgba(26,30,46,0.72), rgba(18,22,36,0.64))'
+                          : 'linear-gradient(180deg, rgba(255,255,255,0.92), rgba(250,252,255,0.86))',
+                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.07)'}`,
+                      boxShadow: theme === 'dark' ? '0 6px 18px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.04)' : '0 6px 16px rgba(18,26,44,0.06), inset 0 1px 0 rgba(255,255,255,0.9)',
+                      cursor: 'pointer',
+                      transition: 'transform 180ms cubic-bezier(0.16,1,0.3,1), box-shadow 180ms',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: 10,
+                        background: theme === 'dark' ? 'rgba(125,249,255,0.10)' : 'rgba(70,130,255,0.10)',
+                        border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.14)'}`,
+                        display: 'grid',
+                        placeItems: 'center',
+                        fontFamily: 'var(--crystal-mono)',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: theme === 'dark' ? '#7df9ff' : '#3a6ee8',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {g.system_id.toUpperCase().slice(0, 3)}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 13, fontWeight: 650, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{g.name}</div>
+                      <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.58, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {g.rom_basename}
+                        <span style={{ opacity: 0.5, marginLeft: 6 }}>{g.extension}</span>
+                        <span style={{ marginLeft: 8, padding: '2px 6px', borderRadius: 999, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', fontSize: 9 }}>{g.system_id}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                      <span
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 999,
+                          display: 'grid',
+                          placeItems: 'center',
+                          background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.05)',
+                          border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}`,
+                          fontFamily: 'var(--crystal-mono)',
+                          fontSize: 11,
+                        }}
+                      >
+                        A
+                      </span>
+                      <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>↗ PLAY</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {view === 'settings' && (
-        <div style={{ position: 'absolute', inset: 0, padding: '22px 22px', background: theme === 'dark' ? '#0a0a0f' : '#f4f6fb', zIndex: 6, pointerEvents: 'auto', color: theme === 'dark' ? '#eef7ff' : '#16213e', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0, fontFamily: 'var(--crystal-display)', fontWeight: 500 }}>Settings</h2>
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 6,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            background: theme === 'dark' ? '#0a0a0f' : '#f2f4f8',
+            color: theme === 'dark' ? '#eef7ff' : '#14151a',
+          }}
+        >
+          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+            {bgUrl ? (
+              <img src={bgUrl} alt="" style={{ position: 'absolute', inset: '-8%', width: '116%', height: '116%', objectFit: 'cover', filter: 'blur(32px) saturate(0.84) brightness(0.68)', transform: 'scale(1.08)', opacity: theme === 'dark' ? 0.9 : 0.62 }} />
+            ) : (
+              <div style={{ position: 'absolute', inset: 0, background: theme === 'dark' ? '#12131a' : '#eceef8' }} />
+            )}
+            <div style={{ position: 'absolute', inset: 0, background: theme === 'dark' ? 'linear-gradient(180deg, rgba(10,12,18,0.42), rgba(8,10,16,0.68)), radial-gradient(86% 70% at 50% 18%, transparent 12%, rgba(6,9,14,0.48) 78%)' : 'linear-gradient(180deg, rgba(251,253,255,0.72), rgba(244,247,255,0.82)), radial-gradient(86% 70% at 50% 18%, transparent 10%, rgba(232,238,248,0.48) 72%)' }} />
+          </div>
+
+          <div
+            style={{
+              position: 'relative',
+              zIndex: 2,
+              height: 84,
+              minHeight: 84,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 24px',
+              borderBottom: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
+              backdropFilter: 'blur(22px) saturate(1.12)',
+              WebkitBackdropFilter: 'blur(22px) saturate(1.12)',
+              background: theme === 'dark' ? 'rgba(10,12,18,0.34)' : 'rgba(255,255,255,0.58)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 999,
+                  display: 'grid',
+                  placeItems: 'center',
+                  background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)',
+                  border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+                  color: theme === 'dark' ? '#7df9ff' : '#3a6ee8',
+                  fontFamily: 'var(--crystal-mono)',
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                ✦
+              </div>
+              <div>
+                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, letterSpacing: '0.12em', opacity: 0.56, textTransform: 'uppercase' }}>CRYSTAL OS • PREFERENCES</div>
+                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 19, fontWeight: 720, letterSpacing: '-0.02em', marginTop: 1 }}>Settings</div>
+              </div>
+            </div>
             <button
               onClick={() => setView('system')}
-              style={{ padding: '6px 12px', borderRadius: 999, border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.8)', color: theme === 'dark' ? '#eef7ff' : '#16213e' }}
-            >
-              Close
-            </button>
-          </div>
-          <div style={{ marginTop: 14, fontSize: 12, opacity: 0.8, lineHeight: 1.6, fontFamily: 'var(--crystal-mono)' }}>
-            <div>Machine: {isRealMachine ? 'Real – machine-local via get_machine_config (Tauri)' : isExample ? 'SANITIZED EXAMPLE – browser dev' : 'No machine loaded'}</div>
-            <div>Systems: {systemsForUI.length}</div>
-            <div>Theme: {theme}</div>
-            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-              <button
-                onClick={toggle}
-                style={{ padding: '6px 12px', borderRadius: 999, border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.8)', color: theme === 'dark' ? '#eef7ff' : '#16213e', fontSize: 11 }}
-              >
-                Toggle {theme === 'dark' ? 'Light' : 'Dark'}
-              </button>
-              <button
-                onClick={() => setShowGuides(v => !v)}
-                style={{ padding: '6px 12px', borderRadius: 999, border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.8)', color: theme === 'dark' ? '#eef7ff' : '#16213e', fontSize: 11 }}
-              >
-                {showGuides ? 'Hide guides' : 'Guides'}
-              </button>
-            </div>
-            {devMode && (
-              <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.66)', border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`, fontSize: 11 }}>
-                <div>Active system: {activeSystemId} / {fullName}</div>
-                <div>Cache sizes: {Array.from(gameCache.entries()).map(([k, v]) => `${k}:${v.length}`).join(', ') || 'empty'}</div>
-                <div>View: {view}</div>
-                <div>Selected game: {selectedGameId || 'none'}</div>
-              </div>
-            )}
-          </div>
-          <SettingsUpdaterPanel theme={theme} />
-
-          {/* V8.4 DISCOVER – Settings entry */}
-          <div style={{
-            marginTop: 22,
-            padding: '14px 14px',
-            borderRadius: 12,
-            background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.70)',
-            border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
-          }}>
-            <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>DISCOVER — VIMM'S LAIR CATALOG</div>
-            <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, lineHeight: 1.5, marginBottom: 10 }}>
-              Catalog-only reference to Vimm's Lair Vault. No shop/cart/price, no file URLs handled inside Crystal. Opens externally via Tauri shell.
-            </div>
-            <button
-              onClick={() => {
-                setDiscoverPrefillGame(null)
-                setDiscoverOrigin('settings')
-                setView('discover')
-              }}
               style={{
-                padding: '8px 14px', borderRadius: 999,
-                border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
-                background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(255,255,255,0.9)',
-                color: theme === 'dark' ? '#7df9ff' : '#1a3a9a',
-                fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700,
+                padding: '9px 16px',
+                borderRadius: 999,
+                border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)',
+                color: theme === 'dark' ? '#eef7ff' : '#16213e',
+                fontFamily: 'var(--crystal-mono)',
+                fontSize: 11,
+                fontWeight: 700,
                 cursor: 'pointer',
               }}
-            >OPEN DISCOVERY</button>
-            <span style={{ marginLeft: 8, fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.5 }}>[Y] on System Landing also works</span>
+            >
+              [B] CLOSE
+            </button>
+          </div>
+
+          <div style={{ position: 'relative', zIndex: 2, flex: 1, overflowY: 'auto', padding: '22px 24px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Premium hardware context */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14 }}>
+              <div
+                style={{
+                  padding: '18px 18px',
+                  borderRadius: 16,
+                  background: theme === 'dark' ? 'linear-gradient(180deg, rgba(22,26,42,0.78), rgba(16,20,32,0.72))' : 'linear-gradient(180deg, rgba(255,255,255,0.88), rgba(251,253,255,0.84))',
+                  border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
+                  boxShadow: theme === 'dark' ? '0 12px 28px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)' : '0 10px 24px rgba(18,26,44,0.08), inset 0 1px 0 rgba(255,255,255,0.9)',
+                }}
+              >
+                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.56, letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>SYSTEM • ENVIRONMENT</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ opacity: 0.6 }}>Machine</span>
+                    <span style={{ fontWeight: 700, color: isRealMachine ? (theme === 'dark' ? '#7df9ff' : '#295fdc') : theme === 'dark' ? '#ffd885' : '#8a5a00' }}>
+                      {isRealMachine ? 'ROG • Real via get_machine_config' : isExample ? 'SANITIZED EXAMPLE • browser dev' : 'No machine loaded'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ opacity: 0.6 }}>Systems</span>
+                    <span>{systemsForUI.length} calibrated</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ opacity: 0.6 }}>Theme</span>
+                    <span style={{ textTransform: 'uppercase' }}>{theme}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ opacity: 0.6 }}>Crystal</span>
+                    <span>v{/* version injected */}4.5.0 • graphite / silver / cyan acrylic</span>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={toggle}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 999,
+                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                      background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.82)',
+                      color: theme === 'dark' ? '#eef7ff' : '#16213e',
+                      fontFamily: 'var(--crystal-mono)',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ⇄ Toggle {theme === 'dark' ? 'Light' : 'Dark'}
+                  </button>
+                  <button
+                    onClick={() => setShowGuides(v => !v)}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 999,
+                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                      background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.72)',
+                      color: theme === 'dark' ? '#eef7ff' : '#16213e',
+                      fontFamily: 'var(--crystal-mono)',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {showGuides ? 'Hide guides' : 'Guides'}
+                  </button>
+                </div>
+
+                {devMode && (
+                  <div
+                    style={{
+                      marginTop: 14,
+                      padding: '10px 12px',
+                      borderRadius: 10,
+                      background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.66)',
+                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
+                      fontFamily: 'var(--crystal-mono)',
+                      fontSize: 10,
+                      lineHeight: 1.6,
+                      opacity: 0.86,
+                    }}
+                  >
+                    <div>Active: {activeSystemId} / {fullName} • {systemIds.length}</div>
+                    <div>Cache: {Array.from(gameCache.entries()).map(([k, v]) => `${k}:${v.length}`).join(', ') || 'empty'} • View: {view} • Sel: {selectedGameId || 'none'}</div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div
+                  style={{
+                    padding: '14px 14px',
+                    borderRadius: 14,
+                    background: theme === 'dark' ? 'rgba(125,249,255,0.08)' : 'rgba(70,130,255,0.08)',
+                    border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.14)' : 'rgba(70,130,255,0.14)'}`,
+                  }}
+                >
+                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.7, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>CRYSTAL TIPS • CONTROLLER FIRST</div>
+                  <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 11.5, lineHeight: 1.5, opacity: 0.86 }}>
+                    <div>[A] PLAY / ENTER • [B] BACK • [X] MEDIA CYCLE • [Y] FAVORITE • [VIEW] DISCOVER • [MENU] SETTINGS</div>
+                    <div style={{ marginTop: 6, fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.66 }}>D-PAD up/down browses games, left/right switches system. Media aligns with SystemStage video → screenshot → title → mix → cover.</div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    padding: '14px 14px',
+                    borderRadius: 12,
+                    background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.74)',
+                    border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
+                  }}
+                >
+                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.66, letterSpacing: '0.08em', marginBottom: 6 }}>SAFE MODE • WRITE GUARD</div>
+                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, lineHeight: 1.5, opacity: 0.78 }}>
+                    Crystal only writes to <span style={{ fontFamily: 'var(--crystal-mono)', background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', padding: '1px 6px', borderRadius: 6 }}>%LOCALAPPDATA%\\CrystalFrontend\\</span>. ROM / ES-DE / EmuDeck / BIOS untouched. {safeMode ? 'SAFE MODE active — launch blocked.' : 'Normal operation — ROG ready.'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <SettingsUpdaterPanel theme={theme} />
+
+            {/* Discovery entry */}
+            <div
+              style={{
+                padding: '16px 16px',
+                borderRadius: 14,
+                background: theme === 'dark' ? 'linear-gradient(100deg, rgba(22,26,42,0.72), rgba(18,22,36,0.68))' : 'linear-gradient(100deg, rgba(255,255,255,0.86), rgba(248,250,255,0.84))',
+                border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)'}`,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <div>
+                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 700, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  DISCOVER — VIMM'S LAIR CATALOG
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 8px', borderRadius: 999, background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)', border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.16)'}`, color: theme === 'dark' ? '#7df9ff' : '#295fdc' }}>CATALOG ONLY • NO ROM FETCH</span>
+                </div>
+                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, lineHeight: 1.5, marginTop: 6, maxWidth: 560 }}>
+                  Catalog-only reference to Vimm's Lair Vault. No shop/cart/price, no file URLs handled inside Crystal. Opens externally via Tauri shell native validation (https://vimm.net/vault/{'{numericId}'}) only.
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setDiscoverPrefillGame(null)
+                  setDiscoverOrigin('settings')
+                  setView('discover')
+                }}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: 999,
+                  border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+                  background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : '#4a86ff',
+                  color: theme === 'dark' ? '#7df9ff' : '#fff',
+                  fontFamily: 'var(--crystal-mono)',
+                  fontSize: 11,
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  boxShadow: theme === 'dark' ? '0 6px 16px rgba(125,249,255,0.18)' : '0 6px 16px rgba(70,130,255,0.18)',
+                }}
+              >
+                OPEN DISCOVERY
+              </button>
+            </div>
           </div>
         </div>
       )}

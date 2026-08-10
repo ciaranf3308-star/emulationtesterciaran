@@ -15,7 +15,16 @@ type ThemeState = {
 const Ctx = createContext<ThemeState|null>(null)
 
 export function ThemeProvider({ children }: { children:React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('dark')
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const sp = new URLSearchParams(window.location.search)
+        const t = sp.get('theme')
+        if (t === 'light' || t === 'dark') return t as Theme
+      }
+    } catch {}
+    return 'dark'
+  })
   const [manifest, setManifest] = useState<ThemeAssetSet|null>(null)
   const [loading, setLoading] = useState(true)
   const resolver = useMemo(()=> {
