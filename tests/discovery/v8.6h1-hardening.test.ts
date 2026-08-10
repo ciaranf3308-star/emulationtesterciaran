@@ -67,54 +67,122 @@ describe('V8.6H1 – discovery shim provider call count =1 (no duplicate)', () =
 })
 
 describe('V8.6H1 – fixture exact gate', () => {
-  const originalLocation = typeof window !== 'undefined' ? window.location : undefined
-  // vitest jsdom env: we can mock window.location.search via history pushState
+  // bun:test has no jsdom by default – ensure window/history/location polyfill like H1.1 suite
+  function ensureWin() {
+    const g: any = globalThis as any
+    if (typeof g.window === 'undefined') {
+      g.window = g
+    }
+    const w = g.window
+    if (!w.location || typeof w.location.href === 'undefined') {
+      try {
+        w.location = new URL('http://localhost/')
+      } catch {
+        w.location = { href: 'http://localhost/', search: '' } as any
+      }
+    }
+    if (!w.history) {
+      w.history = {
+        replaceState: (_: any, __: string, url: string) => {
+          try {
+            const u = new URL(url, 'http://localhost/')
+            w.location = u
+          } catch {
+            const qIdx = url.indexOf('?')
+            if (qIdx >= 0) {
+              const search = url.slice(qIdx)
+              try {
+                const cur = w.location instanceof URL ? w.location : new URL(w.location.href || 'http://localhost/')
+                const newU = new URL(cur.href)
+                newU.search = search
+                w.location = newU
+              } catch {
+                w.location.search = search
+              }
+            } else {
+              w.location = new URL('http://localhost/')
+            }
+          }
+        },
+      }
+    }
+  }
+
   it('requires exact fixture=golden', () => {
+    ensureWin()
     const savedEnv = (import.meta as any).env
-    const g: any = typeof window !== 'undefined' ? (window as any) : undefined
+    const g: any = typeof globalThis !== 'undefined' ? (globalThis as any).window ?? globalThis : undefined
     const prevTauri = g?.__TAURI__
     const prevTauriInternals = g?.__TAURI_INTERNALS__
     const prevInvoke = g?.__TAURI_INVOKE__
+    const prevIpc = g?.__TAURI_IPC__
+    const prevNodeEnv = typeof process !== 'undefined' ? (process as any).env?.NODE_ENV : undefined
     try {
-      // force DEV true and ensure non-tauri env for this test – other suites may have left tauri globals
+      // force DEV true for both import.meta and process.env – fixtureMode checks both
       ;(import.meta as any).env = { DEV: true }
+      try {
+        if (typeof process !== 'undefined' && (process as any).env) {
+          (process as any).env.NODE_ENV = 'development'
+        }
+      } catch {}
       if (g) {
         delete g.__TAURI__
         delete g.__TAURI_INTERNALS__
         delete g.__TAURI_INVOKE__
         delete g.__TAURI_IPC__
       }
-      if (typeof window !== 'undefined') {
-        const testCases: Array<[string, boolean]> = [
-          ['?fixture=golden', true],
-          ['?fixture=golden&system=gc', true],
-          ['?myfixture=true', false],
-          ['?fixturegolden=true', false],
-          ['?foo=fixture', false],
-          ['?fixture=somethingelse', false],
-          ['?fixture=goldenx', false],
-          ['', false],
-        ]
-        for (const [qs, should] of testCases) {
-          const url = new URL('http://localhost/' + qs)
+      const testCases: Array<[string, boolean]> = [
+        ['?fixture=golden', true],
+        ['?fixture=golden&system=gc', true],
+        ['?myfixture=true', false],
+        ['?fixturegolden=true', false],
+        ['?foo=fixture', false],
+        ['?fixture=somethingelse', false],
+        ['?fixture=goldenx', false],
+        ['', false],
+      ]
+      for (const [qs, should] of testCases) {
+        const url = new URL('http://localhost/' + qs)
+        // use polyfilled history – always updates location correctly even in bun
+        if (typeof window !== 'undefined' && (window as any).history?.replaceState) {
           ;(window as any).history.replaceState({}, '', url.toString())
-          const res = isFixtureEnabled()
-          if (should) {
-            expect(res.enabled).toBe(true)
+        } else if (g?.history?.replaceState) {
+          g.history.replaceState({}, '', url.toString())
+        } else {
+          // fallback direct assignment
+          if (typeof window !== 'undefined') {
+            ;(window as any).location = url
           } else {
-            expect(res.enabled).toBe(false)
+            g.location = url
           }
+        }
+        const res = isFixtureEnabled()
+        if (should) {
+          expect(res.enabled).toBe(true)
+        } else {
+          expect(res.enabled).toBe(false)
         }
       }
     } finally {
       ;(import.meta as any).env = savedEnv
-      if (typeof window !== 'undefined') {
-        ;(window as any).history.replaceState({}, '', 'http://localhost/')
+      try {
+        if (typeof process !== 'undefined' && (process as any).env) {
+          (process as any).env.NODE_ENV = prevNodeEnv
+        }
+      } catch {}
+      try {
+        const resetUrl = 'http://localhost/'
+        if (typeof window !== 'undefined' && (window as any).history?.replaceState) {
+          ;(window as any).history.replaceState({}, '', resetUrl)
+        } else if (g?.history?.replaceState) {
+          g.history.replaceState({}, '', resetUrl)
+        }
         // restore tauri globals if they existed (unlikely needed but safe)
-        if (prevTauri !== undefined) g.__TAURI__ = prevTauri
-        if (prevTauriInternals !== undefined) g.__TAURI_INTERNALS__ = prevTauriInternals
-        if (prevInvoke !== undefined) g.__TAURI_INVOKE__ = prevInvoke
-      }
+        if (prevTauri !== undefined && g) g.__TAURI__ = prevTauri
+        if (prevTauriInternals !== undefined && g) g.__TAURI_INTERNALS__ = prevTauriInternals
+        if (prevInvoke !== undefined && g) g.__TAURI_INVOKE__ = prevInvoke
+        if (prevIpc !== undefined && g) g.__TAURI_IPC__ = prevIpc
+      } catch {}
     }
   })
   it('isDevFixtureAllowed false in non-dev or tauri env – web dev only guard exists', () => {

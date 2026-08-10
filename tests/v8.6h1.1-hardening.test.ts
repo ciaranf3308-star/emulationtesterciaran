@@ -178,6 +178,7 @@ describe('V8.6H1.1 – STRICT FIXTURE GATE – shim actual behavior', () => {
       return (import.meta as any).env?.DEV
     } catch { return undefined }
   })()
+  const originalNodeEnv = typeof process !== 'undefined' ? (process as any).env?.NODE_ENV : undefined
 
   beforeEach(() => {
     ensureWindow()
@@ -194,6 +195,9 @@ describe('V8.6H1.1 – STRICT FIXTURE GATE – shim actual behavior', () => {
       if (typeof import.meta !== 'undefined') {
         // @ts-ignore
         (import.meta as any).env = { DEV: originalDev ?? true }
+      }
+      if (typeof process !== 'undefined' && (process as any).env) {
+        (process as any).env.NODE_ENV = originalNodeEnv ?? 'test'
       }
     } catch {}
   })
