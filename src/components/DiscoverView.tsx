@@ -13,6 +13,15 @@ import type { GameEntry } from '../runtime/backend'
 import discoveryService, { type DiscoveryResult, canonicalVaultUrl } from '../lib/discoveryService'
 import { isInLibrary } from '../lib/discoveryMatching'
 import SystemLogo from './SystemLogo'
+import { buildDetailUrl } from '../discovery/providers/vimm/vimmRoutes'
+import { validateOpenUrl } from '../discovery/providers/vimm/hostValidation'
+import { isTauriEnvironment } from '../runtime/environment'
+
+export type BeginAcquisitionRequest = {
+  systemId: string
+  expectedTitle: string
+  openExternalPage: () => Promise<void>
+}
 
 type DiscoverProps = {
   systemId: string
@@ -24,6 +33,7 @@ type DiscoverProps = {
   selectedLocalGame?: GameEntry | null
   libraryGames?: GameEntry[] | null
   onOpenDiscoverGame?: (id: string) => void
+  onBeginAcquisition?: (request: BeginAcquisitionRequest) => unknown
 }
 
 export function DiscoverView({
@@ -35,6 +45,7 @@ export function DiscoverView({
   onBack,
   selectedLocalGame,
   libraryGames,
+  onBeginAcquisition,
 }: DiscoverProps) {
   const isDark = theme === 'dark'
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -191,7 +202,108 @@ export function DiscoverView({
     }
   }, [])
 
-  // V8.4.1 deterministic controller + keyboard
+  async function openDetail(r: DiscoveryResult) {
+    setSelectedDetail(r)
+    setShowDetailPanel(true)
+    setDetailFull(null)
+    setDetailResolving(true)
+    try {
+      const d = await discoveryService.detail(r.id, systemId)
+      setDetailFull(d)
+    } catch {
+      setDetailFull(null)
+    } finally {
+      setDetailResolving(false)
+    }
+  }
+
+  // V8.6C3 – PRODUCTION BRIDGE – GET GAME → acquisition coordinator (watcher FIRST, then open canonical page)
+  const handleGetGame = useCallback(async () => {
+    if (!onBeginAcquisition) {
+      // No production wiring – fallback to plain open for dev QA
+      const fallbackId = (detailFull?.providerId || (detailFull as any)?.id || selectedDetail?.providerId || selectedDetail?.id) as string | undefined
+      if (fallbackId) {
+        try { await discoveryService.open(String(fallbackId)) } catch {}
+      }
+      return
+    }
+
+    // Resolve numeric providerId – must be numeric per spec – authority from detailFull / selectedDetail
+    const rawProviderId = detailFull?.providerId ?? (detailFull as any)?.id ?? selectedDetail?.providerId ?? selectedDetail?.id
+    const titleRaw = detailFull?.title ?? selectedDetail?.title ?? ''
+    const expectedTitle = String(titleRaw).trim()
+    if (!expectedTitle) {
+      setErrorMsg('Could not determine game title for acquisition')
+      return
+    }
+    if (rawProviderId == null) {
+      setErrorMsg('Missing provider id – cannot open canonical page')
+      return
+    }
+    const idStr = String(rawProviderId).trim()
+    if (!/^\d+$/.test(idStr)) {
+      setErrorMsg(`Provider id must be numeric – got '${idStr.slice(0, 32)}'`)
+      return
+    }
+
+    let canonicalUrl: string
+    try {
+      canonicalUrl = buildDetailUrl(idStr)
+    } catch (e: any) {
+      setErrorMsg(e?.message || 'Invalid provider id')
+      return
+    }
+    if (!validateOpenUrl(canonicalUrl)) {
+      setErrorMsg(`External open URL not allowed – ${canonicalUrl}`)
+      return
+    }
+
+    // Exact provider handoff – openExternalPage opens canonical detail page in normal browser (user clicks Download manually)
+    const openExternalPage = async () => {
+      const url = canonicalUrl // already validated
+      try {
+        if (isTauriEnvironment()) {
+          try {
+            const shellMod = await import('@tauri-apps/plugin-shell')
+            const openFn = (shellMod as any).open || (shellMod as any).default?.open
+            if (typeof openFn === 'function') {
+              await openFn(url)
+              return
+            }
+          } catch {
+            // fall through to window.open
+          }
+        }
+      } catch {}
+      try {
+        if (typeof window !== 'undefined') {
+          (window as any).open(url, '_blank', 'noopener')
+        }
+      } catch {}
+    }
+
+    try {
+      // Production bridge – use real imported app API, not window globals
+      onBeginAcquisition({
+        systemId,
+        expectedTitle,
+        openExternalPage,
+      })
+      // Close detail – acquisition card now visible over library/system
+      setShowDetailPanel(false)
+      setSelectedDetail(null)
+      setDetailFull(null)
+    } catch (e: any) {
+      const code = e?.code || e?.message
+      if (code === 'EXTERNAL_ACQUISITION_ALREADY_ACTIVE') {
+        setErrorMsg('Acquisition already active – one at a time')
+      } else {
+        setErrorMsg(code ? String(code).slice(0, 120) : 'Could not start acquisition')
+      }
+    }
+  }, [detailFull, selectedDetail, systemId, onBeginAcquisition])
+
+  // V8.4.1 deterministic controller + keyboard – C3 updated: A in detail now triggers GET GAME when prod wiring present
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (showDetailPanel) {
@@ -202,10 +314,14 @@ export function DiscoverView({
           return
         }
         if (e.key === 'Enter' || e.key === ' ') {
-          // Detail A = OPEN ON VIMM'S LAIR (primary action)
           e.preventDefault()
-          const id = (detailFull?.providerId || detailFull?.id || selectedDetail?.id) as string
-          if (id) handleOpenVault(id)
+          // C3: GET GAME is primary when wired, else plain open
+          if (onBeginAcquisition) {
+            void handleGetGame()
+          } else {
+            const id = (detailFull?.providerId || (detailFull as any)?.id || selectedDetail?.id) as string
+            if (id) handleOpenVault(id)
+          }
           return
         }
       } else {
@@ -248,9 +364,13 @@ export function DiscoverView({
           return
         }
         if (action === 'confirm') {
-          // Detail A -> OPEN ON VIMM'S LAIR
-          const id = (detailFull?.providerId || detailFull?.id || selectedDetail?.id) as string
-          if (id) handleOpenVault(id)
+          // C3: A -> GET GAME (production glue) else OPEN ON VIMM'S LAIR
+          if (onBeginAcquisition) {
+            void handleGetGame()
+          } else {
+            const id = (detailFull?.providerId || (detailFull as any)?.id || selectedDetail?.id) as string
+            if (id) handleOpenVault(id)
+          }
           return
         }
         // while detail open, ignore navigation arrows for detail close behavior
@@ -280,22 +400,7 @@ export function DiscoverView({
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('crystal-discover-nav' as any, onDiscoverNav)
     }
-  }, [results, focusedIdx, showDetailPanel, onBack, selectedDetail, detailFull, handleOpenVault])
-
-  async function openDetail(r: DiscoveryResult) {
-    setSelectedDetail(r)
-    setShowDetailPanel(true)
-    setDetailFull(null)
-    setDetailResolving(true)
-    try {
-      const d = await discoveryService.detail(r.id, systemId)
-      setDetailFull(d)
-    } catch {
-      setDetailFull(null)
-    } finally {
-      setDetailResolving(false)
-    }
-  }
+  }, [results, focusedIdx, showDetailPanel, onBack, selectedDetail, detailFull, handleOpenVault, handleGetGame, onBeginAcquisition])
 
   const resultCountLabel = useMemo(() => {
     if (searching) return 'searching…'
@@ -640,29 +745,52 @@ export function DiscoverView({
                 )}
 
                 <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {onBeginAcquisition ? (
+                    <button
+                      onClick={() => void handleGetGame()}
+                      autoFocus
+                      disabled={detailResolving}
+                      style={{
+                        appearance: 'none',
+                        padding: '11px 18px',
+                        borderRadius: 999,
+                        border: 'none',
+                        background: isDark ? '#7df9ff' : '#4a86ff',
+                        color: isDark ? '#041018' : '#fff',
+                        fontFamily: 'var(--crystal-mono)', fontSize: 11.5, fontWeight: 800,
+                        cursor: detailResolving ? 'wait' : 'pointer',
+                        opacity: detailResolving ? 0.72 : 1,
+                        boxShadow: isDark ? '0 8px 20px rgba(125,249,255,0.22)' : '0 8px 18px rgba(70,130,255,0.22)',
+                        display: 'flex', alignItems: 'center', gap: 8,
+                      }}
+                    >
+                      <span style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(0,0,0,0.12)', display: 'grid', placeItems: 'center', fontSize: 11 }}>A</span>
+                      GET GAME
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => handleOpenVault(selectedDetail.id)}
-                    autoFocus
+                    autoFocus={onBeginAcquisition ? undefined : true as any}
                     style={{
                       appearance: 'none',
-                      padding: '11px 18px',
+                      padding: onBeginAcquisition ? '10px 16px' : '11px 18px',
                       borderRadius: 999,
-                      border: 'none',
-                      background: isDark ? '#7df9ff' : '#4a86ff',
-                      color: isDark ? '#041018' : '#fff',
-                      fontFamily: 'var(--crystal-mono)', fontSize: 11.5, fontWeight: 800,
+                      border: onBeginAcquisition ? `1px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}` : 'none',
+                      background: onBeginAcquisition ? (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)') : (isDark ? '#7df9ff' : '#4a86ff'),
+                      color: onBeginAcquisition ? (isDark ? '#eef7ff' : '#16213e') : (isDark ? '#041018' : '#fff'),
+                      fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: onBeginAcquisition ? 600 : 800,
                       cursor: 'pointer',
-                      boxShadow: isDark ? '0 8px 20px rgba(125,249,255,0.22)' : '0 8px 18px rgba(70,130,255,0.22)',
+                      boxShadow: onBeginAcquisition ? 'none' : (isDark ? '0 8px 20px rgba(125,249,255,0.22)' : '0 8px 18px rgba(70,130,255,0.22)'),
                       display: 'flex', alignItems: 'center', gap: 8,
                     }}
                   >
-                    <span style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(0,0,0,0.12)', display: 'grid', placeItems: 'center', fontSize: 11 }}>A</span>
+                    {!onBeginAcquisition && <span style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(0,0,0,0.12)', display: 'grid', placeItems: 'center', fontSize: 11 }}>A</span>}
                     OPEN ON VIMM'S LAIR
                   </button>
                   <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.52, maxWidth: 220 }}>
                     {canonicalVaultUrl(selectedDetail.id)}
                   </span>
-                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>[B] CLOSE DETAIL – [B again] BACK TO LIBRARY</span>
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>{onBeginAcquisition ? '[A] GET • [B] CLOSE DETAIL • [B again] BACK TO LIBRARY' : '[B] CLOSE DETAIL – [B again] BACK TO LIBRARY'}</span>
                 </div>
 
                 {(detailFull?.availability === 'unavailable' || detailFull?.availability === 'takedown' || selectedDetail.availability === 'unavailable' || selectedDetail.availability === 'takedown') && (

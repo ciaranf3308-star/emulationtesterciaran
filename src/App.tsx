@@ -1380,6 +1380,7 @@ function AppInner() {
           logoUrl={logoUrl}
           selectedLocalGame={discoverPrefillGame}
           libraryGames={activeGames}
+          onBeginAcquisition={crystalAcq.begin}
           onBack={() => {
             // restore origin view
             setView(discoverOrigin === 'discover' ? 'system' : (discoverOrigin as any))
