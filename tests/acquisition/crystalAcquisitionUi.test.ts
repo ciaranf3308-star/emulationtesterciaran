@@ -53,6 +53,8 @@ describe("V8.6C2 acquisitionUiController mapping + copy", () => {
     expect(crystalCopyForPhase("FAILED").title).toMatch(/COULDN/)
     expect(crystalCopyForPhase("SAFE_MODE").title).toBe("SAFE MODE")
     expect(crystalCopyForPhase("TIMED_OUT").title).toBe("DOWNLOAD NOT FOUND")
+    expect(crystalCopyForPhase("LIBRARY_REFRESH_FAILED").title).toBe("GAME ADDED")
+    expect(crystalCopyForPhase("LIBRARY_REFRESH_FAILED").subtitle).toMatch(/couldn't refresh/i)
   })
   test("errorCodeCopy mapping", () => {
     expect(errorCodeCopy("DOWNLOADS_DIRECTORY_UNAVAILABLE")?.title).toBe("DOWNLOADS FOLDER UNAVAILABLE")
@@ -65,6 +67,8 @@ describe("V8.6C2 acquisitionUiController mapping + copy", () => {
     expect(errorCodeCopy("EXTERNAL_PAGE_OPEN_FAILED")?.title).toBe("COULDN'T OPEN GAME PAGE")
     expect(errorCodeCopy("POLL_FAILED")?.title).toBe("CONNECTION TO CRYSTAL SERVICE LOST")
     expect(errorCodeCopy("TIMED_OUT")?.title).toBe("DOWNLOAD NOT FOUND")
+    expect(errorCodeCopy("LIBRARY_REFRESH_FAILED")?.title).toBe("GAME ADDED")
+    expect(errorCodeCopy("INSTALLED_GAME_NOT_FOUND_AFTER_REFRESH")?.title).toBe("GAME ADDED")
   })
   test("normalizeWindowsPath handles casing/separators", () => {
     expect(normalizeWindowsPath("C:\\Users\\Test\\ROMs\\Game.zip")).toBe("c:/users/test/roms/game.zip")

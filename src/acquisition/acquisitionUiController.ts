@@ -30,6 +30,7 @@ export type CrystalPresentationPhase =
   | "TIMED_OUT"
   | "CANCELLED"
   | "INSTALLED_GAME_NOT_FOUND"
+  | "LIBRARY_REFRESH_FAILED"
 
 export type CrystalAcquisitionCopy = {
   title: string
@@ -47,7 +48,7 @@ export type RefreshFn = (systemId: string) => Promise<GameEntry[]>
 export type FindResult = { found: GameEntry | null; reason?: string }
 
 const TERMINAL_CRYSTAL = new Set<CrystalPresentationPhase>([
-  "READY_TO_PLAY", "FILE_CONFLICT", "MULTIPLE_DOWNLOADS_FOUND", "FAILED", "SAFE_MODE", "TIMED_OUT", "CANCELLED", "INSTALLED_GAME_NOT_FOUND", "ALREADY_IN_LIBRARY"
+  "READY_TO_PLAY", "FILE_CONFLICT", "MULTIPLE_DOWNLOADS_FOUND", "FAILED", "SAFE_MODE", "TIMED_OUT", "CANCELLED", "INSTALLED_GAME_NOT_FOUND", "LIBRARY_REFRESH_FAILED"
 ])
 
 export function isCrystalTerminal(p: CrystalPresentationPhase): boolean {
@@ -102,6 +103,7 @@ export function crystalCopyForPhase(phase: CrystalPresentationPhase, opts?: { er
     }
     case "CANCELLED": return { title: "CANCELLED" }
     case "INSTALLED_GAME_NOT_FOUND": return { title: "GAME ADDED", subtitle: "Crystal couldn't select it automatically." }
+    case "LIBRARY_REFRESH_FAILED": return { title: "GAME ADDED", subtitle: "Crystal couldn't refresh your library." }
     case "FAILED": {
       const mapped = errorCodeCopy(opts?.errorCode)
       if (mapped) return mapped
@@ -134,6 +136,7 @@ export function errorCodeCopy(code?: string | null): CrystalAcquisitionCopy | nu
     "EXTERNAL_ACQUISITION_ALREADY_ACTIVE": { title: "ALREADY ACTIVE", subtitle: "One acquisition at a time." },
     "ACQUISITION_WATCH_START_FAILED": { title: "COULDN'T ADD GAME" },
     "INSTALLED_GAME_NOT_FOUND_AFTER_REFRESH": { title: "GAME ADDED", subtitle: "Crystal couldn't select it automatically." },
+    "LIBRARY_REFRESH_FAILED": { title: "GAME ADDED", subtitle: "Crystal couldn't refresh your library." },
   }
   return mapping[c] || null
 }
@@ -173,7 +176,7 @@ export function findInstalledGame(params: {
   const { systemId, expectedTitle, installedPaths, refreshedGames } = params
   const normFn = params.normalizeTitleFn ?? normalizeTitleExact
 
-  // 1. Exact installed path authority
+  // 1. Exact installed path authority ONLY – no basename fallback, no Downloads source
   if (installedPaths && installedPaths.length > 0 && refreshedGames.length > 0) {
     // Prefer primary descriptors over supporting tracks
     const ordered = [...installedPaths].sort((a, b) => {
@@ -182,33 +185,19 @@ export function findInstalledGame(params: {
       return aPrim - bPrim
     })
 
-    // Build lookup maps for refreshed games normalized paths
+    // Build lookup map for refreshed games normalized paths
     const gamePathMap = new Map<string, GameEntry>()
     for (const g of refreshedGames) {
       if (!g.rom_path) continue
       const normRom = normalizeWindowsPath(g.rom_path)
       gamePathMap.set(normRom, g)
-      // Also map basename only for lenient match? Only if exact basename not colliding – we attempt later
     }
 
     for (const ip of ordered) {
       const normIp = normalizeWindowsPath(ip)
       const byExact = gamePathMap.get(normIp)
       if (byExact) {
-        // If this is a supporting BIN but we have a CUE variant present, prefer CUE – we already ordered, but extra check:
-        // If byExact is BIN track and there exists a CUE in refreshed games that references same base? Heuristic: if refreshedGames contains a CUE and ordered includes CUE that matches that CUE, we would have matched earlier due to ordering.
         return { found: byExact }
-      }
-      // Fallback: if rom_path match fails, try basename compare (handles case where refreshed rom_path might be different drive letter? unlikely but windows)
-      // Require exact basename match normalized
-      const baseIp = normIp.split("/").pop() || normIp
-      for (const g of refreshedGames) {
-        const baseRom = normalizeWindowsPath(g.rom_path).split("/").pop() || ""
-        if (baseRom === baseIp) {
-          // Prevent picking supporting BIN when a primary exists in list – but if ip itself is primary, we already prefer
-          // If g is supporting track and ip primary descriptor hasn't matched yet, still we might want to keep looking? For conservative, allow exact basename match.
-          return { found: g }
-        }
       }
     }
   }
@@ -287,7 +276,7 @@ export function isNonTerminalBlockingPhase(p: CrystalPresentationPhase): boolean
   return ["PREPARING","OPENING_GAME_PAGE","WAITING_FOR_DOWNLOAD","DOWNLOAD_DETECTED","FINISHING_DOWNLOAD","ADDING_TO_LIBRARY","REFRESHING_LIBRARY","ALREADY_IN_LIBRARY"].includes(p as any)
 }
 export function isTerminalCloseablePhase(p: CrystalPresentationPhase): boolean {
-  return ["FILE_CONFLICT","MULTIPLE_DOWNLOADS_FOUND","FAILED","SAFE_MODE","TIMED_OUT","INSTALLED_GAME_NOT_FOUND","CANCELLED","ALREADY_IN_LIBRARY"].includes(p as any)
+  return ["FILE_CONFLICT","MULTIPLE_DOWNLOADS_FOUND","FAILED","SAFE_MODE","TIMED_OUT","INSTALLED_GAME_NOT_FOUND","LIBRARY_REFRESH_FAILED","CANCELLED"].includes(p as any)
 }
 export function isTerminalPlayablePhase(p: CrystalPresentationPhase): boolean {
   return (p as any)==="READY_TO_PLAY"

@@ -58,20 +58,31 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
     // Product-level overrides after refresh
     if (extState.phase === "INSTALLED") {
       if (refreshStatus === "refreshing") return "REFRESHING_LIBRARY"
+      if (refreshStatus === "failed") return "LIBRARY_REFRESH_FAILED"
       if (refreshStatus === "done") {
         if (found) return "READY_TO_PLAY"
-        if (errorDetail === "INSTALLED_GAME_NOT_FOUND_AFTER_REFRESH") return "INSTALLED_GAME_NOT_FOUND"
-        // no found yet but refresh done indicates fallback to ready? treat as READY still if no error?
-        // conservative: stay REFRESHING briefly then fall to READY if found else NOT_FOUND
-        return "REFRESHING_LIBRARY"
+        if (errorDetail === "INSTALLED_GAME_NOT_FOUND_AFTER_REFRESH" || errorDetail === "INSTALLED_GAME_NOT_FOUND") return "INSTALLED_GAME_NOT_FOUND"
+        // refresh done but no unique game found -> not found
+        return "INSTALLED_GAME_NOT_FOUND"
       }
     }
     if (extState.phase === "ALREADY_INSTALLED") {
-      if (refreshStatus === "refreshing") return "ALREADY_IN_LIBRARY" // spec locates → library while refreshing; keep ALREADY title
-      if (refreshStatus === "done" && found) return "READY_TO_PLAY" // unified PLAY path – still valid for ALREADY, allows A PLAY
-      // if ALREADY but not found yet after refresh, stay ALREADY – will become PLAY when found
+      if (refreshStatus === "refreshing") return "ALREADY_IN_LIBRARY"
+      if (refreshStatus === "failed") return "LIBRARY_REFRESH_FAILED"
+      if (refreshStatus === "done") {
+        if (found) return "READY_TO_PLAY"
+        return "INSTALLED_GAME_NOT_FOUND"
+      }
+      // before refresh triggered, still locating – keep ALREADY but will timeout to refresh quickly
+      if (refreshStatus === "idle") return "ALREADY_IN_LIBRARY"
     }
     if (extState.phase === "FAILED" && errorDetail === "INSTALLED_GAME_NOT_FOUND_AFTER_REFRESH") {
+      return "INSTALLED_GAME_NOT_FOUND"
+    }
+    if (errorDetail === "LIBRARY_REFRESH_FAILED") {
+      return "LIBRARY_REFRESH_FAILED"
+    }
+    if (errorDetail === "INSTALLED_GAME_NOT_FOUND_AFTER_REFRESH" && (extState.phase === "INSTALLED" || extState.phase === "ALREADY_INSTALLED")) {
       return "INSTALLED_GAME_NOT_FOUND"
     }
     return base
@@ -94,16 +105,19 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
 
     if (!refreshLibrary) {
       setErrorDetail("NO_REFRESH_FN")
+      setRefreshStatus("failed")
       return
     }
 
     try {
       setRefreshStatus("refreshing")
+      setErrorDetail(null)
       const games = await refreshLibrary(systemId)
       setRefreshStatus("done")
       onRefreshComplete?.(systemId, games)
 
-      const installedPaths: string[] | undefined = importRes?.installedPaths ?? (session?.selectedCandidate ? [session.selectedCandidate] : undefined)
+      // Authority: only importer installedPaths – never Downloads selectedCandidate
+      const installedPaths: string[] | undefined = importRes?.installedPaths
 
       const finder = findInstalledGame({
         systemId,
@@ -115,6 +129,7 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
 
       if (finder.found) {
         setFound(finder.found)
+        setErrorDetail(null)
         onGameFound?.(systemId, finder.found)
       } else {
         setFound(null)
@@ -122,7 +137,9 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
       }
     } catch (e: any) {
       setRefreshStatus("failed")
-      setErrorDetail(e?.message || "REFRESH_FAILED")
+      setFound(null)
+      // Preserve failure – do NOT produce READY from stale cache
+      setErrorDetail("LIBRARY_REFRESH_FAILED")
     }
   }, [refreshLibrary, onGameFound, onRefreshComplete])
 

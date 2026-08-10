@@ -101,25 +101,22 @@ function AppInner() {
   const [discoverPrefillGame, setDiscoverPrefillGame] = useState<GameEntry | null>(null)
   const [discoverOrigin, setDiscoverOrigin] = useState<View>('system')
 
-  // V8.6C2 – Crystal Acquisition UI bridge (provider-agnostic, thin)
+  // V8.6C2.1 – Crystal Acquisition UI bridge (provider-agnostic, thin) – real refresh must fail honestly
   const crystalAcq = useCrystalAcquisition({
     refreshLibrary: async (sid: string) => {
-      try {
-        if (!isTauriEnvironment() || !isRealMachine) {
-          const cached = gameCache.get(sid)
-          if (cached) return cached
-          return []
-        }
-        const games = await listGames(sid)
-        setGameCache(prev => {
-          const m = new Map(prev)
-          m.set(sid, games)
-          return m
-        })
-        return games
-      } catch {
-        return gameCache.get(sid) || []
+      if (!isTauriEnvironment() || !isRealMachine) {
+        const cached = gameCache.get(sid)
+        if (cached) return cached
+        return []
       }
+      // Real Tauri machine: listGames failure must reject/throw – never return stale gameCache
+      const games = await listGames(sid)
+      setGameCache(prev => {
+        const m = new Map(prev)
+        m.set(sid, games)
+        return m
+      })
+      return games
     },
     onGameFound: (sid: string, game: any) => {
       setActiveSystemId(sid)
@@ -129,13 +126,18 @@ function AppInner() {
     onRefreshComplete: (_sid: string, _games: any) => {},
   })
 
-  // Expose generic entry for C3 (dev-only window hook)
+  // Expose generic entry – DEV ONLY – production Tauri build must NOT expose window globals
   useEffect(() => {
     try {
-      if (typeof window !== 'undefined') {
-        (window as any).__beginCrystalAcquisition = (req: any) => crystalAcq.begin(req)
-        ;(window as any).__crystalAcquisition = crystalAcq
+      if (typeof window === 'undefined') return
+      if (!isDevFixtureAllowed()) {
+        // ensure prod does not leak dev hooks
+        try { delete (window as any).__beginCrystalAcquisition } catch {}
+        try { delete (window as any).__crystalAcquisition } catch {}
+        return
       }
+      ;(window as any).__beginCrystalAcquisition = (req: any) => crystalAcq.begin(req)
+      ;(window as any).__crystalAcquisition = crystalAcq
     } catch {}
   }, [crystalAcq])
 
@@ -510,13 +512,14 @@ function AppInner() {
 
   const onNav = useCallback(
     (action: NavigationAction) => {
-      // V8.6C2 – Acquisition controller input guard
+      // V8.6C2.1 – Acquisition controller input guard – deterministic semantics, no dead-end on ALREADY
       try {
         const ext = (crystalAcq as any)?.externalState
-        const phase = (crystalAcq as any)?.crystalPhase
-        if (ext) {
+        const phase = (crystalAcq as any)?.crystalPhase as string
+        if (ext && phase) {
           const terminalReady = phase === "READY_TO_PLAY"
-          const terminalCloseable = ["FILE_CONFLICT","MULTIPLE_DOWNLOADS_FOUND","FAILED","SAFE_MODE","TIMED_OUT","INSTALLED_GAME_NOT_FOUND","CANCELLED","ALREADY_IN_LIBRARY"].includes(phase as any)
+          // V8.6C2.1: ALREADY_IN_LIBRARY is NOT terminalCloseable – only blocking while refresh in progress, after -> READY or NOT_FOUND
+          const terminalCloseable = ["FILE_CONFLICT","MULTIPLE_DOWNLOADS_FOUND","FAILED","SAFE_MODE","TIMED_OUT","INSTALLED_GAME_NOT_FOUND","LIBRARY_REFRESH_FAILED","CANCELLED"].includes(phase as any)
           const nonTerminalBlocking = ["PREPARING","OPENING_GAME_PAGE","WAITING_FOR_DOWNLOAD","DOWNLOAD_DETECTED","FINISHING_DOWNLOAD","ADDING_TO_LIBRARY","REFRESHING_LIBRARY","ALREADY_IN_LIBRARY"].includes(phase as any)
           if (action === "back") {
             if (nonTerminalBlocking) {
@@ -1226,76 +1229,81 @@ function AppInner() {
         </div>
       )}
 
-            {/* V8.6C2 Acquisition Status Card – premium glass, controller hints */}
+            {/* V8.6C2.1 Acquisition Status Card – premium glass, controller hints – DEV-GATED via isDevFixtureAllowed */}
       {(() => {
         try {
           let fixtureExternal: any = null
           let fixturePhase: any = null
-          try {
-            if (typeof window !== 'undefined') {
-              const sp = new URLSearchParams(window.location.search)
-              const af = sp.get('acq-fixture') || sp.get('acquisition-fixture') || sp.get('acq')
-              if (af) {
-                const map: any = {
-                  "WAITING_FOR_DOWNLOAD": { phase: "WAITING_FOR_DOWNLOAD", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-wait", errorCode: null, message: null },
-                  "DOWNLOAD_DETECTED": { phase: "DOWNLOAD_DETECTED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-detected", errorCode: null },
-                  "WAITING_FOR_STABILITY": { phase: "WAITING_FOR_STABILITY", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-stability", errorCode: null },
-                  "FINISHING_DOWNLOAD": { phase: "WAITING_FOR_STABILITY", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-stability", errorCode: null },
-                  "IMPORTING": { phase: "IMPORTING", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-import" },
-                  "ADDING_TO_LIBRARY": { phase: "IMPORTING", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-import" },
-                  "INSTALLED": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-inst" },
-                  "READY_TO_PLAY": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-ready" },
-                  "READY": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-ready" },
-                  "COLLISION": { phase: "COLLISION", systemId: "gbc", expectedTitle: "Game Already Exists.zip", sessionId: "fixture-coll" , errorCode: "COLLISION" },
-                  "FILE_CONFLICT": { phase: "COLLISION", systemId: "gbc", expectedTitle: "Game Already Exists.zip", sessionId: "fixture-coll", errorCode: "COLLISION" },
-                  "FAILED": { phase: "FAILED", systemId: "gbc", expectedTitle: "Broken Game", sessionId: "fixture-fail", errorCode: "NO_VALID_ROM_IN_ARCHIVE" },
-                  "TIMED_OUT": { phase: "TIMED_OUT", systemId: "gbc", expectedTitle: "Missing Game", sessionId: "fixture-timeout", errorCode: "TIMED_OUT" },
-                  "DOWNLOAD_NOT_FOUND": { phase: "TIMED_OUT", systemId: "gbc", expectedTitle: "Missing Game", sessionId: "fixture-timeout", errorCode: "TIMED_OUT" },
-                  "SAFE_MODE": { phase: "FAILED", systemId: "gbc", expectedTitle: "Safe Blocked", sessionId: "fixture-safe", errorCode: "SAFE_MODE_BLOCKED_IMPORT" },
-                  "SAFE_MODE_BLOCKED": { phase: "FAILED", systemId: "gbc", expectedTitle: "Safe Blocked", sessionId: "fixture-safe", errorCode: "SAFE_MODE_BLOCKED_IMPORT" },
-                  "AMBIGUOUS": { phase: "AMBIGUOUS", systemId: "gbc", expectedTitle: "Mario", sessionId: "fixture-ambig", errorCode: "AMBIGUOUS" },
-                  "MULTIPLE": { phase: "AMBIGUOUS", systemId: "gbc", expectedTitle: "Mario", sessionId: "fixture-ambig", errorCode: "AMBIGUOUS" },
-                }
-                const rec = map[af.toUpperCase()] || map[af]
-                if (rec) {
-                  const now = Date.now()
-                  fixtureExternal = {
-                    coordinatorId: "fixture-" + af,
-                    systemId: rec.systemId,
-                    expectedTitle: rec.expectedTitle,
-                    sessionId: rec.sessionId,
-                    phase: rec.phase,
-                    acquisitionSession: null,
-                    startedAt: now - 6000,
-                    lastUpdatedAt: now,
-                    errorCode: rec.errorCode || null,
-                    message: rec.message || null,
+          // Dev-gate: acquisition fixture query activation only when dev fixture allowed
+          if (isDevFixtureAllowed()) {
+            try {
+              if (typeof window !== 'undefined') {
+                const sp = new URLSearchParams(window.location.search)
+                const af = sp.get('acq-fixture') || sp.get('acquisition-fixture') || sp.get('acq')
+                if (af) {
+                  const map: any = {
+                    "WAITING_FOR_DOWNLOAD": { phase: "WAITING_FOR_DOWNLOAD", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-wait", errorCode: null, message: null },
+                    "DOWNLOAD_DETECTED": { phase: "DOWNLOAD_DETECTED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-detected", errorCode: null },
+                    "WAITING_FOR_STABILITY": { phase: "WAITING_FOR_STABILITY", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-stability", errorCode: null },
+                    "FINISHING_DOWNLOAD": { phase: "WAITING_FOR_STABILITY", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-stability", errorCode: null },
+                    "IMPORTING": { phase: "IMPORTING", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-import" },
+                    "ADDING_TO_LIBRARY": { phase: "IMPORTING", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-import" },
+                    "INSTALLED": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-inst" },
+                    "READY_TO_PLAY": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-ready" },
+                    "READY": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-ready" },
+                    "COLLISION": { phase: "COLLISION", systemId: "gbc", expectedTitle: "Game Already Exists.zip", sessionId: "fixture-coll" , errorCode: "COLLISION" },
+                    "FILE_CONFLICT": { phase: "COLLISION", systemId: "gbc", expectedTitle: "Game Already Exists.zip", sessionId: "fixture-coll", errorCode: "COLLISION" },
+                    "FAILED": { phase: "FAILED", systemId: "gbc", expectedTitle: "Broken Game", sessionId: "fixture-fail", errorCode: "NO_VALID_ROM_IN_ARCHIVE" },
+                    "TIMED_OUT": { phase: "TIMED_OUT", systemId: "gbc", expectedTitle: "Missing Game", sessionId: "fixture-timeout", errorCode: "TIMED_OUT" },
+                    "DOWNLOAD_NOT_FOUND": { phase: "TIMED_OUT", systemId: "gbc", expectedTitle: "Missing Game", sessionId: "fixture-timeout", errorCode: "TIMED_OUT" },
+                    "SAFE_MODE": { phase: "FAILED", systemId: "gbc", expectedTitle: "Safe Blocked", sessionId: "fixture-safe", errorCode: "SAFE_MODE_BLOCKED_IMPORT" },
+                    "SAFE_MODE_BLOCKED": { phase: "FAILED", systemId: "gbc", expectedTitle: "Safe Blocked", sessionId: "fixture-safe", errorCode: "SAFE_MODE_BLOCKED_IMPORT" },
+                    "AMBIGUOUS": { phase: "AMBIGUOUS", systemId: "gbc", expectedTitle: "Mario", sessionId: "fixture-ambig", errorCode: "AMBIGUOUS" },
+                    "MULTIPLE": { phase: "AMBIGUOUS", systemId: "gbc", expectedTitle: "Mario", sessionId: "fixture-ambig", errorCode: "AMBIGUOUS" },
+                    "LIBRARY_REFRESH_FAILED": { phase: "INSTALLED", systemId: "gbc", expectedTitle: "Pokémon Crystal", sessionId: "fixture-refreshfail" },
                   }
-                  const phaseMap: any = {
-                    "WAITING_FOR_DOWNLOAD":"WAITING_FOR_DOWNLOAD",
-                    "DOWNLOAD_DETECTED":"DOWNLOAD_DETECTED",
-                    "WAITING_FOR_STABILITY":"FINISHING_DOWNLOAD",
-                    "FINISHING_DOWNLOAD":"FINISHING_DOWNLOAD",
-                    "IMPORTING":"ADDING_TO_LIBRARY",
-                    "ADDING_TO_LIBRARY":"ADDING_TO_LIBRARY",
-                    "INSTALLED":"READY_TO_PLAY",
-                    "READY_TO_PLAY":"READY_TO_PLAY",
-                    "READY":"READY_TO_PLAY",
-                    "COLLISION":"FILE_CONFLICT",
-                    "FILE_CONFLICT":"FILE_CONFLICT",
-                    "FAILED":"FAILED",
-                    "TIMED_OUT":"TIMED_OUT",
-                    "DOWNLOAD_NOT_FOUND":"TIMED_OUT",
-                    "SAFE_MODE":"SAFE_MODE",
-                    "SAFE_MODE_BLOCKED":"SAFE_MODE",
-                    "AMBIGUOUS":"MULTIPLE_DOWNLOADS_FOUND",
-                    "MULTIPLE":"MULTIPLE_DOWNLOADS_FOUND",
+                  const rec = map[af.toUpperCase()] || map[af]
+                  if (rec) {
+                    const now = Date.now()
+                    fixtureExternal = {
+                      coordinatorId: "fixture-" + af,
+                      systemId: rec.systemId,
+                      expectedTitle: rec.expectedTitle,
+                      sessionId: rec.sessionId,
+                      phase: rec.phase,
+                      acquisitionSession: null,
+                      startedAt: now - 6000,
+                      lastUpdatedAt: now,
+                      errorCode: rec.errorCode || null,
+                      message: rec.message || null,
+                    }
+                    const phaseMap: any = {
+                      "WAITING_FOR_DOWNLOAD":"WAITING_FOR_DOWNLOAD",
+                      "DOWNLOAD_DETECTED":"DOWNLOAD_DETECTED",
+                      "WAITING_FOR_STABILITY":"FINISHING_DOWNLOAD",
+                      "FINISHING_DOWNLOAD":"FINISHING_DOWNLOAD",
+                      "IMPORTING":"ADDING_TO_LIBRARY",
+                      "ADDING_TO_LIBRARY":"ADDING_TO_LIBRARY",
+                      "INSTALLED":"READY_TO_PLAY",
+                      "READY_TO_PLAY":"READY_TO_PLAY",
+                      "READY":"READY_TO_PLAY",
+                      "COLLISION":"FILE_CONFLICT",
+                      "FILE_CONFLICT":"FILE_CONFLICT",
+                      "FAILED":"FAILED",
+                      "TIMED_OUT":"TIMED_OUT",
+                      "DOWNLOAD_NOT_FOUND":"TIMED_OUT",
+                      "SAFE_MODE":"SAFE_MODE",
+                      "SAFE_MODE_BLOCKED":"SAFE_MODE",
+                      "AMBIGUOUS":"MULTIPLE_DOWNLOADS_FOUND",
+                      "MULTIPLE":"MULTIPLE_DOWNLOADS_FOUND",
+                      "LIBRARY_REFRESH_FAILED":"LIBRARY_REFRESH_FAILED",
+                    }
+                    fixturePhase = phaseMap[af.toUpperCase()] || phaseMap[af] || null
                   }
-                  fixturePhase = phaseMap[af.toUpperCase()] || phaseMap[af] || null
                 }
               }
-            }
-          } catch {}
+            } catch {}
+          }
           const ext = fixtureExternal || crystalAcq.externalState
           const cPhase = (fixturePhase as any) || crystalAcq.crystalPhase
           if (!ext && !fixtureExternal) return null

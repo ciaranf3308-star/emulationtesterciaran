@@ -8,7 +8,7 @@
 
 import { useMemo } from "react"
 import type { ExternalAcquisitionState } from "./externalAcquisition"
-import { mapExternalToCrystalPhase, crystalCopyForPhase, type CrystalPresentationPhase } from "./acquisitionUiController"
+import { mapExternalToCrystalPhase, crystalCopyForPhase, type CrystalPresentationPhase, isTerminalCloseablePhase, isNonTerminalBlockingPhase, isTerminalPlayablePhase } from "./acquisitionUiController"
 
 export type AcquisitionStatusCardProps = {
   externalState: ExternalAcquisitionState | null
@@ -39,6 +39,7 @@ function phaseIcon(phase: CrystalPresentationPhase): string {
     case "TIMED_OUT": return "◷"
     case "CANCELLED": return "✕"
     case "INSTALLED_GAME_NOT_FOUND": return "✓"
+    case "LIBRARY_REFRESH_FAILED": return "⚠"
     default: return "·"
   }
 }
@@ -69,11 +70,12 @@ export function AcquisitionStatusCard({
     return crystalCopyForPhase(derivedCrystal, { errorCode: ec, message: msg, expectedTitle: title })
   }, [derivedCrystal, externalState, crystalPhaseProp])
 
-  const isTerminal = derivedCrystal === "READY_TO_PLAY" || derivedCrystal === "FILE_CONFLICT" || derivedCrystal === "MULTIPLE_DOWNLOADS_FOUND" || derivedCrystal === "FAILED" || derivedCrystal === "SAFE_MODE" || derivedCrystal === "TIMED_OUT" || derivedCrystal === "CANCELLED" || derivedCrystal === "INSTALLED_GAME_NOT_FOUND"
-  const isWaiting = derivedCrystal === "WAITING_FOR_DOWNLOAD" || derivedCrystal === "DOWNLOAD_DETECTED" || derivedCrystal === "FINISHING_DOWNLOAD" || derivedCrystal === "ADDING_TO_LIBRARY" || derivedCrystal === "REFRESHING_LIBRARY" || derivedCrystal === "PREPARING" || derivedCrystal === "OPENING_GAME_PAGE"
+  const isTerminal = isTerminalPlayablePhase(derivedCrystal) || isTerminalCloseablePhase(derivedCrystal)
+  const isWaiting = isNonTerminalBlockingPhase(derivedCrystal)
 
   const show = forcePresentForFixture || externalState != null
   if (!show) return null
+  // IDLE hidden unless fixture forces present – ALREADY_IN_LIBRARY is NOT terminalCloseable, must remain visible while blocking
   if (!forcePresentForFixture && derivedCrystal === "IDLE") return null
 
   const glyph = phaseIcon(derivedCrystal)
