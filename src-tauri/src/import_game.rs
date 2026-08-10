@@ -1009,7 +1009,7 @@ mod tests {
             assert!(!rom_dir.join("game.iso").exists());
         });
         std::env::remove_var("CRYSTAL_SAFE_MODE");
-        crate::safety::SAFE_MODE.store(false, std::sync::atomic::Ordering::SeqCst);
+        crate::safety::set_safe_mode_for_tests(false);
     }
 
     #[test]
@@ -1173,7 +1173,7 @@ mod tests {
             let src_zip = tmp.path().join("empty.zip");
             {
                 let file = fs::File::create(&src_zip).unwrap();
-                let zip = zip::ZipWriter::new(file);
+                let mut zip = zip::ZipWriter::new(file);
                 zip.finish().unwrap();
             }
             let req = ImportRequest {

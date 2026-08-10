@@ -355,6 +355,11 @@ pub fn get_crystal_writable_root() -> String {
     crystal_writable_root().display().to_string()
 }
 
+/// Test-only helper to reset SAFE_MODE – also usable in non-test code for import_game cleanup.
+pub fn set_safe_mode_for_tests(enabled: bool) {
+    SAFE_MODE.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
 // ---------- Tests ----------
 
 #[cfg(test)]
@@ -472,7 +477,7 @@ mod tests {
         assert!(is_safe_mode());
         std::env::remove_var("CRYSTAL_SAFE_MODE");
         // Reset static for test isolation – set false
-        crate::safety::SAFE_MODE.store(false, std::sync::atomic::Ordering::SeqCst);
+        crate::safety::set_safe_mode_for_tests(false);
         assert!(!is_safe_mode());
     }
 
