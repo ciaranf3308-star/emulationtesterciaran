@@ -324,16 +324,16 @@ describe('V8.1 no filesystem write TS API – audit', () => {
     expect(loaderSrc).toContain('readFile')
   })
 
-  it('version files bumped 4.0.0 -> 4.1.0', () => {
+  it('version files consistently use the current release version', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
-    expect(pkg.version).toBe("4.3.0")
+    expect(pkg.version).toBe("4.3.1")
     const tauriConf = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'))
-    expect(tauriConf.version).toBe("4.3.0")
+    expect(tauriConf.version).toBe("4.3.1")
     const cargo = readFileSync('src-tauri/Cargo.toml', 'utf8')
-    expect(cargo).toContain('version = "4.3.0"')
+    expect(cargo).toContain('version = "4.3.1"')
     const verJson = JSON.parse(readFileSync('version.json', 'utf8'))
-    expect(verJson.packageVersion).toBe("4.3.0")
-    expect(verJson.semver).toBe("4.3.0")
+    expect(verJson.packageVersion).toBe("4.3.1")
+    expect(verJson.semver).toBe("4.3.1")
   })
 
   it('golden screen layouts preserved – SystemLanding/LibraryView/Carousel still contain expected markers', () => {

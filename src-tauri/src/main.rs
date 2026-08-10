@@ -35,6 +35,12 @@ pub struct GameEntry {
     pub publisher: Option<String>,
     #[serde(default)]
     pub genre: Option<String>,
+    pub players: Option<String>,
+    pub rating: Option<f64>,
+    pub releasedate: Option<String>,
+    pub playtime: Option<u64>,
+    pub cover_path: Option<String>,
+    pub marquee_path: Option<String>,
     #[serde(default)]
     pub has_media: bool,
 }
@@ -111,6 +117,10 @@ struct GamelistMeta {
     developer: Option<String>,
     publisher: Option<String>,
     genre: Option<String>,
+    players: Option<String>,
+    rating: Option<f64>,
+    releasedate: Option<String>,
+    playtime: Option<u64>,
     path: Option<String>,
 }
 
@@ -332,7 +342,7 @@ fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, Gamelist
     use quick_xml::Reader;
 
     let mut reader = Reader::from_str(&content);
-    reader.config_mut().trim_text(true);
+    reader.trim_text(true);
 
     let mut current_game: Option<GamelistMeta> = None;
     let mut current_tag: String = String::new();
@@ -361,6 +371,10 @@ fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, Gamelist
                         "developer" => game.developer = Some(txt),
                         "publisher" => game.publisher = Some(txt),
                         "genre" => game.genre = Some(txt),
+                        "players" => game.players = Some(txt),
+                        "rating" => game.rating = txt.parse::<f64>().ok(),
+                        "releasedate" => game.releasedate = Some(txt),
+                        "playtime" => game.playtime = txt.parse::<u64>().ok(),
                         _ => {}
                     }
                 }
@@ -394,7 +408,7 @@ fn parse_gamelist_xml(path: &Path, _system_id: &str) -> HashMap<String, Gamelist
     map
 }
 
-fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str, _roots_scraped: &str) -> Vec<GameEntry> {
+fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str, roots_scraped: &str) -> Vec<GameEntry> {
     let system_id = system.get("id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
     let system_full = system.get("fullName").and_then(|v| v.as_str()).map(|s| s.to_string());
     let rom_dir_str = system.get("romDirectory").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -446,6 +460,12 @@ fn enumerate_games_for_system(system: &serde_json::Value, roots_gamelists: &str,
             developer: final_meta.and_then(|m| m.developer.clone()),
             publisher: final_meta.and_then(|m| m.publisher.clone()),
             genre: final_meta.and_then(|m| m.genre.clone()),
+            players: final_meta.and_then(|m| m.players.clone()),
+            rating: final_meta.and_then(|m| m.rating),
+            releasedate: final_meta.and_then(|m| m.releasedate.clone()),
+            playtime: final_meta.and_then(|m| m.playtime),
+            cover_path: find_media_path(roots_scraped, &system_id, "covers", &basename),
+            marquee_path: find_media_path(roots_scraped, &system_id, "marquees", &basename),
             has_media: false,
         });
     }
@@ -548,8 +568,25 @@ fn media_extensions_for_type(media_type: &str) -> Vec<&'static str> {
         "videos" => vec![".mp4", ".mkv", ".avi", ".webm"],
         "marquees" => vec![".png", ".jpg", ".webp"],
         "miximages" => vec![".jpg", ".png"],
+        "fanart" => vec![".jpg", ".png", ".webp"],
+        "3dboxes" => vec![".png", ".jpg", ".webp"],
+        "backcovers" => vec![".png", ".jpg", ".webp"],
         _ => vec![".jpg", ".png", ".mp4"],
     }
+}
+
+fn find_media_path(root: &str, system_id: &str, media_type: &str, rom_basename: &str) -> Option<String> {
+    if root.is_empty() {
+        return None;
+    }
+    let clean = root.trim_end_matches(|c| c == '/' || c == '\\');
+    for ext in media_extensions_for_type(media_type) {
+        let path = PathBuf::from(clean).join(system_id).join(media_type).join(format!("{}{}", rom_basename, ext));
+        if path.exists() {
+            return Some(path.to_string_lossy().to_string());
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -958,7 +995,7 @@ pub fn run() {
             log_event(
                 "info",
                 &format!(
-                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.0.0",
+                    "crystal-frontend startup safe_mode={} writable_root='{}' version=4.3.1",
                     safe,
                     root.display()
                 ),
@@ -978,6 +1015,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            // Keep the static asset-protocol scope empty. At runtime, grant read-only
+            // access only to the scraped-media root selected by the machine config.
+            if let Ok(config) = load_machine_config_json() {
+                let (_, scraped_root, _) = get_roots_from_config(&config);
+                if !scraped_root.is_empty() {
+                    app.asset_protocol_scope()
+                        .allow_directory(PathBuf::from(scraped_root), true)?;
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_machine_config,
             list_games,
@@ -995,4 +1044,37 @@ pub fn run() {
 
 fn main() {
     run()
+}
+
+#[cfg(test)]
+mod backend_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn backend_safe_mode_blocks_before_process_spawn() {
+        std::env::set_var("CRYSTAL_SAFE_MODE", "1");
+        let request = LaunchBackendRequest {
+            systemId: "ps2".into(),
+            systemFullName: "Sony PlayStation 2".into(),
+            romPath: r"D:\Emulation\roms\ps2\real-game.iso".into(),
+            romBasename: "real-game".into(),
+            romDirectory: r"D:\Emulation\roms\ps2".into(),
+            commandLabel: "PCSX2".into(),
+            commandTemplate: r#"C:\definitely-must-not-spawn\pcsx2-qt.exe "%ROM%""#.into(),
+            workingDirectoryTemplate: None,
+            isFirstConfiguredCommand: true,
+            emulatorFindRules: vec![],
+            coreFindRules: vec![],
+            emulatorIdentifiers: vec![],
+            coreFiles: vec![],
+            corePathIdentifiers: vec![],
+            identifiers: None,
+            findRules: vec![],
+            placeholders: HashMap::new(),
+            placeholdersPresent: vec![],
+        };
+        let error = launch_game(request).expect_err("safe mode must reject the backend launch path");
+        assert!(error.starts_with("SAFE_MODE_BLOCKED_LAUNCH"));
+        std::env::remove_var("CRYSTAL_SAFE_MODE");
+    }
 }

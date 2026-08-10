@@ -23,6 +23,12 @@ export interface GameEntry {
   developer?: string
   publisher?: string
   genre?: string
+  players?: string
+  rating?: number
+  releasedate?: string
+  playtime?: number
+  cover_path?: string
+  marquee_path?: string
   has_media?: boolean
 }
 

@@ -73,6 +73,7 @@ function AppInner() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
   const [selectedGameplaySources, setSelectedGameplaySources] = useState<GameplaySource[] | undefined>(undefined)
   const [selectedPhysicalUrl, setSelectedPhysicalUrl] = useState<string | undefined>(undefined)
+  const [gameIdentityMedia, setGameIdentityMedia] = useState<Record<string, { cover?: string; marquee?: string }>>({})
   const [mediaResolving, setMediaResolving] = useState(false)
   const mediaRequestIdRef = useRef(0)
   const debounceRef = useRef<number | null>(null)
@@ -207,9 +208,9 @@ function AppInner() {
       const anyG = g as any
       const fixCover = anyG._fixtureCoverUrl || null
       const fixMedia = fixtureMediaForGame(g.id)
-      return { id: g.id, name: g.name, coverUrl: fixCover || fixMedia?.cover || null }
+      return { id: g.id, name: g.name, coverUrl: fixCover || fixMedia?.cover || gameIdentityMedia[g.id]?.cover || null }
     })
-  }, [activeGames])
+  }, [activeGames, gameIdentityMedia])
 
   const librarySelectedDetail: LibraryGameDetail | null | undefined = useMemo(() => {
     if (!selectedGameEntry) return null
@@ -218,8 +219,8 @@ function AppInner() {
     return {
       id: g.id,
       name: g.name,
-      logoUrl: g._fixtureLogoUrl || fix?.marquee || null,
-      coverUrl: g._fixtureCoverUrl || fix?.cover || null,
+      logoUrl: g._fixtureLogoUrl || fix?.marquee || gameIdentityMedia[g.id]?.marquee || null,
+      coverUrl: g._fixtureCoverUrl || fix?.cover || gameIdentityMedia[g.id]?.cover || null,
       desc: g.description,
       developer: g.developer,
       publisher: g.publisher,
@@ -234,9 +235,28 @@ function AppInner() {
       last_played: g.last_played ?? null,
       lastplayed: g.lastplayed ?? null,
       lastPlayedLabel: lastPlayedLabel(g) ?? null,
-      playTimeLabel: parsePlayCount(g) ? `${parsePlayCount(g)} plays` : null,
+      playTimeLabel: g.playtime
+        ? `${Math.max(1, Math.round(Number(g.playtime) / 60))} min played`
+        : parsePlayCount(g)
+          ? `${parsePlayCount(g)} plays`
+          : null,
     }
-  }, [selectedGameEntry])
+  }, [selectedGameEntry, gameIdentityMedia])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(activeGames.slice(0, 200).map(async game => {
+      const g = game as GameEntry & { cover_path?: string; marquee_path?: string }
+      const [cover, marquee] = await Promise.all([
+        g.cover_path ? toAssetUrl(g.cover_path) : Promise.resolve(null),
+        g.marquee_path ? toAssetUrl(g.marquee_path) : Promise.resolve(null),
+      ])
+      return [g.id, { cover: cover || undefined, marquee: marquee || undefined }] as const
+    })).then(entries => {
+      if (!cancelled) setGameIdentityMedia(Object.fromEntries(entries))
+    })
+    return () => { cancelled = true }
+  }, [activeGames])
 
   const metaForLanding = useMemo(() => getSystemMeta(activeSystemId), [activeSystemId])
   const activeIndex = useMemo(() => {
@@ -339,7 +359,7 @@ function AppInner() {
             setMediaResolving(false)
             return
           }
-          const verification = await verifyMedia(game.system_id, game.rom_basename, ['video', 'screenshot', 'titlescreen', 'miximage', 'cover', 'physicalmedia', 'marquee'])
+          const verification = await verifyMedia(game.system_id, game.rom_basename, ['videos', 'screenshots', 'titlescreens', 'miximages', 'covers', 'physicalmedia', 'marquees', 'fanart', '3dboxes'])
           if (curId !== mediaRequestIdRef.current) return
           const rawMedia = (verification as any).media as Record<string, { exists: boolean; path?: string; candidates: string[] }>
           const resolved: ResolvedGameMedia & { marquee?: string | null } = {} as any
@@ -350,13 +370,15 @@ function AppInner() {
             const url = await toAssetUrl(p)
             if (!url) continue
             if (curId !== mediaRequestIdRef.current) return
-            if (type === 'video') resolved.video = url
-            else if (type === 'screenshot') resolved.screenshot = url
-            else if (type === 'titlescreen') resolved.titleScreen = url
-            else if (type === 'miximage') resolved.mixImage = url
-            else if (type === 'cover') resolved.cover = url
+            if (type === 'videos') resolved.video = url
+            else if (type === 'screenshots') resolved.screenshot = url
+            else if (type === 'titlescreens') resolved.titleScreen = url
+            else if (type === 'miximages') resolved.mixImage = url
+            else if (type === 'covers') resolved.cover = url
             else if (type === 'physicalmedia') resolved.physicalMedia = url
-            else if (type === 'marquee') (resolved as any).marquee = url
+            else if (type === 'marquees') (resolved as any).marquee = url
+            else if (type === 'fanart' && !resolved.mixImage) resolved.mixImage = url
+            else if (type === '3dboxes' && !resolved.cover) resolved.cover = url
           }
           if (curId !== mediaRequestIdRef.current) return
           if (resolved.physicalMedia) setSelectedPhysicalUrl(resolved.physicalMedia)
@@ -646,7 +668,7 @@ function AppInner() {
       } catch {
         if (!cancelled) {
           // fallback to fixture even in Tauri if enumeration fails but fixture exists (dev assist)
-          if (getFixtureSystems().includes(activeSystemId)) {
+          if ((!isTauri || !isRealMachine) && getFixtureSystems().includes(activeSystemId)) {
             try {
               const fixtures = getFixtureGames(activeSystemId).map(toGameEntry)
               setGameCache(prev => {
@@ -677,7 +699,7 @@ function AppInner() {
     return () => {
       cancelled = true
     }
-  }, [activeSystemId, gameCache, cacheLoading, isRealMachine])
+  }, [activeSystemId, isRealMachine])
 
   useEffect(() => {
     if (!systemsForUI.length) return

@@ -15,9 +15,9 @@
     "V8": "V8 — Golden Screen parity: production-quality system landing and game library experiences modelled on the proven Crystal ES-DE theme, with real machine metadata/media, horizontal box-art library, and calibrated transparent hardware gameplay stage.",
     "V8.1": "V8.1 SAFE MODE & frontend safety hardening: backend get_safe_mode guard, write-path guard Crystal app-data only (reject ROM/ES-DE/EmuDeck/root/traversal), SAFE MODE blocks launch_game but permits config/ROM/gamelist/media, frontend SAFE MODE query + small DEV-only pill top-right second to theme toggle (normal prod hidden), A PLAY blocked with toast \"SAFE MODE – launch blocked\" console logged, Tauri never falls back to fake config, typecheck/build green"
   },
-  "packageVersion": "4.3.0",
+  "packageVersion": "4.3.1",
   "previousMilestone": "V8.2 — Golden Screen Visual Repair – populated fidelity, editorial hierarchy, hardware-media integration, 7-game fixture, first-game auto-select",
   "project": "Crystal Frontend",
   "projectMilestone": "V8.3",
-  "semver": "4.3.0"
+  "semver": "4.3.1"
 }

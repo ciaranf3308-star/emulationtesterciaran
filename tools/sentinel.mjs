@@ -19,6 +19,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const KNOWN_MEDIA_SUBFOLDERS = ['covers','physicalmedia','screenshots','titlescreens','videos','marquees','miximages'];
 
@@ -189,7 +190,7 @@ async function collectTargets(opts={}) {
   return { configUsed: cfgPath ? { path: cfgPath, roots } : { tried }, host: os.hostname ? os.hostname() : 'unknown', generatedAt: new Date().toISOString(), targets };
 }
 
-function diffSnapshots(before, after) {
+export function diffSnapshots(before, after) {
   const beforeMap = new Map((before.targets||[]).map(t=>[t.id+'::'+t.path, t]));
   const afterMap = new Map((after.targets||[]).map(t=>[t.id+'::'+t.path, t]));
   const changes=[];
@@ -197,25 +198,24 @@ function diffSnapshots(before, after) {
 
   for(const [key, a] of afterMap){
     const b = beforeMap.get(key);
-    if(!b) { changes.push({ type:'added', key, after:a }); continue; }
+    if(!b) { changes.push({ type:'added', key, id:a.id, path:a.path, category:a.category, after:a }); continue; }
     if(!b.exists && !a.exists) continue;
-    if(b.exists !== a.exists) { changes.push({ type:'existence-changed', key, before:b, after:a }); continue; }
+    if(b.exists !== a.exists) { changes.push({ type:'existence-changed', key, id:a.id || b.id, path:a.path || b.path, category:a.category || b.category, before:b, after:a }); continue; }
     const mtimeDelta = Math.abs((a.mtimeMs||0)-(b.mtimeMs||0));
     const sizeChanged = (a.size||0)!==(b.size||0);
     if(mtimeDelta>MTIME_TOLERANCE_MS || sizeChanged){
-      changes.push({ type:'modified', key, mtimeDelta, sizeChanged, before:{mtimeMs:b.mtimeMs,size:b.size,mtimeIso:b.mtimeIso}, after:{mtimeMs:a.mtimeMs,size:a.size,mtimeIso:a.mtimeIso,fileCount:a.fileCount}, id:b.id, path:b.path });
+      changes.push({ type:'modified', key, mtimeDelta, sizeChanged, before:{mtimeMs:b.mtimeMs,size:b.size,mtimeIso:b.mtimeIso}, after:{mtimeMs:a.mtimeMs,size:a.size,mtimeIso:a.mtimeIso,fileCount:a.fileCount}, id:b.id, path:b.path, category:b.category || a.category });
     } else if((b.fileCount!=null || a.fileCount!=null) && b.fileCount!==a.fileCount){
-      changes.push({ type:'count-changed', key, before:b, after:a });
+      changes.push({ type:'count-changed', key, id:a.id || b.id, path:a.path || b.path, category:a.category || b.category, before:b, after:a });
     }
   }
   for(const [key,b] of beforeMap){
-    if(!afterMap.has(key) && b.exists) changes.push({ type:'removed', key, before:b });
+    if(!afterMap.has(key) && b.exists) changes.push({ type:'removed', key, id:b.id, path:b.path, category:b.category, before:b });
   }
 
   const unexpected = changes.filter(c=>{
     // Crystal internal cache/logs are expected to change – not unexpected
-    if(c.path && (c.path.includes('CrystalFrontend') || c.path.includes('Crystal Frontend'))) return false;
-    if(c.id && String(c.id).startsWith('crystal:')) return false;
+    if(c.category === 'crystal-internal' && c.id && String(c.id).startsWith('crystal:')) return false;
     return true;
   });
 
@@ -301,4 +301,4 @@ async function main(){
   process.exit(1);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) await main();

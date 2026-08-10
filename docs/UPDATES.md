@@ -77,7 +77,7 @@ cat ~/.tauri/crystal.key.pub
 # Example: gMqZ8bVKU26sQqirx7TX7H+j67/TgPj3Kh747WWVfOU=
 ```
 
-For this repo, a random ed25519 pair was generated via Python `cryptography` in `/tmp` for V8.3.1 initial public key. Private seed `h73VhySSVpt8dxRybUmwcuinkwhqpCtHLMOXfskZUow=` was **NOT** committed; public `gMqZ8bVKU26sQqirx7TX7H+j67/TgPj3Kh747WWVfOU=` is in `tauri.conf.json`.
+For this repo, a random ed25519 pair was generated for the V8.3.1 initial public key. The private seed must be stored only in the GitHub Actions secret and must never be committed; public `gMqZ8bVKU26sQqirx7TX7H+j67/TgPj3Kh747WWVfOU=` is in `tauri.conf.json`.
 
 > Real production deployments should regenerate a fresh pair on an air-gapped machine and replace the public key – previous published releases will then require manual reinstall (one-time) because old pubkey won't validate new signatures. Plan this before first public Windows installer distribution.
 

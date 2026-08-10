@@ -1,13 +1,13 @@
 {
   "name": "emulationtesterciaran-refactor",
   "private": true,
-  "version": "4.3.0",
+  "version": "4.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "bun test",
+    "test": "bun test && node --test tools/sentinel.test.mjs",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "check": "npm run typecheck && npm run test"
   },
