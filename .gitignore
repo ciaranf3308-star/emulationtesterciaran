@@ -49,3 +49,6 @@ downloaded_media/
 # Original asset ZIPs - artwork already extracted to public/assets/ (which is allowed to stay)
 *.zip
 **/Crystal-Frontend-Asset-Pack.zip
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/

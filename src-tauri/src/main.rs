@@ -2,6 +2,7 @@
 
 mod safety;
 mod discovery;
+mod import_game;
 
 use safety::{crystal_writable_root, ensure_writable_dirs, init_safe_mode_from_env, is_safe_mode, log_event};
 use serde::{Deserialize, Serialize};
@@ -1040,7 +1041,8 @@ pub fn run() {
             safety::get_crystal_writable_root,
             discovery::fetch_vimm,
             discovery::discovery_cache_read,
-            discovery::discovery_cache_write
+            discovery::discovery_cache_write,
+            import_game::import_game_source
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
