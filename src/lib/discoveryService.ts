@@ -17,6 +17,16 @@ import { isTauriEnvironment } from '../runtime/environment';
 import { isDevFixtureAllowed, isFixtureEnabled } from '../dev/fixtures/fixtureMode';
 import type { DiscoveryResult as AuthResult, DiscoveryGameDetail } from '../discovery/types';
 
+async function openValidatedExternalUrl(url: string): Promise<void> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('open_external_catalog_url', { url });
+    return;
+  }
+  const opened = typeof window !== 'undefined' ? window.open(url, '_blank', 'noopener') : null;
+  if (!opened) throw new Error('EXTERNAL_BROWSER_OPEN_FAILED: browser blocked the new window');
+}
+
 // Primary provider is ROMsFun per V8.6D1 Plan C
 const romsfunProvider = new RomsFunProvider();
 const vimmProviderDormant = new VimmProvider(); // dormant / fallback-capable
@@ -175,14 +185,7 @@ export async function open(id: string): Promise<void> {
     // Vimm dormant
     const url = buildVimmDetailUrl(id.trim());
     if (!validateVimmOpenUrl(url)) throw new Error(`open() blocked – Vimm URL not allowed: ${url}`);
-    try {
-      if (isTauriEnvironment()) {
-        const shellMod = await import('@tauri-apps/plugin-shell');
-        const openFn = (shellMod as any).open || (shellMod as any).default?.open;
-        if (typeof openFn === 'function') { await openFn(url); return; }
-      }
-    } catch {}
-    if (typeof window !== 'undefined') (window as any).open(url, '_blank','noopener');
+    await openValidatedExternalUrl(url);
     return;
   }
   // ROMsFun slug – primary flow MUST NOT use Edge/shell.open, but this fallback remains for internal reference only
@@ -192,14 +195,7 @@ export async function open(id: string): Promise<void> {
     throw new Error(`open() blocked – ROMsFun URL not allowed: ${url} – do NOT allowlist galaxylanesandgames.com`);
   }
   // Fallback internal reference: still may open via shell for QA but primary Plan C flow does NOT call this
-  try {
-    if (isTauriEnvironment()) {
-      const shellMod = await import('@tauri-apps/plugin-shell');
-      const openFn = (shellMod as any).open || (shellMod as any).default?.open;
-      if (typeof openFn === 'function') { await openFn(url); return; }
-    }
-  } catch {}
-  if (typeof window !== 'undefined') (window as any).open(url, '_blank','noopener');
+  await openValidatedExternalUrl(url);
 }
 
 export async function openRoot(): Promise<void> {

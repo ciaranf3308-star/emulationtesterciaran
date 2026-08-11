@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_shell::ShellExt;
 
 /// Shared types for frontend/backend API
 
@@ -1216,6 +1217,35 @@ fn launch_game_with_handoff(
 
 // ---------- Entry ----------
 
+#[tauri::command]
+fn open_external_catalog_url(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|e| format!("INVALID_CATALOG_URL: {}", e))?;
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let allowed_host = matches!(host.as_str(), "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net");
+    let allowed_path = if host.ends_with("romsfun.com") {
+        parsed.path().starts_with("/roms/")
+    } else {
+        parsed.path() == "/vault" || parsed.path().starts_with("/vault/")
+    };
+    if parsed.scheme() != "https"
+        || !allowed_host
+        || !allowed_path
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("CATALOG_URL_BLOCKED: only validated first-party catalog pages may open externally".to_string());
+    }
+
+    app.shell().open(url.clone(), None).map_err(|e| {
+        let message = format!("EXTERNAL_BROWSER_OPEN_FAILED: {}", e);
+        log_event("error", &format!("{} url='{}'", message, url));
+        message
+    })?;
+    log_event("info", &format!("external_catalog_opened url='{}'", url));
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // --- WATCHER MODE EARLY DETECTION (before Tauri builder) ---
@@ -1285,6 +1315,7 @@ pub fn run() {
             get_favorites,
             get_recently_played,
             verify_media,
+            open_external_catalog_url,
             launch_game,
             launch_game_with_handoff,
             safety::get_safe_mode,
