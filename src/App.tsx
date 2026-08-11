@@ -263,6 +263,8 @@ function AppInner() {
       // fallback to legacy if needed? primary flow must NOT open Edge – we keep legacy intact but not call it automatically
     }
   }, [providerSurf])
+  // Kept as an explicit fallback; external browser + Downloads watcher is primary.
+  void handleBeginProviderAcquisition
 
   // Expose generic entry – DEV ONLY – production Tauri build must NOT expose window globals
   useEffect(() => {
@@ -1575,7 +1577,7 @@ function AppInner() {
           logoUrl={logoUrl}
           selectedLocalGame={discoverPrefillGame}
           libraryGames={activeGames}
-          onBeginAcquisition={(req: any) => handleBeginProviderAcquisition(req)}
+          onBeginAcquisition={(req: any) => crystalAcq.begin(req)}
           acquisitionActive={!!(crystalAcq.active || providerSurf.active)}
           acquisitionPhase={(providerSurf.phase !== 'IDLE' ? providerSurf.phase : crystalAcq.crystalPhase) as any}
           onBack={() => {

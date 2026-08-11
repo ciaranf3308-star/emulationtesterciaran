@@ -247,8 +247,8 @@ export function DiscoverView({
     }
   }, [acquisitionActive, showDetailPanel])
 
-  // V8.6D1 – PLAN C – in-app provider surface – ROMsFun slug + legacy numeric (Vimm dormant)
-  // New flow: A GET GAME → Crystal opens provider surface INSIDE existing fullscreen window
+  // External-browser handoff: Crystal starts the local Downloads watcher first,
+  // then opens the selected provider detail page in the default browser.
   const handleGetGame = useCallback(() => {
     if (acquisitionActive) return
     if (startInFlightRef.current) return
@@ -272,7 +272,8 @@ export function DiscoverView({
       setErrorMsg('Could not determine game title for acquisition')
       return
     }
-    // Build lazy external-page callback – MUST NOT open Edge eagerly; primary ROMsFun flow uses in-app surface instead
+    // Lazy callback: the coordinator invokes this only after the Downloads
+    // watcher is ready, so fast downloads cannot be missed.
     const openExternalPage = () => discoveryService.open(idStr)
 
     startInFlightRef.current = true
@@ -739,7 +740,7 @@ export function DiscoverView({
 
                 {(detailFull?.description || detailFull?.title) && (
                   <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, lineHeight: 1.5, opacity: 0.82, maxWidth: '56ch' }}>
-                    {detailFull?.description || 'ROMsFun catalog entry. GET GAME opens the provider page securely inside Crystal.'}
+                    {detailFull?.description || 'Catalog entry. GET GAME opens the provider page in your default browser while Crystal watches Downloads for a completed file you choose.'}
                   </div>
                 )}
 
