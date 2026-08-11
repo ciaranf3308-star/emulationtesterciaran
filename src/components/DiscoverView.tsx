@@ -249,7 +249,7 @@ export function DiscoverView({
 
   // External-browser handoff: Crystal starts the local Downloads watcher first,
   // then opens the selected provider detail page in the default browser.
-  const handleGetGame = useCallback(() => {
+  const handleGetGame = useCallback((provider: 'romsfun' | 'vimm' = 'romsfun') => {
     if (acquisitionActive) return
     if (startInFlightRef.current) return
     if (!onBeginAcquisition) return
@@ -275,6 +275,7 @@ export function DiscoverView({
     // Lazy callback: the coordinator invokes this only after the Downloads
     // watcher is ready, so fast downloads cannot be missed.
     const openExternalPage = () => discoveryService.open(idStr)
+    const openVimmBackupPage = () => discoveryService.openVimmBackup(systemId, expectedTitle)
 
     startInFlightRef.current = true
     try {
@@ -283,7 +284,7 @@ export function DiscoverView({
         expectedTitle,
         providerId: idStr,
         initialUrl: idStr.includes('/') ? `https://romsfun.com/roms/${idStr.replace(/^roms\//,'')}` : undefined,
-        openExternalPage,
+        openExternalPage: provider === 'vimm' ? openVimmBackupPage : openExternalPage,
       })
       setShowDetailPanel(false)
       setSelectedDetail(null)
@@ -750,7 +751,7 @@ export function DiscoverView({
                       onClick={() => {
                         if (acquisitionActive) return
                         if (startInFlightRef.current) return
-                        handleGetGame()
+                        handleGetGame('romsfun')
                       }}
                       autoFocus
                       disabled={detailResolving || !!acquisitionActive}
@@ -771,6 +772,26 @@ export function DiscoverView({
                     >
                       <span style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(0,0,0,0.12)', display: 'grid', placeItems: 'center', fontSize: 11 }}>A</span>
                       GET GAME
+                    </button>
+                  ) : null}
+                  {canGetGame && onBeginAcquisition && systemId !== 'steam' ? (
+                    <button
+                      onClick={() => {
+                        if (acquisitionActive || startInFlightRef.current) return
+                        handleGetGame('vimm')
+                      }}
+                      disabled={detailResolving || !!acquisitionActive}
+                      data-testid="get-game-vimm-backup"
+                      style={{
+                        appearance: 'none', padding: '10px 16px', borderRadius: 999,
+                        border: `1px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`,
+                        background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)',
+                        color: isDark ? '#eef7ff' : '#16213e', fontFamily: 'var(--crystal-mono)',
+                        fontSize: 11, fontWeight: 700, cursor: acquisitionActive ? 'not-allowed' : 'pointer',
+                        opacity: acquisitionActive ? 0.5 : 1,
+                      }}
+                    >
+                      VIMM BACKUP
                     </button>
                   ) : null}
                   {!canGetGame && alreadyInLibraryForDetail ? (

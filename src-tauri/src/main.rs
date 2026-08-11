@@ -1220,7 +1220,12 @@ fn launch_game_with_handoff(
 
 #[tauri::command]
 fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String> {
-    let parsed = url::Url::parse(&url).map_err(|e| format!("INVALID_CATALOG_URL: {}", e))?;
+    log_event("info", &format!("external_catalog_open_requested url='{}'", url));
+    let parsed = url::Url::parse(&url).map_err(|e| {
+        let message = format!("INVALID_CATALOG_URL: {}", e);
+        log_event("error", &message);
+        message
+    })?;
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
     let allowed_host = matches!(host.as_str(), "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net");
     let allowed_path = if host.ends_with("romsfun.com") {
@@ -1235,7 +1240,9 @@ fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String>
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        return Err("CATALOG_URL_BLOCKED: only validated first-party catalog pages may open externally".to_string());
+        let message = "CATALOG_URL_BLOCKED: only validated first-party catalog pages may open externally".to_string();
+        log_event("error", &format!("{} url='{}'", message, url));
+        return Err(message);
     }
 
     #[cfg(target_os = "windows")]

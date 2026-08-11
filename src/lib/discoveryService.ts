@@ -10,6 +10,8 @@ import { RomsFunProvider } from '../discovery/providers/romsfun/RomsFunProvider'
 import { VimmProvider } from '../discovery/providers/vimm/VimmProvider';
 import { DiscoveryService } from '../discovery/discoveryService';
 import { buildDetailUrl as buildVimmDetailUrl } from '../discovery/providers/vimm/vimmRoutes';
+import { buildSearchUrl as buildVimmSearchUrl } from '../discovery/providers/vimm/vimmRoutes';
+import { crystalToVimmToken } from '../discovery/providers/vimm/vimmSystemMap';
 import { validateOpenUrl as validateVimmOpenUrl } from '../discovery/providers/vimm/hostValidation';
 import { buildCanonicalDetailUrl as buildRomsFunDetailUrl, buildVaultRoot as buildRomsFunVaultRoot } from '../discovery/providers/romsfun/romsfunRoutes';
 import { validateRomsFunOpenUrl } from '../discovery/providers/romsfun/hostValidation';
@@ -18,7 +20,11 @@ import { isDevFixtureAllowed, isFixtureEnabled } from '../dev/fixtures/fixtureMo
 import type { DiscoveryResult as AuthResult, DiscoveryGameDetail } from '../discovery/types';
 
 async function openValidatedExternalUrl(url: string): Promise<void> {
-  if (isTauriEnvironment()) {
+  // Invoke native first. Some production WebView2 builds do not expose every
+  // legacy Tauri global used by isTauriEnvironment(), even though IPC is live.
+  // Falling through to window.open in that case is treated as a popup and is
+  // blocked because this runs after the asynchronous watcher startup.
+  if (isTauriEnvironment() || !import.meta.env.DEV) {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('open_external_catalog_url', { url });
     return;
@@ -198,6 +204,14 @@ export async function open(id: string): Promise<void> {
   await openValidatedExternalUrl(url);
 }
 
+export async function openVimmBackup(systemId: string, title: string): Promise<void> {
+  const token = crystalToVimmToken(systemId);
+  if (!token) throw new Error(`VIMM_BACKUP_UNAVAILABLE: ${systemId} is not supported by Vimm's Lair`);
+  const url = buildVimmSearchUrl(token, title);
+  if (!validateVimmOpenUrl(url)) throw new Error(`VIMM_BACKUP_URL_BLOCKED: ${url}`);
+  await openValidatedExternalUrl(url);
+}
+
 export async function openRoot(): Promise<void> {
   // Primary is ROMsFun home – but primary GET GAME flow does NOT call shell.open
   const url = buildRomsFunVaultRoot();
@@ -225,6 +239,7 @@ const discoveryService = {
   search,
   detail,
   open,
+  openVimmBackup,
   openRoot,
   canonicalVaultUrl,
   isAllowedOpenUrl,
