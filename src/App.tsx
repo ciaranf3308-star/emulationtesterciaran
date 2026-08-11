@@ -748,13 +748,17 @@ function AppInner() {
 
       if (view === 'system') {
         if (action === 'left' || action === 'up' || action === 'previousSystem') {
-          const idx = systemIds.indexOf(activeSystemId)
-          const prev = (idx - 1 + systemIds.length) % systemIds.length
-          setActiveSystemId(systemIds[prev])
+          setActiveSystemId(current => {
+            const idx = systemIds.indexOf(current)
+            const safe = idx < 0 ? 0 : idx
+            return systemIds[(safe - 1 + systemIds.length) % systemIds.length] ?? current
+          })
         } else if (action === 'right' || action === 'down' || action === 'nextSystem') {
-          const idx = systemIds.indexOf(activeSystemId)
-          const next = (idx + 1) % systemIds.length
-          setActiveSystemId(systemIds[next])
+          setActiveSystemId(current => {
+            const idx = systemIds.indexOf(current)
+            const safe = idx < 0 ? 0 : idx
+            return systemIds[(safe + 1) % systemIds.length] ?? current
+          })
         } else if (action === 'confirm') {
           setView('library')
         } else if (action === 'menu') {
@@ -1033,11 +1037,11 @@ function AppInner() {
   }, [systemsForUI, activeSystemId])
 
   useEffect(() => {
-    let cancelled = false
     async function load() {
       if (!activeSystemId) return
       if (gameCache.has(activeSystemId)) return
       if (cacheLoading.has(activeSystemId)) return
+      const systemId = activeSystemId
       const isTauri = isTauriEnvironment()
       const useFixtureInWeb = (() => {
         // V8.2 DEV-ONLY populated fidelity – never overrides real Tauri truth
@@ -1083,10 +1087,9 @@ function AppInner() {
           const fixtureSys = getFixtureSystems()
           if (fixtureSys.includes(activeSystemId)) {
             const fixtures = getFixtureGames(activeSystemId).map(toGameEntry)
-            if (cancelled) return
             setGameCache(prev => {
               const m = new Map(prev)
-              m.set(activeSystemId, fixtures)
+              m.set(systemId, fixtures)
               return m
             })
             // preload not needed
@@ -1098,51 +1101,43 @@ function AppInner() {
       }
       setCacheLoading(prev => {
         const s = new Set(prev)
-        s.add(activeSystemId)
+        s.add(systemId)
         return s
       })
       try {
-        const games = await listGames(activeSystemId)
-        if (cancelled) return
+        const games = await listGames(systemId)
         setGameCache(prev => {
           const m = new Map(prev)
-          m.set(activeSystemId, games)
+          m.set(systemId, games)
           return m
         })
       } catch {
-        if (!cancelled) {
-          // fallback to fixture even in Tauri if enumeration fails but fixture exists (dev assist)
-          if ((!isTauri || !isRealMachine) && getFixtureSystems().includes(activeSystemId)) {
-            try {
-              const fixtures = getFixtureGames(activeSystemId).map(toGameEntry)
-              setGameCache(prev => {
-                const m = new Map(prev)
-                m.set(activeSystemId, fixtures)
-                return m
-              })
-              return
-            } catch {}
-          }
-          setGameCache(prev => {
-            const m = new Map(prev)
-            m.set(activeSystemId, [])
-            return m
-          })
+        // fallback to fixture even in Tauri if enumeration fails but fixture exists (dev assist)
+        if ((!isTauri || !isRealMachine) && getFixtureSystems().includes(systemId)) {
+          try {
+            const fixtures = getFixtureGames(systemId).map(toGameEntry)
+            setGameCache(prev => {
+              const m = new Map(prev)
+              m.set(systemId, fixtures)
+              return m
+            })
+            return
+          } catch {}
         }
+        setGameCache(prev => {
+          const m = new Map(prev)
+          m.set(systemId, [])
+          return m
+        })
       } finally {
-        if (!cancelled) {
-          setCacheLoading(prev => {
-            const s = new Set(prev)
-            s.delete(activeSystemId)
-            return s
-          })
-        }
+        setCacheLoading(prev => {
+          const s = new Set(prev)
+          s.delete(systemId)
+          return s
+        })
       }
     }
     load()
-    return () => {
-      cancelled = true
-    }
   }, [activeSystemId, isRealMachine])
 
   useEffect(() => {
@@ -1348,14 +1343,18 @@ function AppInner() {
               setView('discover')
             }}
             onPrev={() => {
-              const idx = systemIds.indexOf(activeSystemId)
-              const prev = (idx - 1 + systemIds.length) % systemIds.length
-              setActiveSystemId(systemIds[prev])
+              setActiveSystemId(current => {
+                const idx = systemIds.indexOf(current)
+                const safe = idx < 0 ? 0 : idx
+                return systemIds[(safe - 1 + systemIds.length) % systemIds.length] ?? current
+              })
             }}
             onNext={() => {
-              const idx = systemIds.indexOf(activeSystemId)
-              const nxt = (idx + 1) % systemIds.length
-              setActiveSystemId(systemIds[nxt])
+              setActiveSystemId(current => {
+                const idx = systemIds.indexOf(current)
+                const safe = idx < 0 ? 0 : idx
+                return systemIds[(safe + 1) % systemIds.length] ?? current
+              })
             }}
           />
 
