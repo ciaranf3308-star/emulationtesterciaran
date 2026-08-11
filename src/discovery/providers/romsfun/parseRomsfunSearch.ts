@@ -17,17 +17,26 @@ export function parseRomsFunSearch(html: string, systemId: string, systemToken: 
     // Very conservative: look for <a href="/roms/...">Title</a> patterns – metadata title only, no link extraction for downloads
     // Example ROMsFun listing: <div class="rom-item"> <a href="/roms/nintendo/super-mario-bros">Super Mario Bros.</a> etc
     // We use regex to extract anchor texts inside roms path – title only
-    const anchorRegex = /<a[^>]*href=["']\/roms\/([^"']+)["'][^>]*>([^<]{2,120})<\/a>/gi;
+    const anchorRegex = /<a[^>]*href=["'](?:https:\/\/(?:www\.)?romsfun\.com)?\/roms\/([^"'?#]+\.html)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
     let m: RegExpExecArray | null;
     let count = 0;
+    const seen = new Set<string>();
     while ((m = anchorRegex.exec(html)) !== null && count < 24) {
       const slug = m[1].trim();
-      const rawTitle = m[2].trim().replace(/\s+/g, ' ');
+      const rawTitle = m[2]
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&#0*39;|&apos;/gi, "'")
+        .replace(/&quot;/gi, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
       if (!slug || !rawTitle) continue;
       // Skip download-looking, advertising anchors (galaxylanes) – we already block third-party host, but also skip if title contains ad keywords like "Download" alone? We keep simple: title must be plausible game title length
       if (rawTitle.length < 2 || rawTitle.length > 80) continue;
       // Discard if slug contains forbidden patterns (we already validated slug style)
       if (slug.includes('..') || slug.includes('\\')) continue;
+      if (seen.has(slug)) continue;
+      seen.add(slug);
 
       results.push({
         provider: 'romsfun',

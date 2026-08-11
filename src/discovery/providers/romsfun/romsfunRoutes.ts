@@ -5,6 +5,21 @@
 
 import { isValidRomsFunSlug, normalizeSlug } from './slugValidation';
 
+export const ROMSFUN_SYSTEM_SLUGS: Readonly<Record<string, string>> = {
+  gb: 'game-boy', gbc: 'game-boy-color', gba: 'game-boy-advance',
+  nds: 'nintendo-ds', n3ds: '3ds', snes: 'super-nintendo',
+  n64: 'nintendo-64', gc: 'gamecube', wii: 'nintendo-wii', wiiu: 'wii-u',
+  genesis: 'sega-genesis', megadrive: 'sega-genesis', dreamcast: 'dreamcast',
+  psx: 'playstation', ps2: 'playstation-2', psp: 'psp',
+  xbox: 'xbox', xbox360: 'xbox-360',
+};
+
+export function resolveRomsFunSystemSlug(systemId: string): string {
+  const slug = ROMSFUN_SYSTEM_SLUGS[systemId.trim().toLowerCase()];
+  if (!slug) throw new Error(`System '${systemId}' has no verified ROMsFun category`);
+  return slug;
+}
+
 export function buildCanonicalDetailUrl(slug: string): string {
   if (!isValidRomsFunSlug(slug)) {
     throw new Error(`Invalid ROMsFun slug – traversal/UNC/illegal chars – "${slug}"`);
@@ -52,14 +67,13 @@ export function buildCanonicalSearchUrl(systemToken: string, query: string): str
   if (!systemToken || typeof systemToken !== 'string' || systemToken.trim().length === 0) {
     throw new Error(`Invalid system token for ROMsFun search: "${systemToken}"`);
   }
-  const token = systemToken.trim().toLowerCase().replace(/[^a-z0-9\-_]/g, '');
-  if (!token) throw new Error(`System token empty after sanitization: "${systemToken}"`);
+  const token = resolveRomsFunSystemSlug(systemToken);
   const q = query.trim();
   if (!q) throw new Error('Search query empty');
   // Encode query for URL
   const encoded = encodeURIComponent(q);
   // Construct canonical search – path inside /roms
-  return `https://romsfun.com/roms/${token}?q=${encoded}`;
+  return `https://romsfun.com/roms/${token}/?q=${encoded}`;
 }
 
 export function buildVaultRoot(): string {

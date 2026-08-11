@@ -10,7 +10,7 @@
 import type { CatalogProvider } from '../../catalogProvider';
 import type { DiscoveryResult, DiscoveryGameDetail } from '../../types';
 import { isTauriEnvironment } from '../../../runtime/environment';
-import { buildCanonicalDetailUrl, buildCanonicalSearchUrl } from './romsfunRoutes';
+import { buildCanonicalDetailUrl, buildCanonicalSearchUrl, ROMSFUN_SYSTEM_SLUGS } from './romsfunRoutes';
 import { parseRomsFunSearch } from './parseRomsfunSearch';
 import { parseRomsFunDetail } from './parseRomsfunDetail';
 import { isAllowedRomsFunHost } from './hostValidation';
@@ -107,10 +107,7 @@ export class RomsFunProvider implements CatalogProvider {
   supportsSystem(_systemId: string): boolean {
     // D1: support any non-empty systemId – ROMsFun has broad catalog
     if (!_systemId || typeof _systemId !== 'string') return false;
-    const t = _systemId.trim();
-    if (t.length === 0) return false;
-    // We explicitly support all Crystal systems; steam is also allowed for metadata? Keep permissive.
-    return true;
+    return !!ROMSFUN_SYSTEM_SLUGS[_systemId.trim().toLowerCase()];
   }
 
   buildExternalUrl(id: string): string {
