@@ -601,6 +601,7 @@ pub fn start_acquisition_watch(
     startedAt: Option<u64>,
     customWatchDirectory: Option<String>,
     replaceExisting: Option<bool>,
+    externalUrl: Option<String>,
 ) -> Result<AcquisitionSessionResponse, String> {
     // ---- Early validation: fail fast ----
     if systemId.trim().is_empty() {
@@ -711,8 +712,50 @@ pub fn start_acquisition_watch(
         ),
     );
 
+    let validated_external_url = if let Some(raw_url) = externalUrl.as_deref() {
+        let parsed = url::Url::parse(raw_url).map_err(|e| format!("INVALID_CATALOG_URL: {}", e))?;
+        let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+        let allowed_host = matches!(host.as_str(), "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net");
+        let allowed_path = if host.ends_with("romsfun.com") {
+            parsed.path().starts_with("/roms/")
+        } else {
+            parsed.path() == "/vault" || parsed.path().starts_with("/vault/")
+        };
+        if parsed.scheme() != "https"
+            || !allowed_host
+            || !allowed_path
+            || parsed.port().is_some()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err("CATALOG_URL_BLOCKED: only validated Vimm or ROMsFun catalog pages may open".to_string());
+        }
+        Some(raw_url.to_string())
+    } else {
+        None
+    };
+
     let resp = session.to_response();
     *opt = Some(session);
+
+    if let Some(url) = validated_external_url {
+        log_event("info", &format!("external_catalog_open_requested url='{}'", url));
+        #[cfg(target_os = "windows")]
+        if let Err(error) = std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&url)
+            .spawn()
+        {
+            *opt = None;
+            return Err(format!("EXTERNAL_BROWSER_OPEN_FAILED: {}", error));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            *opt = None;
+            return Err("EXTERNAL_BROWSER_OPEN_FAILED: unsupported operating system".to_string());
+        }
+        log_event("info", &format!("external_catalog_opened url='{}'", url));
+    }
     Ok(resp)
 }
 

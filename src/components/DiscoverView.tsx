@@ -20,6 +20,7 @@ export type BeginAcquisitionRequest = {
   providerId?: string
   initialUrl?: string
   openExternalPage: () => Promise<void>
+  externalUrl?: string
 }
 
 type DiscoverProps = {
@@ -249,7 +250,7 @@ export function DiscoverView({
 
   // External-browser handoff: Crystal starts the local Downloads watcher first,
   // then opens the selected provider detail page in the default browser.
-  const handleGetGame = useCallback((provider: 'romsfun' | 'vimm' = 'romsfun') => {
+  const handleGetGame = useCallback((provider: 'vimm' | 'romsfun' = 'vimm') => {
     if (acquisitionActive) return
     if (startInFlightRef.current) return
     if (!onBeginAcquisition) return
@@ -276,6 +277,9 @@ export function DiscoverView({
     // watcher is ready, so fast downloads cannot be missed.
     const openExternalPage = () => discoveryService.open(idStr)
     const openVimmBackupPage = () => discoveryService.openVimmBackup(systemId, expectedTitle)
+    const externalUrl = provider === 'vimm'
+      ? discoveryService.buildVimmBackupUrl(systemId, expectedTitle)
+      : canonicalVaultUrl(idStr)
 
     startInFlightRef.current = true
     try {
@@ -285,6 +289,7 @@ export function DiscoverView({
         providerId: idStr,
         initialUrl: idStr.includes('/') ? `https://romsfun.com/roms/${idStr.replace(/^roms\//,'')}` : undefined,
         openExternalPage: provider === 'vimm' ? openVimmBackupPage : openExternalPage,
+        externalUrl,
       })
       setShowDetailPanel(false)
       setSelectedDetail(null)
@@ -495,7 +500,7 @@ export function DiscoverView({
                 border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
                 color: isDark ? 'rgba(230,244,255,0.88)' : 'rgba(18,26,44,0.78)',
                 fontWeight: 700,
-              }}>ROMSFUN • IN-APP PROVIDER</span>
+              }}>VIMM MAIN • ROMSFUN BACKUP</span>
             </div>
           </div>
         </div>
@@ -751,7 +756,7 @@ export function DiscoverView({
                       onClick={() => {
                         if (acquisitionActive) return
                         if (startInFlightRef.current) return
-                        handleGetGame('romsfun')
+                        handleGetGame('vimm')
                       }}
                       autoFocus
                       disabled={detailResolving || !!acquisitionActive}
@@ -778,7 +783,7 @@ export function DiscoverView({
                     <button
                       onClick={() => {
                         if (acquisitionActive || startInFlightRef.current) return
-                        handleGetGame('vimm')
+                        handleGetGame('romsfun')
                       }}
                       disabled={detailResolving || !!acquisitionActive}
                       data-testid="get-game-vimm-backup"
@@ -791,7 +796,7 @@ export function DiscoverView({
                         opacity: acquisitionActive ? 0.5 : 1,
                       }}
                     >
-                      VIMM BACKUP
+                      ROMSFUN BACKUP
                     </button>
                   ) : null}
                   {!canGetGame && alreadyInLibraryForDetail ? (

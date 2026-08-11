@@ -57,6 +57,7 @@ export interface StartExternalAcquisitionOptions {
   systemId: string
   expectedTitle: string
   openExternalPage: () => Promise<void>
+  externalUrl?: string
   onUpdate?: (state: ExternalAcquisitionState) => void
 }
 
@@ -67,6 +68,7 @@ export interface ExternalAcquisitionDeps {
     startedAt?: number
     customWatchDirectory?: string
     replaceExisting?: boolean
+    externalUrl?: string
   }) => Promise<AcquisitionSession>
   getAcquisitionWatchStatus: (sessionId: string) => Promise<AcquisitionSession>
   cancelAcquisitionWatch: (sessionId: string) => Promise<AcquisitionSession>
@@ -192,6 +194,7 @@ class Impl {
 
   deps: ExternalAcquisitionDeps
   openExternalPage: () => Promise<void>
+  externalUrl?: string
 
   private doneResolver!: (v: ExternalAcquisitionState) => void
   donePromise: Promise<ExternalAcquisitionState>
@@ -203,12 +206,14 @@ class Impl {
     systemId: string,
     expectedTitle: string,
     openExternalPage: () => Promise<void>,
+    externalUrl: string | undefined,
     deps: ExternalAcquisitionDeps
   ) {
     this.coordinatorId = coordinatorId
     this.systemId = systemId
     this.expectedTitle = expectedTitle
     this.openExternalPage = openExternalPage
+    this.externalUrl = externalUrl
     this.deps = deps
     this.startedAt = Date.now()
     this.lastUpdatedAt = this.startedAt
@@ -338,6 +343,7 @@ class Impl {
       session = await this.deps.beginAcquisitionWatch({
         systemId: this.systemId,
         expectedTitle: this.expectedTitle,
+        externalUrl: this.externalUrl,
       })
     } catch (e) {
       const { code, message } = extractCode(e, "ACQUISITION_WATCH_START_FAILED")
@@ -370,7 +376,7 @@ class Impl {
 
     // ---- 2. Open external page (must after watch) ----
     try {
-      await this.openExternalPage()
+      if (!this.externalUrl) await this.openExternalPage()
     } catch (e) {
       const { message: underlying } = extractCode(e, "EXTERNAL_PAGE_OPEN_FAILED")
       // Cancel watcher best-effort, no zombie
@@ -494,6 +500,7 @@ export function startExternalAcquisition(
     opts.systemId,
     opts.expectedTitle,
     opts.openExternalPage,
+    opts.externalUrl,
     deps
   )
 

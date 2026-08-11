@@ -1246,7 +1246,10 @@ fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String>
     }
 
     #[cfg(target_os = "windows")]
-    let open_result = std::process::Command::new("explorer.exe").arg(&url).spawn();
+    let open_result = std::process::Command::new("rundll32.exe")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(&url)
+        .spawn();
 
     #[cfg(not(target_os = "windows"))]
     let open_result = _app.shell().open(url.clone(), None).map(|_| {

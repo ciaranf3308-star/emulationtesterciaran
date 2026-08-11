@@ -35,7 +35,7 @@ export type CrystalAcquisitionHook = {
   foundGame: GameEntry | null
   refreshStatus: "idle" | "refreshing" | "done" | "failed"
   errorDetail?: string | null
-  begin: (req: { systemId: string; expectedTitle: string; openExternalPage: () => Promise<void> }) => ExternalAcquisitionController
+  begin: (req: { systemId: string; expectedTitle: string; openExternalPage: () => Promise<void>; externalUrl?: string }) => ExternalAcquisitionController
   cancel: () => Promise<void>
   close: () => void
   controllerRef: React.MutableRefObject<ExternalAcquisitionController | null>
@@ -143,7 +143,7 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
     }
   }, [refreshLibrary, onGameFound, onRefreshComplete])
 
-  const begin = useCallback((req: { systemId: string; expectedTitle: string; openExternalPage: () => Promise<void> }) => {
+  const begin = useCallback((req: { systemId: string; expectedTitle: string; openExternalPage: () => Promise<void>; externalUrl?: string }) => {
     if (controllerRef.current) {
       try {
         const existing = controllerRef.current.getState()
@@ -171,6 +171,7 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
         systemId: req.systemId,
         expectedTitle: req.expectedTitle,
         openExternalPage: req.openExternalPage,
+        externalUrl: req.externalUrl,
       },
       deps as any
     )

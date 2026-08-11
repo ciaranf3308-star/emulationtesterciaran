@@ -43,6 +43,7 @@ export interface BeginWatchParams {
   startedAt?: number
   customWatchDirectory?: string
   replaceExisting?: boolean
+  externalUrl?: string
 }
 
 export interface AcquisitionSettings {

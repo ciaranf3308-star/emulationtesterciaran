@@ -30,6 +30,7 @@ export async function beginAcquisitionWatch(params: BeginWatchParams): Promise<A
     startedAt: params.startedAt,
     customWatchDirectory: params.customWatchDirectory,
     replaceExisting: params.replaceExisting,
+    externalUrl: params.externalUrl,
   } as any)
 }
 

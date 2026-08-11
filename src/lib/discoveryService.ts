@@ -20,13 +20,12 @@ import { isDevFixtureAllowed, isFixtureEnabled } from '../dev/fixtures/fixtureMo
 import type { DiscoveryResult as AuthResult, DiscoveryGameDetail } from '../discovery/types';
 
 async function openValidatedExternalUrl(url: string): Promise<void> {
-  // Invoke native first. Some production WebView2 builds do not expose every
-  // legacy Tauri global used by isTauriEnvironment(), even though IPC is live.
-  // Falling through to window.open in that case is treated as a popup and is
-  // blocked because this runs after the asynchronous watcher startup.
+  // Use the installed, capability-approved shell plugin directly in packaged
+  // builds. Do not gate this on legacy global detection: this WebView2 runtime
+  // has live Tauri IPC but does not expose every legacy detection global.
   if (isTauriEnvironment() || !import.meta.env.DEV) {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('open_external_catalog_url', { url });
+    const shell = await import('@tauri-apps/plugin-shell');
+    await shell.open(url);
     return;
   }
   const opened = typeof window !== 'undefined' ? window.open(url, '_blank', 'noopener') : null;
@@ -205,11 +204,17 @@ export async function open(id: string): Promise<void> {
 }
 
 export async function openVimmBackup(systemId: string, title: string): Promise<void> {
+  const url = buildVimmBackupUrl(systemId, title);
+  await openValidatedExternalUrl(url);
+}
+
+export function buildVimmBackupUrl(systemId: string, title: string): string {
   const token = crystalToVimmToken(systemId);
   if (!token) throw new Error(`VIMM_BACKUP_UNAVAILABLE: ${systemId} is not supported by Vimm's Lair`);
-  const url = buildVimmSearchUrl(token, title);
-  if (!validateVimmOpenUrl(url)) throw new Error(`VIMM_BACKUP_URL_BLOCKED: ${url}`);
-  await openValidatedExternalUrl(url);
+  // buildVimmSearchUrl performs the strict HTTPS + exact vimm.net + /vault
+  // validation appropriate for a title search. validateVimmOpenUrl is only
+  // for canonical numeric detail URLs and deliberately rejects query strings.
+  return buildVimmSearchUrl(token, title);
 }
 
 export async function openRoot(): Promise<void> {
@@ -240,6 +245,7 @@ const discoveryService = {
   detail,
   open,
   openVimmBackup,
+  buildVimmBackupUrl,
   openRoot,
   canonicalVaultUrl,
   isAllowedOpenUrl,
