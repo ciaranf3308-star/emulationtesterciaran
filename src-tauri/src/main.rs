@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+#[cfg(not(target_os = "windows"))]
 use tauri_plugin_shell::ShellExt;
 
 /// Shared types for frontend/backend API
@@ -1218,7 +1219,7 @@ fn launch_game_with_handoff(
 // ---------- Entry ----------
 
 #[tauri::command]
-fn open_external_catalog_url(app: AppHandle, url: String) -> Result<(), String> {
+fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| format!("INVALID_CATALOG_URL: {}", e))?;
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
     let allowed_host = matches!(host.as_str(), "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net");
@@ -1237,7 +1238,16 @@ fn open_external_catalog_url(app: AppHandle, url: String) -> Result<(), String> 
         return Err("CATALOG_URL_BLOCKED: only validated first-party catalog pages may open externally".to_string());
     }
 
-    app.shell().open(url.clone(), None).map_err(|e| {
+    #[cfg(target_os = "windows")]
+    let open_result = std::process::Command::new("explorer.exe").arg(&url).spawn();
+
+    #[cfg(not(target_os = "windows"))]
+    let open_result = _app.shell().open(url.clone(), None).map(|_| {
+        // Match std::process::Command::spawn's success shape for shared handling.
+        std::process::Command::new("true").spawn().expect("true must be available")
+    });
+
+    open_result.map_err(|e| {
         let message = format!("EXTERNAL_BROWSER_OPEN_FAILED: {}", e);
         log_event("error", &format!("{} url='{}'", message, url));
         message
