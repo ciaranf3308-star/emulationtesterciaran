@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { CarouselGame } from '../GameBoxCarousel'
 
 export type GameBrowserListProps = {
@@ -11,8 +12,24 @@ export type GameBrowserListProps = {
 
 export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrowserListProps) {
   const isDark = theme === 'dark'
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const list = listRef.current
+    const selected = list?.querySelector<HTMLElement>('[data-selected="1"]')
+    if (!list || !selected) return
+    const itemTop = selected.offsetTop
+    const itemBottom = itemTop + selected.offsetHeight
+    if (itemTop < list.scrollTop) list.scrollTo({ top: itemTop, behavior: 'smooth' })
+    else if (itemBottom > list.scrollTop + list.clientHeight) {
+      list.scrollTo({ top: itemBottom - list.clientHeight, behavior: 'smooth' })
+    }
+  }, [selectedId])
+
   return (
     <div
+      ref={listRef}
+      className="game-browser-list"
       role="listbox"
       aria-label="Game browser"
       style={{
@@ -23,6 +40,8 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
         margin: 0,
         overflowY: 'auto',
         overflowX: 'hidden',
+        flex: 1,
+        minHeight: 0,
         scrollbarWidth: 'thin',
         WebkitOverflowScrolling: 'touch',
       }}

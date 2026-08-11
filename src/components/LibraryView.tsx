@@ -178,19 +178,18 @@ export function LibraryView({
         <div
           className="library-left"
           style={{
-            width: '25%',
-            minWidth: '25%',
-            maxWidth: '25%',
+            width: '30%',
+            minWidth: '30%',
+            maxWidth: '30%',
             height: '100%',
-            overflowY: 'auto',
-            overflowX: 'hidden',
+            overflow: 'hidden',
             scrollbarWidth: 'thin',
             scrollbarColor: isDark ? 'rgba(125,249,255,0.20) transparent' : 'rgba(70,130,255,0.20) transparent',
             padding: '16px 12px 16px 14px',
             boxSizing: 'border-box',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 12,
+            display: 'grid',
+            gridTemplateRows: 'auto minmax(0, 1fr) minmax(0, 1fr)',
+            gap: 10,
             // feathered to transparent — no giant translucent rectangle, no visible column boundary
             background: isDark
               ? 'linear-gradient(90deg, rgba(6,10,18,0.48) 0%, rgba(8,12,20,0.34) 64%, rgba(8,12,20,0.08) 90%, transparent 100%)'
@@ -218,24 +217,23 @@ export function LibraryView({
 
           <GameBrowserList theme={theme} games={games} selectedId={selectedId} onSelect={onSelect} />
 
-          {/* subtle hint that list scrolls */}
-          <div style={{ flex: 1, minHeight: 8 }} />
+          <section className="library-details" style={{ minHeight: 0, overflow: 'auto', position: 'relative', zIndex: 1 }}>
+            <SelectedGameContext
+              theme={theme}
+              game={selectedGame}
+              mediaResolving={mediaResolving}
+              onLaunch={onLaunch}
+              onToggleFavorite={onToggleFavorite}
+              onMedia={onMedia}
+              onDiscover={onDiscover}
+              safeMode={safeMode}
+              onSafeModeBlocked={onSafeModeBlocked}
+            />
+          </section>
         </div>
 
         {/* RIGHT HERO — more room, pushed right via paddingLeft in LibraryHero, SystemStage hardware stable */}
-        <LibraryHero theme={theme} systemId={systemId}>
-          <SelectedGameContext
-            theme={theme}
-            game={selectedGame}
-            mediaResolving={mediaResolving}
-            onLaunch={onLaunch}
-            onToggleFavorite={onToggleFavorite}
-            onMedia={onMedia}
-            onDiscover={onDiscover}
-            safeMode={safeMode}
-            onSafeModeBlocked={onSafeModeBlocked}
-          />
-        </LibraryHero>
+        <LibraryHero theme={theme} systemId={systemId} />
       </div>
 
       {/* keyframes reused */}
@@ -245,8 +243,11 @@ export function LibraryView({
         .library-left::-webkit-scrollbar { width: 6px; }
         .library-left::-webkit-scrollbar-track { background: transparent; }
         .library-left::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.12); border-radius: 999px; }
+        .game-browser-list::-webkit-scrollbar, .library-details::-webkit-scrollbar { width: 5px; }
+        .game-browser-list::-webkit-scrollbar-track, .library-details::-webkit-scrollbar-track { background: transparent; }
+        .game-browser-list::-webkit-scrollbar-thumb, .library-details::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.16); border-radius: 999px; }
         @media (max-width: 1280px) {
-          .golden-library.v85 .library-left { min-width: 280px !important; width: 27% !important; max-width: 27% !important; }
+          .golden-library.v85 .library-left { min-width: 330px !important; width: 30% !important; max-width: 30% !important; }
         }
         @media (max-height: 720px) {
           .golden-library.v85 .library-left { gap: 8px !important; padding: 12px 10px 10px 12px !important; }

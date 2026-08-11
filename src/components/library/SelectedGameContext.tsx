@@ -73,8 +73,10 @@ export function SelectedGameContext({
   return (
     <div
       style={{
-        width: 'min(100%, 500px)',
+        width: '100%',
         maxWidth: '100%',
+        minHeight: '100%',
+        boxSizing: 'border-box',
         background: isDark
           ? 'linear-gradient(145deg, rgba(8,14,24,0.78) 0%, rgba(8,12,20,0.62) 100%)'
           : 'linear-gradient(145deg, rgba(250,252,255,0.90) 0%, rgba(239,244,252,0.76) 100%)',

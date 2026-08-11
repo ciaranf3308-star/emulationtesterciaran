@@ -741,6 +741,19 @@ fn is_known_placeholder(ph: &str) -> bool {
 }
 
 fn derive_espath(config: &serde_json::Value) -> Option<PathBuf> {
+    // ES-DE's Windows find rules treat %ESPATH% as the directory containing
+    // the ES-DE application folder (for EmuDeck: ...\EmulationStation-DE).
+    // It must never be inferred from the ROM root, which may live on another
+    // drive entirely.
+    if let Some(es_de_root) = config
+        .get("machine")
+        .and_then(|machine| machine.get("esDeRoot"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+    {
+        let root = PathBuf::from(es_de_root);
+        return root.parent().map(Path::to_path_buf).or(Some(root));
+    }
     let (_, _, rom_root) = get_roots_from_config(config);
     if !rom_root.is_empty() {
         let p = PathBuf::from(&rom_root);
@@ -1310,6 +1323,23 @@ fn main() {
 mod backend_launch_guard_tests {
     use super::*;
     use crate::test_env_lock::acquire_shared_test_env_lock;
+
+    #[test]
+    fn espath_comes_from_authoritative_es_de_root_not_rom_drive() {
+        let config = serde_json::json!({
+            "machine": {
+                "esDeRoot": r"C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE"
+            },
+            "roots": { "rom": r"D:\Emulation\roms\" }
+        });
+
+        assert_eq!(
+            derive_espath(&config),
+            Some(PathBuf::from(
+                r"C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE"
+            ))
+        );
+    }
 
     #[test]
     fn backend_safe_mode_blocks_before_process_spawn() {
