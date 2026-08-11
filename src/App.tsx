@@ -133,6 +133,7 @@ function AppInner() {
   const [mediaResolving, setMediaResolving] = useState(false)
   const mediaRequestIdRef = useRef(0)
   const debounceRef = useRef<number | null>(null)
+  const launchInFlightRef = useRef(false)
   // V8.4.1 FINAL: Media cycle now REAL – store full candidate list to rotate via X
   const availableGameplayCandidatesRef = useRef<Array<{ url: string; type: 'video' | 'screenshot' }>>([])
   const gameplayCycleIndexRef = useRef(0)
@@ -511,6 +512,7 @@ function AppInner() {
 
   const handleLaunchGame = useCallback(
     async (game: GameEntry) => {
+      if (launchInFlightRef.current) return
       if (safeMode) {
         console.warn('[SAFE MODE] launch blocked –', game?.system_id, game?.rom_path)
         setSafeModeToast('SAFE MODE – launch blocked')
@@ -526,6 +528,7 @@ function AppInner() {
         selectedCommandLabel: sys.launchSelection.selectedLabel,
       })
       if (req.ok === false) return
+      launchInFlightRef.current = true
       // V8.7 – zero-overhead handoff + return watcher: attempt new path first, secure watcher BEFORE exit, keep Crystal open on failure
       try {
         const { launchWithHandoff, runPreExitCleanup, exitAfterHandoff } = await import('./lifecycle/launchCycle')
@@ -551,9 +554,11 @@ function AppInner() {
           console.warn('[lifecycle] handoff blocked by SAFE_MODE – staying open')
           setSafeModeToast('SAFE MODE – launch blocked')
           setTimeout(() => setSafeModeToast(null), 2400)
+          launchInFlightRef.current = false
           return
         }
         if (msg.includes('WATCHER_CREATE_FAILED') || msg.includes('RESTORE_SAVE_FAILED')) {
+          launchInFlightRef.current = false
           console.warn('[lifecycle] watcher creation failed – stay open, no orphan –', msg)
           return
         }
@@ -563,6 +568,9 @@ function AppInner() {
       try {
         await getLauncherBridge().launch(req.backendRequest)
       } catch {}
+      finally {
+        launchInFlightRef.current = false
+      }
     },
     [config, safeMode]
   )
@@ -856,12 +864,7 @@ function AppInner() {
             return
           }
           const g = selectedGameEntry
-          if (!g || !config) return
-          const sys = (config as MachineConfig).systems.find(s => s.id === g.system_id)
-          if (!sys) return
-          const req = resolveLaunchRequest(config as MachineConfig, { systemId: g.system_id, romPath: g.rom_path, selectedCommandLabel: sys.launchSelection.selectedLabel })
-          if (req.ok === false) return
-          getLauncherBridge().launch(req.backendRequest).catch(() => {})
+          if (g) handleLaunchGame(g)
         } else if (action === 'back') {
           setView('system')
         } else if (action === 'menu') {

@@ -481,8 +481,9 @@ pub fn run_watcher_mode(raw_args: Vec<String>) -> Result<(), String> {
     {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NEW_CONSOLE: u32 = 0x00000010;
-        relaunch_cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_CONSOLE);
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        // CREATE_NEW_CONSOLE cannot be combined with DETACHED_PROCESS (Windows error 87).
+        relaunch_cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
 
     relaunch_cmd
