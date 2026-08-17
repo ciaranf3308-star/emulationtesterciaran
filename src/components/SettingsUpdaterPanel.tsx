@@ -101,11 +101,11 @@ export function SettingsUpdaterPanel({ theme }: { theme: string }) {
             boxShadow: isDark ? '0 6px 14px rgba(0,0,0,0.22)' : '0 4px 12px rgba(18,26,44,0.06)',
           }}
         >
-          {state === 'checking' ? 'CHECKING…' : 'CHECK FOR UPDATES'}
+          {state === 'checking' ? 'CHECKING…' : state === 'uptodate' ? 'CHECK FOR UPDATES' : 'CHECK FOR UPDATES'}
         </button>
 
-        {state === 'uptodate' && <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.7 }}>You're up to date.</span>}
-        {state === 'error' && !err?.includes('installed') ? <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, color: isDark ? '#ff9f9f' : '#a03a3a' }}>Check failed – kept current version</span> : null}
+        {state === 'uptodate' && <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.7 }}>{info ? `You're up to date (v${info.version})` : `You're on v${CURRENT_VERSION} – remote unknown or up to date – CHECK FOR UPDATES again if endpoint was unavailable.`}</span>}
+        {state === 'error' && !err?.includes('installed') ? <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, color: isDark ? '#ff9f9f' : '#a03a3a' }}>Check failed – kept current version – click CHECK FOR UPDATES to retry</span> : null}
         {state === 'available' && info && <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.84, padding: '4px 10px', borderRadius: 999, background: isDark ? 'rgba(125,249,255,0.10)' : 'rgba(70,130,255,0.10)', border: `1px solid ${isDark ? 'rgba(125,249,255,0.14)' : 'rgba(70,130,255,0.14)'}` }}>v{info.version} available • signed GitHub Release</span>}
       </div>
 

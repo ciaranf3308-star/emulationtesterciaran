@@ -9,17 +9,18 @@ type ButtonMap = Partial<Record<number, NavigationAction>>
 
 /**
  * V8.4.1 – Controller mapping hardened (ADDITIVE, does not steal X/Y):
- * - System view: L/R system cycle, A = library, B not used, Menu = settings, Y stays FREE (not discover), View/Select (8) = DISCOVER additive.
- * - Library view: L/R game cycle, A play, B back to system, X = media cycle (preserved), Y = favorite toggle (preserved), View/Select (8)=DISCOVER prefilled.
- * - Gamepad Y (button 3) remains favorite for parity with keyboard Y; discover is dedicated to View/Search.
+ * - System view: L/R system cycle, A = library, B not used, Menu = settings, Y stays FREE (not discover), View/Select (8) = QUICK FILTER additive (per Pillar 5 spec View=quick filter).
+ * - Library view: L/R game cycle, A play, B back to system, X = media cycle (preserved), Y = favorite toggle (preserved), View/Select (8)=QUICK FILTER (cycles All/Fav/Recent/Unplayed), Menu (9)=QUICK SETTINGS.
+ * - Gamepad Y (button 3) remains favorite for parity with keyboard Y; discover triggered via keyboard / ? or via Discover button inside UI.
+ * - L+R+View chord (4+5+8) = diagnosticsDebug overlay.
  */
 const DEFAULT_BUTTON_MAP: ButtonMap = {
   0: 'confirm',
   1: 'back',
   2: 'media', // X (west) – MEDIA cycle – preserves existing Library X action (keyboard X = media)
   3: 'favorite', // Y (north) – favorite toggle – preserves existing Library Y action (keyboard Y/F = favorite)
-  8: 'search', // Select/View – DISCOVER dedicated additive entry (search = / ? on keyboard)
-  9: 'menu',   // Start/Menu = settings
+  8: 'quickFilter', // Select/View – QUICK FILTER (Library chips) per Pillar 5, keyboard v/V
+  9: 'quickSettings',   // Start/Menu = QUICK SETTINGS (jump to Settings General) per Pillar 5, keyboard o/O
   4: 'previousSystem',
   5: 'nextSystem',
 }
@@ -56,6 +57,9 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
   private rafId: number | null = null
   private actionState = new Map<NavigationAction, DirectionState>()
   private opts: Required<GamepadAdapterOptions>
+  // Chord tracking for L+R+View (buttons 4+5 held + 8)
+  private chordLrHeldSince: number | null = null
+  private chordViewPrev = false
 
   constructor(handler: InputHandler, opts?: GamepadAdapterOptions) {
     this.handler = handler
@@ -64,7 +68,7 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
       initialDelay: opts?.initialDelay ?? INITIAL_DELAY,
       repeatInterval: opts?.repeatInterval ?? REPEAT_INTERVAL,
     }
-    const all: NavigationAction[] = ['up','down','left','right','confirm','back','menu','favorite','search','nextSystem','previousSystem','media']
+    const all: NavigationAction[] = ['up','down','left','right','confirm','back','menu','favorite','search','nextSystem','previousSystem','media','quickFilter','quickSettings','diagnosticsDebug','cycleTabLeft','cycleTabRight']
     for (const a of all) {
       this.actionState.set(a, { pressed: false, lastEmit: 0, repeatTimeoutId: null, repeatIntervalId: null, firstPressAt: null })
     }
@@ -136,6 +140,8 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
     if (typeof console !== 'undefined' && console.info) {
       console.info('[Gamepad] disconnected', ge.gamepad.id)
     }
+    this.chordLrHeldSince = null
+    this.chordViewPrev = false
     for (const [, st] of this.actionState) {
       if (st.repeatTimeoutId !== null) window.clearTimeout(st.repeatTimeoutId)
       if (st.repeatIntervalId !== null) window.clearInterval(st.repeatIntervalId)
@@ -152,9 +158,39 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
       const gps = this.getConnectedGamepads()
       const pressedThisFrame = new Set<NavigationAction>()
 
+      let rawL = false
+      let rawR = false
+      let rawView = false
       for (const gp of gps) {
         if (!gp) continue
-        this.collectActionsFromGamepad(gp, pressedThisFrame)
+        this.collectActionsFromGamepad(gp, pressedThisFrame, (l,r,v)=>{
+          rawL = rawL || l
+          rawR = rawR || r
+          rawView = rawView || v
+        })
+      }
+
+      // L+R+View chord → diagnosticsDebug (edge on View while L+R held)
+      const lrHeld = rawL && rawR
+      const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
+      if (lrHeld) {
+        if (this.chordLrHeldSince === null) this.chordLrHeldSince = now
+      } else {
+        this.chordLrHeldSince = null
+      }
+      const viewJustPressed = rawView && !this.chordViewPrev
+      if (lrHeld && viewJustPressed) {
+        // Emit diagnosticsDebug immediately, bypass normal repeat
+        pressedThisFrame.add('diagnosticsDebug' as NavigationAction)
+      }
+      this.chordViewPrev = rawView
+
+      // L+R alone combos – cycle tabs left/right chord detection (L+R + direction)
+      // Optional: emit cycleTabLeft when L+R+left, similarly right handled via normal mapping override
+      // We'll treat L+R+left/right as distinct actions by checking axis later – here we just expose raw for caller via emitted action set
+      if (rawL && rawR) {
+        // expose left/right still but also flag for context mapping
+        // handled in App.tsx via checking holding state via custom event – we also emit nothing extra here
       }
 
       for (const [action, st] of this.actionState) {
@@ -204,7 +240,7 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
     if (st) st.lastEmit = ts as number
   }
 
-  private collectActionsFromGamepad(gp: Gamepad, pressed: Set<NavigationAction>) {
+  private collectActionsFromGamepad(gp: Gamepad, pressed: Set<NavigationAction>, onRaw?: (l:boolean,r:boolean,v:boolean)=>void) {
     const dz = this.opts.deadzone
     const dpadMap: Record<number, NavigationAction> = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' }
     for (const [idxStr, act] of Object.entries(dpadMap)) {
@@ -233,6 +269,12 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
       }
     }
 
+    // Capture raw L/R/View for chord
+    const rawL = !!gp.buttons[4]?.pressed
+    const rawR = !!gp.buttons[5]?.pressed
+    const rawView = !!gp.buttons[8]?.pressed
+    if (onRaw) onRaw(rawL, rawR, rawView)
+
     for (const [btnIdxStr, action] of Object.entries(DEFAULT_BUTTON_MAP)) {
       const btnIdx = parseInt(btnIdxStr, 10)
       const btn = gp.buttons[btnIdx]
@@ -250,3 +292,4 @@ export function createGamepadAdapter(handler: InputHandler, options?: GamepadAda
 // Legacy class export – avoid merging conflict by exporting under distinct name but also as GamepadAdapterImpl for interop
 export { GamepadAdapterImpl as GamepadAdapterClass }
 export const GamepadAdapter = GamepadAdapterImpl
+

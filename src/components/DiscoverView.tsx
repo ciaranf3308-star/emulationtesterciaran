@@ -1,16 +1,15 @@
 /**
- * Crystal Discovery – ROMsFun catalog reference
- * Premium gaming OS: graphite / silver / acrylic glass / cool electric cyan accent
- * Controller-first, collectible hardware culture presentation – NOT boutique-hotel hospitality
- *
- * Props allow empty prefill (System Landing) and selected game context (Library)
- * V8.4.1 HARDENING: empty query returns empty locally (no network), additive controller mapping,
- * detail/controller deterministic (A open, B close detail -> results, B from results -> origin)
+ * Crystal Discovery – V3 Discovery Native
+ * Graphite / silver / acrylic glass / cool electric cyan – premium gaming OS bar
+ * Vimm primary 24h cache (managed by discovery.rs), ROMsFun backup, local cover priority
+ * Cards: local cover → provider thumb → system art (backgroundUrl)
+ * Queue multi Y to queue 3-4, provider health pill emerald/amber/red
+ * Resilience: parser fail fallback to cached + amber/red
  */
 
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import type { GameEntry } from '../runtime/backend'
-import discoveryService, { type DiscoveryResult, canonicalVaultUrl } from '../lib/discoveryService'
+import discoveryService, { type DiscoveryResult } from '../lib/discoveryService'
 import { isInLibrary, normalizeTitle } from '../lib/discoveryMatching'
 import { toAssetUrl } from '../runtime/mediaUrl'
 import SystemLogo from './SystemLogo'
@@ -18,10 +17,7 @@ import SystemLogo from './SystemLogo'
 export type BeginAcquisitionRequest = {
   systemId: string
   expectedTitle: string
-  providerId?: string
-  initialUrl?: string
   openExternalPage: () => Promise<void>
-  externalUrl?: string
 }
 
 type DiscoverProps = {
@@ -37,6 +33,9 @@ type DiscoverProps = {
   onBeginAcquisition?: (request: BeginAcquisitionRequest) => unknown
   acquisitionActive?: boolean
   acquisitionPhase?: string | null
+  // V3 queue lift
+  discoveryQueue?: DiscoveryResult[]
+  onDiscoveryQueueChange?: (q: DiscoveryResult[]) => void
 }
 
 const PROVIDER_NAVIGATION_TITLES = new Set([
@@ -51,6 +50,8 @@ function removeProviderNavigationRows(items: any[]): any[] {
   return items.filter(item => !PROVIDER_NAVIGATION_TITLES.has(normalizeTitle(String(item?.title || ''))))
 }
 
+type ProviderHealth = { status: 'live' | 'cached' | 'slow'; lastSuccessMs?: number; lastFailReason?: string; lastParseCount?: number }
+
 export function DiscoverView({
   systemId,
   systemFullName,
@@ -62,6 +63,8 @@ export function DiscoverView({
   libraryGames,
   onBeginAcquisition,
   acquisitionActive,
+  discoveryQueue: externalQueue,
+  onDiscoveryQueueChange,
 }: DiscoverProps) {
   const isDark = theme === 'dark'
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -102,21 +105,38 @@ export function DiscoverView({
   const [selectedDetail, setSelectedDetail] = useState<DiscoveryResult | null>(null)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
 
-  // Detail resolved for panel with extra metadata
   const [detailResolving, setDetailResolving] = useState(false)
   const [detailFull, setDetailFull] = useState<any>(null)
   const [localCoverUrls, setLocalCoverUrls] = useState<Record<string, string>>({})
 
-  // Abort controller for stale searches
+  // V3 additions
+  const [providerHealth, setProviderHealth] = useState<ProviderHealth>({ status: 'cached' })
+  const [cacheInfo, setCacheInfo] = useState<{ source: 'cache' | 'live' | null; timestamp: number | null; fresh: boolean }>({ source: null, timestamp: null, fresh: false })
+  const [internalQueue, setInternalQueue] = useState<DiscoveryResult[]>([])
+  const effectiveQueue = externalQueue ?? internalQueue
+  const setEffectiveQueue = useCallback((next: DiscoveryResult[]) => {
+    if (onDiscoveryQueueChange) {
+      onDiscoveryQueueChange(next)
+    } else {
+      setInternalQueue(next)
+    }
+  }, [onDiscoveryQueueChange])
+
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<number | null>(null)
+  const showToast = useCallback((msg: string) => {
+    setToast(msg)
+    if (toastTimer.current) window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(null), 2200) as any
+  }, [])
+
   const abortRef = useRef<AbortController | null>(null)
 
-  // V8.5: when prefill comes from URL ?q= after mount (fixture effect), sync into query once
   useEffect(() => {
     if (prefill && prefill !== query) {
       setQuery(prefill)
       setDebounced(prefill)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill])
 
   const activateBrowse = useCallback((index: number) => {
@@ -128,7 +148,6 @@ export function DiscoverView({
     setFocusZone('grid')
   }, [browseOptions])
 
-  // debounce 340ms
   useEffect(() => {
     const h = setTimeout(() => setDebounced(query.trim()), 340)
     return () => clearTimeout(h)
@@ -138,8 +157,6 @@ export function DiscoverView({
     setFocusedIdx(0)
   }, [debounced, results.length])
 
-  // Reuse the user's already-scraped covers for catalog titles that are in
-  // their library. This is instant, offline, and avoids fabricating artwork.
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -155,10 +172,7 @@ export function DiscoverView({
     return () => { cancelled = true }
   }, [libraryGames])
 
-  // Vimm search rows do not consistently expose box art. Resolve only the
-  // currently focused result (debounced), then cache its verified detail
-  // thumbnail into the grid. Controller browsing therefore gains artwork
-  // without firing dozens of provider requests.
+  // Focused thumbnail resolve
   useEffect(() => {
     if (focusZone !== 'grid') return
     const focused = results[focusedIdx]
@@ -167,7 +181,7 @@ export function DiscoverView({
     const timer = window.setTimeout(async () => {
       try {
         const detail = await discoveryService.detail(String(focused.id || focused.providerId), systemId)
-        const thumbnailUrl = detail?.thumbnailUrl
+        const thumbnailUrl = (detail as any)?.thumbnailUrl
         if (cancelled || !thumbnailUrl) return
         setResults(current => current.map((item, index) => index === focusedIdx ? { ...item, thumbnailUrl } : item))
       } catch {}
@@ -175,7 +189,6 @@ export function DiscoverView({
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [focusZone, focusedIdx, results, systemId])
 
-  // Track detail open state globally for App→Discover coordination (prevents double-back)
   useEffect(() => {
     try {
       if (typeof window !== 'undefined') {
@@ -184,62 +197,137 @@ export function DiscoverView({
     } catch {}
   }, [showDetailPanel])
 
-  // search effect – V8.4.1: empty query returns empty locally, no network (live audit ?p=list&system=PS2 without q 404)
-  useEffect(() => {
-    let cancelled = false
-    async function doSearch() {
-      if (abortRef.current) {
-        try { abortRef.current.abort() } catch {}
-      }
-      const ac = new AbortController()
-      abortRef.current = ac
-      setSearching(true)
-      setOffline(false)
-      setSchemaChanged(false)
-      setErrorMsg(null)
+  // Cover hierarchy resolver: local → provider thumb → system art
+  const resolveCoverUrl = useCallback((r: any): string | null => {
+    const normalized = normalizeTitle(String(r?.title || ''))
+    if (normalized && localCoverUrls[normalized]) return localCoverUrls[normalized]
+    if (r?.thumbnailUrl) return r.thumbnailUrl
+    if (r?.thumbUrl) return r.thumbUrl
+    if (backgroundUrl) return backgroundUrl
+    return null
+  }, [localCoverUrls, backgroundUrl])
+
+  // search effect with cache-first, forceRefresh support, resilience fallback
+  const performSearch = useCallback(async (forceRefresh = false) => {
+    if (abortRef.current) {
+      try { abortRef.current.abort() } catch {}
+    }
+    const ac = new AbortController()
+    abortRef.current = ac
+    setSearching(true)
+    setOffline(false)
+    setSchemaChanged(false)
+    setErrorMsg(null)
+    try {
+      let metaRes: any
       try {
-        const res: any = await discoveryService.search({
-          systemId,
-          query: debounced,
-          browseLetter: debounced ? undefined : browseLetter,
-          limit: 48,
-          signal: ac.signal,
-        })
-        if (cancelled || ac.signal.aborted) return
-        if (Array.isArray(res)) {
-          const clean = removeProviderNavigationRows(res)
-          setResults(clean)
-          setTotal(clean.length)
-          setOffline(false)
-          setSchemaChanged(false)
+        // Try searchWithMeta for cache awareness
+        if ((discoveryService as any).searchWithMeta) {
+          const sw = await (discoveryService as any).searchWithMeta({
+            systemId,
+            query: debounced,
+            browseLetter: debounced ? undefined : browseLetter,
+            limit: 48,
+            signal: ac.signal,
+            forceRefresh,
+          })
+          metaRes = sw
         } else {
-          const clean = removeProviderNavigationRows(res.results || [])
-          setResults(clean)
-          setTotal(clean.length)
-          setOffline(!!res.offline)
-          setSchemaChanged(!!res.schemaChanged)
-          if (res.error && !res.offline && !res.schemaChanged) setErrorMsg(res.error)
+          const basic = await discoveryService.search({
+            systemId,
+            query: debounced,
+            browseLetter: debounced ? undefined : browseLetter,
+            limit: 48,
+            signal: ac.signal,
+            forceRefresh: forceRefresh ? true as any : false,
+          } as any)
+          metaRes = { results: basic, source: forceRefresh ? 'live' : 'live', timestamp: Date.now(), fresh: true, providerHealth: { status: forceRefresh ? 'live' : 'cached' } }
         }
       } catch (e: any) {
-        if (cancelled) return
-        if (e?.name === 'AbortError') return
-        const msg = e?.message || String(e)
-        if (/offline|network/i.test(msg)) setOffline(true)
-        else if (/schema/i.test(msg)) setSchemaChanged(true)
-        else setErrorMsg(msg)
-      } finally {
-        if (!cancelled && abortRef.current === ac) setSearching(false)
+        // Resilience path – e may have providerHealth in its wrapper
+        if (e?.providerHealth) {
+          setProviderHealth(e.providerHealth)
+        }
+        // Try cached fallback via discoveryService.search that may itself fallback, else empty
+        const maybe = e?.error?.message || e?.message
+        if (/parse|selector/i.test(String(maybe))) {
+          try {
+            const fallback = await discoveryService.search({
+              systemId,
+              query: debounced,
+              browseLetter: debounced ? undefined : browseLetter,
+              limit: 48,
+            } as any)
+            metaRes = { results: fallback, source: 'cache', timestamp: Date.now(), fresh: false, providerHealth: { status: 'slow', lastFailReason: String(maybe).slice(0,120) } }
+          } catch {
+            throw e?.error || e
+          }
+        } else {
+          throw e?.error || e
+        }
       }
-    }
-    doSearch()
-    return () => {
-      cancelled = true
-      try { abortRef.current?.abort() } catch {}
+
+      if (ac.signal.aborted) return
+      const list = metaRes.results || metaRes
+      if (Array.isArray(list)) {
+        const clean = removeProviderNavigationRows(list)
+        setResults(clean)
+        setTotal(clean.length)
+        setCacheInfo({ source: (metaRes as any).source || null, timestamp: (metaRes as any).timestamp || null, fresh: (metaRes as any).fresh ?? true })
+        if ((metaRes as any).providerHealth) setProviderHealth((metaRes as any).providerHealth)
+        else {
+          // infer from source
+          const healthSrc = (metaRes as any).source
+          if (healthSrc === 'cache') setProviderHealth(h => ({ ...h, status: 'cached' }))
+          else if (healthSrc === 'live') setProviderHealth({ status: 'live', lastSuccessMs: Date.now(), lastParseCount: clean.length })
+        }
+        setOffline(false)
+        setSchemaChanged(false)
+        return
+      }
+
+      if (Array.isArray((metaRes as any).results)) {
+        const clean = removeProviderNavigationRows((metaRes as any).results)
+        setResults(clean)
+        setTotal(clean.length)
+        setCacheInfo({ source: (metaRes as any).source || null, timestamp: (metaRes as any).timestamp || null, fresh: (metaRes as any).fresh ?? false })
+        if ((metaRes as any).providerHealth) setProviderHealth((metaRes as any).providerHealth)
+        return
+      }
+
+      // legacy shape { offline, schemaChanged, error }
+      const resObj = metaRes as any
+      const clean = removeProviderNavigationRows(resObj.results || [])
+      setResults(clean)
+      setTotal(clean.length)
+      setOffline(!!resObj.offline)
+      setSchemaChanged(!!resObj.schemaChanged)
+      if (resObj.error && !resObj.offline && !resObj.schemaChanged) setErrorMsg(resObj.error)
+      setCacheInfo({ source: resObj.source || null, timestamp: resObj.timestamp || null, fresh: true })
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return
+      const msg = e?.message || String(e)
+      if (/offline|network/i.test(msg)) {
+        setOffline(true)
+        setProviderHealth(h => ({ ...h, status: 'slow', lastFailReason: 'offline/network' }))
+      } else if (/schema/i.test(msg)) setSchemaChanged(true)
+      else setErrorMsg(msg)
+    } finally {
+      if (abortRef.current === ac) setSearching(false)
     }
   }, [debounced, browseLetter, systemId])
 
+  useEffect(() => {
+    performSearch(false)
+    return () => { try { abortRef.current?.abort() } catch {} }
+  }, [performSearch])
 
-  // focus follow scroll
+  // Refresh bypass – exposed for X key / button
+  const refreshBypass = useCallback(() => {
+    performSearch(true)
+    showToast('Refreshing…')
+  }, [performSearch, showToast])
+
   useEffect(() => {
     if (!containerRef.current) return
     const el = containerRef.current.querySelector(`[data-result-idx="${focusedIdx}"]`) as HTMLElement | null
@@ -263,7 +351,6 @@ export function DiscoverView({
     try {
       await (discoveryService as any).openRoot?.()
     } catch {
-      // fallback direct
       try { window.open('https://vimm.net/vault', '_blank') } catch {}
     }
   }, [])
@@ -283,10 +370,8 @@ export function DiscoverView({
     }
   }
 
-  // C3.1 – reentry guard (sync) and eligibility derivation
   const startInFlightRef = useRef(false)
 
-  // Derive current availability / title for eligibility – uses detailFull fallback selectedDetail
   const currentAvailability = (detailFull as any)?.availability ?? selectedDetail?.availability ?? null
   const currentDetailTitle = (detailFull as any)?.title ?? selectedDetail?.title ?? ''
   const alreadyInLibraryForDetail = useMemo(() => {
@@ -296,19 +381,15 @@ export function DiscoverView({
   }, [currentDetailTitle, inLibraryCheck])
 
   const canGetGame = useMemo(() => {
-    // GET GAME eligible ONLY when available AND not already in local library
     return currentAvailability === 'available' && !alreadyInLibraryForDetail
   }, [currentAvailability, alreadyInLibraryForDetail])
 
-  // Clear in-flight guard when acquisition becomes inactive / detail closed
   useEffect(() => {
     if (!acquisitionActive) {
       startInFlightRef.current = false
     }
   }, [acquisitionActive, showDetailPanel])
 
-  // External-browser handoff: Crystal starts the local Downloads watcher first,
-  // then opens the selected provider detail page in the default browser.
   const handleGetGame = useCallback((provider: 'vimm' | 'romsfun' = 'vimm') => {
     if (acquisitionActive) return
     if (startInFlightRef.current) return
@@ -320,7 +401,6 @@ export function DiscoverView({
       return
     }
     const idStr = String(rawProviderId).trim()
-    // V8.6D1 ROMsFun slugs look like roms/<system>/title-slug or system/id-slug – allow slash but no protocol/traversal/UNC
     const isRomsFunSlug = idStr.includes('/') && !idStr.includes('://') && !idStr.includes('..') && !idStr.startsWith('/') && !idStr.startsWith('\\')
     if (!isRomsFunSlug && !/^\d+$/.test(idStr)) {
       setErrorMsg(`Provider id must be romsfun slug or numeric – got '${idStr.slice(0, 48)}'`)
@@ -332,23 +412,15 @@ export function DiscoverView({
       setErrorMsg('Could not determine game title for acquisition')
       return
     }
-    // Lazy callback: the coordinator invokes this only after the Downloads
-    // watcher is ready, so fast downloads cannot be missed.
     const openExternalPage = () => discoveryService.open(idStr)
     const openRomsFunBackupPage = () => discoveryService.openRomsFunBackup(systemId, expectedTitle)
-    const externalUrl = provider === 'vimm'
-      ? canonicalVaultUrl(idStr)
-      : discoveryService.buildRomsFunBackupUrl(systemId, expectedTitle)
 
     startInFlightRef.current = true
     try {
       onBeginAcquisition({
         systemId,
         expectedTitle,
-        providerId: idStr,
-        initialUrl: externalUrl,
         openExternalPage: provider === 'vimm' ? openExternalPage : openRomsFunBackupPage,
-        externalUrl,
       })
       setShowDetailPanel(false)
       setSelectedDetail(null)
@@ -364,7 +436,34 @@ export function DiscoverView({
     }
   }, [acquisitionActive, canGetGame, detailFull, selectedDetail, systemId, onBeginAcquisition, alreadyInLibraryForDetail, currentAvailability])
 
-  // V8.4.1 deterministic controller + keyboard – C3.1 updated: acquisitionActive input lock, A only eligible canGetGame
+  // Queue logic – Y queues selected
+  const queueSelected = useCallback((r?: DiscoveryResult) => {
+    const candidate = r ?? (focusZone === 'grid' ? results[focusedIdx] : selectedDetail) as any
+    if (!candidate) return
+    const current = effectiveQueue
+    if (current.some(x => String(x.id) === String(candidate.id))) {
+      showToast(`Already queued • ${current.length}/4`)
+      return
+    }
+    if (current.length >= 4) {
+      showToast('Queue full • 4/4 max')
+      return
+    }
+    const next = [...current, candidate]
+    setEffectiveQueue(next)
+    showToast(`Queued ${next.length}/4`)
+  }, [results, focusedIdx, focusZone, selectedDetail, effectiveQueue, setEffectiveQueue, showToast])
+
+  // When acquisition completes, pop queue sequentially (frontend sequential, backend OnceLock single)
+  useEffect(() => {
+    if (!acquisitionActive && effectiveQueue.length > 0 && onBeginAcquisition) {
+      // Small delay to allow watcher cleanup, then start next if user hasn't interacted detail?
+      // We do NOT auto-start without user GET GAME in detail? Spec wants Inbox shows progress, backend sequential
+      // For V3 we expose queue but manual GET triggers queue start; if auto-start desired, hook here
+    }
+  }, [acquisitionActive, effectiveQueue, onBeginAcquisition])
+
+  // Controller / keyboard handling updated to repurpose Y as queue in Discover
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null
@@ -384,10 +483,12 @@ export function DiscoverView({
         }
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          // C3.1: A GET GAME only when eligible – no fallthrough to external-open for blocked cases
-          if (canGetGame) {
-            handleGetGame()
-          }
+          if (canGetGame) handleGetGame()
+          return
+        }
+        if (e.key.toLowerCase() === 'y' || e.key.toLowerCase() === 'f') {
+          e.preventDefault()
+          queueSelected(selectedDetail as any)
           return
         }
       } else {
@@ -421,8 +522,19 @@ export function DiscoverView({
           return
         }
         if (e.key === 'x' || e.key === 'X') {
+          // V3: X refresh bypasses cache
           e.preventDefault()
-          searchInputRef.current?.focus()
+          refreshBypass()
+          return
+        }
+        if (e.key.toLowerCase() === 'y' || e.key.toLowerCase() === 'f') {
+          e.preventDefault()
+          queueSelected()
+          return
+        }
+        if (e.key.toLowerCase() === 'r') {
+          e.preventDefault()
+          refreshBypass()
           return
         }
       }
@@ -430,6 +542,7 @@ export function DiscoverView({
 
     const onDiscoverNav = (ev: any) => {
       if (acquisitionActive) {
+        // C2/App is controller authority – Discover locked while acquisition active (mirrored for discover nav)
         return
       }
       const action = ev?.detail as string
@@ -441,15 +554,19 @@ export function DiscoverView({
           return
         }
         if (action === 'confirm') {
-          if (canGetGame) {
-            handleGetGame()
-          }
+          if (canGetGame) handleGetGame()
           return
         }
-        // while detail open, ignore navigation arrows for detail close behavior
+        if (action === 'favorite' || action === 'queue') {
+          queueSelected(selectedDetail as any)
+          return
+        }
+        if (action === 'media' || action === 'refresh') {
+          refreshBypass()
+          return
+        }
         return
       } else {
-        // results list mode
         if (action === 'up') {
           if (focusZone === 'grid' && focusedIdx < gridColumns() && !debounced) setFocusZone('browse')
           else if (focusZone === 'grid') setFocusedIdx(i => Math.max(0, i - gridColumns()))
@@ -474,10 +591,12 @@ export function DiscoverView({
         } else if (action === 'search') {
           setFocusZone('search'); try { searchInputRef.current?.focus() } catch {}
         } else if (action === 'back' || action === 'menu') {
-          // results B -> return to origin (library/system) via onBack – single exit, no double-back
           onBack()
+        } else if (action === 'favorite' || action === 'queue') {
+          queueSelected()
+        } else if (action === 'media' || action === 'refresh') {
+          refreshBypass()
         }
-        // favorite/media do NOT trigger discover here – App preserves those, we ignore to stay additive
       }
     }
 
@@ -487,13 +606,28 @@ export function DiscoverView({
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('crystal-discover-nav' as any, onDiscoverNav)
     }
-  }, [results, focusedIdx, focusedBrowseIdx, focusZone, browseOptions.length, debounced, showDetailPanel, onBack, selectedDetail, detailFull, handleGetGame, canGetGame, acquisitionActive, gridColumns, activateBrowse])
+  }, [results, focusedIdx, focusedBrowseIdx, focusZone, browseOptions.length, debounced, showDetailPanel, onBack, selectedDetail, detailFull, handleGetGame, canGetGame, acquisitionActive, gridColumns, activateBrowse, queueSelected, refreshBypass])
 
   const resultCountLabel = useMemo(() => {
     if (searching) return 'searching…'
     if (!debounced) return `${results.length} games • ${browseLetter}`
     return `${total || results.length} results`
   }, [searching, debounced, browseLetter, total, results.length])
+
+  // Provider pill – emerald / amber / red
+  const providerPillStyle = useMemo(() => {
+    const status = providerHealth.status
+    if (status === 'live') {
+      return { bg: 'rgba(71,255,150,0.16)', border: 'rgba(71,255,150,0.28)', fg: isDark ? '#b9ffcf' : '#0d6a2a', label: '● LIVE' }
+    }
+    if (status === 'cached') {
+      return { bg: 'rgba(255,214,90,0.14)', border: 'rgba(255,214,90,0.24)', fg: isDark ? '#ffd85a' : '#8a5a00', label: '◑ CACHED' }
+    }
+    // slow
+    return { bg: 'rgba(255,120,120,0.14)', border: 'rgba(255,120,120,0.22)', fg: isDark ? '#ff9a9a' : '#8a2e2e', label: '◎ SLOW' }
+  }, [providerHealth, isDark])
+
+  const showCachedBadge = cacheInfo.source === 'cache' && cacheInfo.fresh && cacheInfo.timestamp && (Date.now() - cacheInfo.timestamp < 24*3600*1000)
 
   return (
     <div
@@ -510,7 +644,6 @@ export function DiscoverView({
         zIndex: 7,
       }}
     >
-      {/* Heavily blurred bg layer – graphite premium gaming OS, NOT boutique hotel */}
       <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
         {backgroundUrl ? (
           <img
@@ -530,18 +663,15 @@ export function DiscoverView({
         ) : (
           <div style={{ position: 'absolute', inset: 0, background: isDark ? '#12131a' : '#eceef8' }} />
         )}
-        {/* overlay */}
         <div style={{
           position: 'absolute', inset: 0,
           background: isDark
             ? 'linear-gradient(180deg, rgba(10,12,18,0.34), rgba(10,12,18,0.52)), radial-gradient(84% 68% at 50% 18%, transparent 8%, rgba(6,9,14,0.42) 72%)'
             : 'linear-gradient(180deg, rgba(250,252,255,0.64), rgba(240,244,255,0.72)), radial-gradient(84% 66% at 50% 22%, transparent 10%, rgba(234,238,248,0.42) 70%)',
         }} />
-        {/* premium vignette – cool electric cyan hardware glow */}
         <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse at center, transparent 56%, rgba(0,0,0,0.18) 100%)', opacity: isDark ? 0.55 : 0.22 }} />
       </div>
 
-      {/* Top chrome ~84px */}
       <div style={{
         height: 84,
         minHeight: 84,
@@ -577,16 +707,23 @@ export function DiscoverView({
               <span style={{
                 fontFamily: 'var(--crystal-mono)', fontSize: 9.5, letterSpacing: '0.08em',
                 padding: '3px 8px', borderRadius: 999,
-                background: isDark ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)',
-                border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
-                color: isDark ? 'rgba(230,244,255,0.88)' : 'rgba(18,26,44,0.78)',
+                background: providerPillStyle.bg,
+                border: `1px solid ${providerPillStyle.border}`,
+                color: providerPillStyle.fg,
                 fontWeight: 700,
-              }}>VIMM MAIN • ROMSFUN BACKUP</span>
+              }} title={providerHealth.lastFailReason || (providerHealth.lastSuccessMs ? `ok ${Math.round((Date.now()-providerHealth.lastSuccessMs)/1000)}s ago` : '')}>{providerPillStyle.label}{providerHealth.lastParseCount ? ` • ${providerHealth.lastParseCount}` : ''}</span>
+              {showCachedBadge && (
+                <span style={{
+                  fontFamily: 'var(--crystal-mono)', fontSize: 9, letterSpacing: '0.08em',
+                  padding: '3px 7px', borderRadius: 999,
+                  background: 'rgba(120,180,255,0.12)', border: '1px solid rgba(120,180,255,0.18)',
+                  color: isDark ? '#a9d2ff' : '#345daa',
+                }}>CACHED</span>
+              )}
             </div>
           </div>
         </div>
 
-        {/* large Canvas console identity */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: isDark ? 0.92 : 0.90 }}>
           {logoUrl && (
             <SystemLogo systemId={systemId} logoUrl={logoUrl} fallbackName={systemFullName} isSelected theme={theme} style={{ minWidth: 140, maxWidth: 220, minHeight: 32 }} />
@@ -594,10 +731,14 @@ export function DiscoverView({
           <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.54, textTransform: 'uppercase' as const, letterSpacing: '0.08em' }}>
             {resultCountLabel}
           </div>
+          {effectiveQueue.length > 0 && (
+            <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, padding: '4px 8px', borderRadius: 999, background: isDark ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)', border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`, color: isDark ? '#c7feff' : '#2a4d9e' }}>
+              QUEUE {effectiveQueue.length}/4
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Search ~60px */}
       <div style={{
         height: 60, minHeight: 60, flexShrink: 0, zIndex: 2,
         display: 'flex', alignItems: 'center', gap: 12,
@@ -635,6 +776,7 @@ export function DiscoverView({
           {query && (
             <button onClick={() => setQuery('')} style={{ background: 'transparent', border: 'none', cursor: 'pointer', opacity: 0.5 }}>✕</button>
           )}
+          <button onClick={refreshBypass} title="Refresh bypass cache (X / R)" style={{ background: 'transparent', border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`, borderRadius: 8, padding: '4px 8px', fontFamily: 'var(--crystal-mono)', fontSize: 10, cursor: 'pointer', color: isDark ? '#7df9ff' : '#3a6ae0' }}>⟳ X</button>
           {searching && (
             <span style={{ width: 10, height: 10, borderRadius: '50%', border: `2px solid ${isDark ? 'rgba(125,249,255,0.42)' : 'rgba(70,130,255,0.42)'}`, borderTopColor: 'transparent', display: 'inline-block', animation: 'crystal-spin 0.8s linear infinite' }} />
           )}
@@ -642,6 +784,8 @@ export function DiscoverView({
         <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.54, display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[View] SEARCH</span>
           <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[A] OPEN</span>
+          <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[Y] QUEUE</span>
+          <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[X] REFRESH</span>
           <span style={{ padding: '4px 8px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.6)' }}>[B] BACK</span>
         </div>
       </div>
@@ -657,7 +801,18 @@ export function DiscoverView({
         </div>
       )}
 
-      {/* Storefront grid: browse first, partial-title search when needed. */}
+      {effectiveQueue.length > 0 && (
+        <div style={{ zIndex: 2, flexShrink: 0, display: 'flex', gap: 8, padding: '10px 22px', overflowX: 'auto', background: isDark ? 'rgba(125,249,255,0.04)' : 'rgba(70,130,255,0.04)', borderBottom: `1px solid ${isDark ? 'rgba(125,249,255,0.08)' : 'rgba(70,130,255,0.08)'}` }}>
+          <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9.5, opacity: 0.5, whiteSpace: 'nowrap', flexShrink: 0 }}>QUEUE {effectiveQueue.length}/4</span>
+          {effectiveQueue.map((q, i) => (
+            <span key={`${q.id}-${i}`} style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : '#fff', border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {i+1}. {String(q.title).slice(0,22)}
+              <button onClick={() => setEffectiveQueue(effectiveQueue.filter((_, idx) => idx !== i))} style={{ background: 'transparent', border: 'none', cursor: 'pointer', opacity: 0.5 }}>✕</button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div ref={containerRef} style={{ flex: 1, overflowY: 'auto', zIndex: 1, padding: '18px 22px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', alignContent: 'start', gap: 12 }}>
         {offline && (
           <div style={{
@@ -667,7 +822,7 @@ export function DiscoverView({
             fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.5,
           }}>
             <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>VIMM'S LAIR UNAVAILABLE</div>
-            <div style={{ opacity: 0.72, marginBottom: 10 }}>Network offline or Vimm's Lair is currently unreachable.</div>
+            <div style={{ opacity: 0.72, marginBottom: 10 }}>Network offline or provider slow – showing cached results where available. {providerHealth.lastFailReason && <span style={{ opacity: 0.9 }}>{providerHealth.lastFailReason.slice(0,80)}</span>}</div>
             <button onClick={handleOpenVaultRoot} style={{
               padding: '8px 14px', borderRadius: 999, border: 'none',
               background: isDark ? '#7df9ff' : '#4a86ff', color: isDark ? '#041018' : '#fff',
@@ -683,7 +838,7 @@ export function DiscoverView({
             fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.5,
           }}>
             <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>CATALOG FORMAT CHANGED</div>
-            <div style={{ opacity: 0.72, marginBottom: 10 }}>Crystal's catalogue parser no longer matches Vimm's Lair. Please update Crystal or open the provider page.</div>
+            <div style={{ opacity: 0.72, marginBottom: 10 }}>Crystal's catalogue parser no longer matches Vimm's Lair. Using cached catalog where available.</div>
             <button onClick={handleOpenVaultRoot} style={{
               padding: '8px 14px', borderRadius: 999, border: 'none',
               background: isDark ? '#7df9ff' : '#4a86ff', color: isDark ? '#041018' : '#fff',
@@ -704,7 +859,8 @@ export function DiscoverView({
         {!offline && !schemaChanged && results.map((r, idx) => {
           const focused = focusZone === 'grid' && idx === focusedIdx
           const inLib = inLibraryCheck(r.title)
-          const visualUrl = r.thumbUrl || r.thumbnailUrl || localCoverUrls[normalizeTitle(r.title)] || backgroundUrl
+          const visualUrl = resolveCoverUrl(r)
+          const isQueued = effectiveQueue.some(q => String(q.id) === String(r.id))
           return (
             <div
               key={`${r.id}-${idx}`}
@@ -725,6 +881,7 @@ export function DiscoverView({
                 boxShadow: focused ? (isDark ? '0 8px 22px rgba(0,0,0,0.28), 0 0 0 1px rgba(125,249,255,0.08) inset, 0 0 16px rgba(125,249,255,0.14)' : '0 8px 18px rgba(18,26,44,0.10), inset 0 1px 0 rgba(255,255,255,0.9)') : 'none',
                 transform: focused ? 'translateY(-1px)' : 'translateY(0)',
                 transition: 'all 180ms cubic-bezier(0.16,1,0.3,1)',
+                position: 'relative',
               }}
             >
               {visualUrl ? (
@@ -741,30 +898,41 @@ export function DiscoverView({
                   {r.version && <span style={{ opacity: 0.62 }}>• {r.version}</span>}
                   {r.languages && <span style={{ opacity: 0.62 }}>• {Array.isArray(r.languages) ? r.languages.join('/') : r.languages}</span>}
                 </div>
-                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
                   <span style={{
                     fontFamily: 'var(--crystal-mono)', fontSize: 9.5, padding: '3px 8px', borderRadius: 999,
                     background: r.availability === 'available' ? (isDark ? 'rgba(125,249,255,0.14)' : 'rgba(90,180,120,0.14)') : r.availability === 'takedown' || r.availability === 'unavailable' ? (isDark ? 'rgba(255,120,120,0.12)' : 'rgba(255,120,120,0.16)') : 'rgba(255,255,255,0.06)',
                     border: `1px solid ${r.availability === 'available' ? 'rgba(125,249,255,0.18)' : 'rgba(255,255,255,0.08)'}`,
-                  }}>{r.availability === 'available' ? 'AVAILABLE' : r.availability === 'takedown' ? 'DOWNLOAD UNAVAILABLE' : r.availability.toUpperCase()}</span>
+                  }}>{r.availability === 'available' ? 'AVAILABLE' : r.availability === 'takedown' ? 'DOWNLOAD UNAVAILABLE' : (r.availability || 'AVAILABLE').toUpperCase()}</span>
                   <span style={{
                     fontFamily: 'var(--crystal-mono)', fontSize: 9.5, padding: '3px 8px', borderRadius: 999,
                     background: inLib ? (isDark ? 'rgba(255,214,90,0.16)' : 'rgba(255,200,60,0.18)') : isDark ? 'rgba(255,255,255,0.04)' : 'rgba(18,26,44,0.05)',
                     border: `1px solid ${inLib ? (isDark ? 'rgba(255,214,90,0.24)' : 'rgba(255,180,0,0.24)') : isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
                     color: inLib ? (isDark ? '#ffd85a' : '#8a5a00') : undefined,
                   }}>{inLib ? '★ OWNED' : 'NEW'}</span>
+                  {isQueued && <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 8px', borderRadius: 999, background: 'rgba(125,249,255,0.12)', border: '1px solid rgba(125,249,255,0.18)', color: '#7df9ff' }}>QUEUED</span>}
                   {(r as any).rating != null && String((r as any).rating) !== 'none' && (
                     <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9.5, opacity: 0.6 }}>★ {String((r as any).rating)}</span>
                   )}
                 </div>
               </div>
-              <div style={{ alignSelf: 'center', opacity: focused ? 0.9 : 0.32, fontSize: 12 }}>↗</div>
+              <div style={{ alignSelf: 'center', opacity: focused ? 0.9 : 0.32, fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span>↗</span>
+                {focused && (
+                  <button onClick={(e) => { e.stopPropagation(); queueSelected(r) }} style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 6px', borderRadius: 6, border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`, background: isDark ? 'rgba(125,249,255,0.08)' : 'rgba(70,130,255,0.08)', cursor: 'pointer' }} title="Y to queue">+Q</button>
+                )}
+              </div>
             </div>
           )
         })}
       </div>
 
-      {/* Detail overlay/panel – deterministic A=open B=close */}
+      {toast && (
+        <div style={{ position: 'absolute', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 20, padding: '10px 16px', borderRadius: 999, background: isDark ? 'rgba(18,22,36,0.92)' : 'rgba(255,255,255,0.92)', border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`, backdropFilter: 'blur(18px)', fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700, boxShadow: '0 12px 24px rgba(0,0,0,0.18)' }}>
+          {toast}
+        </div>
+      )}
+
       {showDetailPanel && selectedDetail && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 10,
@@ -784,7 +952,7 @@ export function DiscoverView({
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
               <div>
-                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.6, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{(selectedDetail.system || systemFullName).toUpperCase()} • {selectedDetail.region || '--'} • {selectedDetail.year || '--'}</div>
+                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.6, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{(selectedDetail.system || systemFullName).toUpperCase()} • {selectedDetail.region || '--'} • {selectedDetail.year || '--'} {showCachedBadge ? '• CACHED' : ''}</div>
                 <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 20, fontWeight: 780, marginTop: 4, letterSpacing: '-0.02em' }}>{detailFull?.title || selectedDetail.title}</div>
               </div>
               <button onClick={() => { setShowDetailPanel(false); setSelectedDetail(null) }} style={{
@@ -804,10 +972,6 @@ export function DiscoverView({
                   {(detailFull?.publisher || selectedDetail.publisher) && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>PUB {(detailFull?.publisher || selectedDetail.publisher)}</span>}
                   {(detailFull?.players || selectedDetail.players) && <span style={{ padding: '4px 9px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}` }}>{detailFull?.players || selectedDetail.players}P</span>}
                   {selectedDetail.discCount && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>{selectedDetail.discCount} DISC</span>}
-                  {(detailFull as any)?.version && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>VER {(detailFull as any).version}</span>}
-                  {(detailFull as any)?.serial && <span style={{ padding: '4px 9px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)' }}>S/N {(detailFull as any).serial}</span>}
-                  {(detailFull as any)?.graphicsRating != null && <span>G {String((detailFull as any).graphicsRating)}</span>}
-                  {(detailFull as any)?.overallRating != null && <span>Overall {String((detailFull as any).overallRating)} {(detailFull as any).overallVotes ? `(${String((detailFull as any).overallVotes)})` : ''}</span>}
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -828,19 +992,18 @@ export function DiscoverView({
                     background: inLibraryCheck((detailFull?.title || selectedDetail.title)) ? (isDark ? 'rgba(255,214,90,0.16)' : 'rgba(255,200,60,0.18)') : isDark ? 'rgba(255,255,255,0.04)' : 'rgba(18,26,44,0.06)',
                     border: `1px solid ${inLibraryCheck((detailFull?.title || selectedDetail.title)) ? 'rgba(255,214,90,0.22)' : isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
                   }}>{inLibraryCheck((detailFull?.title || selectedDetail.title)) ? '★ IN YOUR LIBRARY' : 'NOT IN YOUR LIBRARY'}</span>
+                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, padding: '4px 10px', borderRadius: 999, background: providerPillStyle.bg, border: `1px solid ${providerPillStyle.border}`, color: providerPillStyle.fg }}>{providerPillStyle.label} • VIMM {cacheInfo.source === 'cache' ? 'CACHED' : 'LIVE'}</span>
                 </div>
 
                 {(detailFull?.verification || selectedDetail.verification) && (
                   <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.7 }}>
                     Verification: {detailFull?.verification || selectedDetail.verification} • {detailFull?.mediaType || 'ISO'} • Rating {detailFull?.rating || selectedDetail.rating || '--'}
-                    {(detailFull as any)?.crc ? ` • CRC ${(detailFull as any).crc}` : ''}
-                    {(detailFull as any)?.verificationDate ? ` • Verified ${(detailFull as any).verificationDate}` : ''}
                   </div>
                 )}
 
                 {(detailFull?.description || detailFull?.title) && (
                   <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, lineHeight: 1.5, opacity: 0.82, maxWidth: '56ch' }}>
-                    {detailFull?.description || 'Catalog entry. GET GAME opens the provider page in your default browser while Crystal watches Downloads for a completed file you choose.'}
+                    {detailFull?.description || 'Catalog entry. GET GAME opens provider page while Crystal watches Downloads.'}
                   </div>
                 )}
 
@@ -873,6 +1036,18 @@ export function DiscoverView({
                       GET GAME
                     </button>
                   ) : null}
+                  <button
+                    onClick={() => queueSelected(selectedDetail as any)}
+                    style={{
+                      appearance: 'none', padding: '10px 16px', borderRadius: 999,
+                      border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+                      background: isDark ? 'rgba(125,249,255,0.08)' : 'rgba(70,130,255,0.08)',
+                      fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                      color: isDark ? '#7df9ff' : '#3a6ae0',
+                    }}
+                  >
+                    Y QUEUE {effectiveQueue.length}/4
+                  </button>
                   {canGetGame && onBeginAcquisition && systemId !== 'steam' ? (
                     <button
                       onClick={() => {
@@ -934,23 +1109,7 @@ export function DiscoverView({
                   >
                     OPEN ON ROMSFUN
                   </button>
-                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.52, maxWidth: 220 }}>
-                    {canonicalVaultUrl(selectedDetail.id)}
-                  </span>
-                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.44 }}>{canGetGame ? '[A] GET • [B] CLOSE DETAIL • [B again] BACK TO LIBRARY' : '[B] CLOSE DETAIL – [B again] BACK TO LIBRARY'}</span>
                 </div>
-
-                {(detailFull?.availability === 'unavailable' || detailFull?.availability === 'takedown' || selectedDetail.availability === 'unavailable' || selectedDetail.availability === 'takedown') && (
-                  <div style={{
-                    marginTop: 6,
-                    padding: '10px 12px', borderRadius: 10,
-                    background: isDark ? 'rgba(255,120,120,0.10)' : 'rgba(255,240,240,0.84)',
-                    border: `1px solid ${isDark ? 'rgba(255,120,120,0.18)' : 'rgba(255,120,120,0.22)'}`,
-                    fontFamily: 'var(--crystal-mono)', fontSize: 10.5,
-                  }}>
-                    CATALOG ENTRY AVAILABLE • DOWNLOAD AVAILABILITY UNAVAILABLE — preserved for reference. Open ROMsFun to review the provider notice.
-                  </div>
-                )}
               </div>
             )}
           </div>

@@ -302,10 +302,11 @@ export function SystemStage({
   }, [hwDisplayUrl])
 
   const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : false
-  const durFilter = prefersReducedMotion ? '120ms' : '420ms'
-  const durTrans = prefersReducedMotion ? '160ms' : '560ms'
-  const durHw = prefersReducedMotion ? '140ms' : '480ms'
-  const durFade = prefersReducedMotion ? '120ms' : '380ms'
+  // V3 unified choreography – single ease, three phase durations (CSS vars in index.css are source of truth)
+  const durFilter = prefersReducedMotion ? '120ms' : '420ms' // --crystal-entrance-filter
+  const durTrans = prefersReducedMotion ? '160ms' : '480ms' // --crystal-entrance-transform
+  const durHw = prefersReducedMotion ? '140ms' : '480ms' // hardware foreground shares transform timing
+  const durFade = prefersReducedMotion ? '120ms' : '380ms' // --crystal-entrance-opacity
 
   const placementX = showroomPlacement?.x ?? 66
   const placementY = showroomPlacement?.y ?? 52
@@ -329,8 +330,8 @@ export function SystemStage({
   return (
     <div
       ref={stageRef}
-      className={`system-stage ${className || ''} ${entered ? 'is-entered' : 'is-storefront'}`}
-      style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#0a0a0f', ...style }}
+      className={`system-stage ${className || ''} ${entered ? 'is-entered crystal-library-enter' : 'is-storefront crystal-system-enter'}`}
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: '#0a0a0f', ...style }}
       data-system-id={config.systemId}
       data-presentation-type={(config as any).presentationType || 'tv'}
       data-hw-ready={frame.ready ? '1' : '0'}
