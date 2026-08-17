@@ -423,6 +423,96 @@ pub fn get_crystal_writable_root() -> String {
     crystal_writable_root().display().to_string()
 }
 
+/// Bounded <4KB crash reporter – writes next to Rust log D:\CrystalFrontend\logs\
+/// Sanitizes ROM paths: frontend already sends basename only.
+#[tauri::command]
+pub fn write_crash_report(report: serde_json::Value) -> Result<String, String> {
+    // Ensure dirs
+    let root = crystal_writable_root();
+    let logs_dir = root.join("logs");
+    if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+        return Err(format!("CRASH_LOG_DIR_FAILED {}: {}", logs_dir.display(), e));
+    }
+
+    // Date-based filename: crystal-frontend-crash-YYYY-MM-DD.json – append bounded JSON line or overwrite with rotation
+    let now = chrono::Local::now();
+    let filename = format!("crystal-frontend-crash-{}.json", now.format("%Y-%m-%d"));
+    let path = logs_dir.join(&filename);
+
+    // Validate JSON size <4KB – trim if frontend didn't
+    let mut json_str = serde_json::to_string(&report).map_err(|e| format!("CRASH_JSON_SERIALIZE {}", e))?;
+    // extra sanitization: ensure no absolute windows path leaks (C:\...\roms\)
+    // we search for patterns like D:\Emulation or C:\Users – replace with [REDACTED_PATH]
+    for sensitive in [
+        r"D:\Emulation",
+        r"C:\Users",
+        r"/home/",
+        r"\\Emulation",
+    ] {
+        if json_str.contains(sensitive) {
+            json_str = json_str.replace(sensitive, "[REDACTED_PATH]");
+        }
+    }
+    // Also truncate to 3800 chars if needed (keep <4KB)
+    if json_str.len() > 3800 {
+        // re-parse, trim error message
+        let mut v: serde_json::Value = serde_json::from_str(&json_str).unwrap_or(report.clone());
+        if let Some(obj) = v.as_object_mut() {
+            if let Some(js_err) = obj.get_mut("jsError") {
+                if let Some(j) = js_err.as_object_mut() {
+                    if let Some(msg) = j.get("message") {
+                        if msg.as_str().map(|s| s.len() > 400).unwrap_or(false) {
+                            j.insert("message".into(), serde_json::Value::String(msg.as_str().unwrap()[..400].to_string()));
+                        }
+                    }
+                    if let Some(st) = j.get("stack") {
+                        if st.as_str().map(|s| s.len() > 800).unwrap_or(false) {
+                            j.insert("stack".into(), serde_json::Value::String(st.as_str().unwrap()[..800].to_string()));
+                        }
+                    }
+                }
+            }
+            if obj.contains_key("reactComponentStack") {
+                if let Some(rc) = obj.get("reactComponentStack") {
+                    if rc.as_str().map(|s| s.len() > 600).unwrap_or(false) {
+                        obj.insert("reactComponentStack".into(), serde_json::Value::String(rc.as_str().unwrap()[..600].to_string()));
+                    }
+                }
+            }
+        }
+        json_str = serde_json::to_string(&v).unwrap_or_else(|_| r#"{"truncated":true}"#.to_string());
+        if json_str.len() > 3800 {
+            json_str.truncate(3800);
+        }
+    }
+
+    // Ensure safe write path – is_safe_write_path returns Result<(), String> (no PathBuf return) so we validate via check then use original path as safe
+    crate::safety::is_safe_write_path(&path).map_err(|e| format!("CRASH_PATH_UNSAFE {}: {}", path.display(), e))?;
+    let safe_path = path.clone();
+
+    // Append with newline – bounded check of overall file size < 64KB (rotate if larger)
+    if safe_path.exists() {
+        if let Ok(meta) = std::fs::metadata(&safe_path) {
+            if meta.len() > 64 * 1024 {
+                // rotate
+                let rotated = logs_dir.join(format!("crystal-frontend-crash-{}-prev.json", now.format("%Y-%m-%d")));
+                let _ = std::fs::rename(&safe_path, rotated);
+            }
+        }
+    }
+
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    let mut f = opts.open(&safe_path).map_err(|e| format!("CRASH_FILE_OPEN {}: {}", safe_path.display(), e))?;
+    let line = format!("{}\n", json_str);
+    f.write_all(line.as_bytes()).map_err(|e| format!("CRASH_WRITE_FAILED {}: {}", safe_path.display(), e))?;
+
+    crate::safety::log_event("error", &format!("crash_report written {}", safe_path.display()));
+    Ok(safe_path.display().to_string())
+}
+
 /// Test-only helper to reset SAFE_MODE – not available in production builds.
 #[cfg(test)]
 pub(crate) fn set_safe_mode_for_tests(enabled: bool) {
