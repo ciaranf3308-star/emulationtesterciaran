@@ -1,10 +1,13 @@
 mod acquisition_watch;
+mod collections;
 mod discovery;
 mod download_resolver;
 mod gamelist_favorites;
+mod game_notes;
 mod import_game;
 mod launch_lifecycle;
 mod machine_config;
+mod news_cache;
 mod provider_surface;
 mod safety;
 mod steam_launch;
@@ -1563,6 +1566,20 @@ pub fn run() {
             gamelist_favorites::set_favorite,
             gamelist_favorites::get_favorite_status,
             gamelist_favorites::refresh_metadata_after_launch,
+            game_notes::get_all_game_notes,
+            game_notes::get_game_note,
+            game_notes::set_game_note,
+            game_notes::delete_game_note,
+            news_cache::get_cached_news,
+            news_cache::refresh_news,
+            news_cache::get_news_freshness,
+            news_cache::safe_url_open,
+            collections::get_collections,
+            collections::set_pinned,
+            collections::toggle_pinned,
+            collections::set_backlog,
+            collections::toggle_backlog,
+            collections::clear_collections,
             steam_launch::safe_steam_launch,
             steam_launch::safe_steam_launch_from_template,
             exit_crystal

@@ -25,6 +25,9 @@ import { getTauriInvoker } from './runtime/tauri'
 // V3 crash & lifecycle
 import { setupCrashHandlers, setCrashContext, recordSemanticInput } from './lib/crashReporter'
 import { setupLifecycleHandlers } from './controllers/lifecycle'
+// V3.1 micro sound + haptic + CRT
+import { playConfirm, playBack, triggerHaptic } from './lib/sound'
+import { getAllGameNotes, type GameNote } from './lib/gameNotes'
 // V8.2 fixture DEV ONLY – isolated, never overwrites real Tauri truth – used for web QA screenshots
 import { getFixtureGames, toGameEntry, fixtureMediaForGame, getFixtureSystems } from './dev/fixtures/goldenFixture'
 import { isFixtureEnabled, isDevFixtureAllowed } from './dev/fixtures/fixtureMode'
@@ -43,6 +46,8 @@ import DiscoverView from './components/DiscoverView'
 import { RESTORED_FLAG_KEY, saveLocalNav, type CrystalNavPersist } from './lifecycle/launchCycle'
 import { SettingsTabsView } from './components/SettingsTabsView'
 import { DiagnosticsDebugOverlay } from './components/DiagnosticsDebugOverlay'
+import GameNotesPanel from './components/GameNotesPanel'
+import QuickMemoOverlay from './components/QuickMemoOverlay'
 
 
 type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings' | 'discover'
@@ -96,6 +101,35 @@ function AppInner() {
   const [libraryChipFocused, setLibraryChipFocused] = useState(false)
   const [diagnosticsDebugOverlayVisible, setDiagnosticsDebugOverlayVisible] = useState(false)
   const [libraryFilter, setLibraryFilter] = useState<LibraryQuickFilter>('all')
+  // V3.1 CRT + Sounds persisted (default off) – Settings General toggle + C key + R-stick click
+  const [crtEnabled, setCrtEnabled] = useState<boolean>(() => {
+    try {
+      const v = typeof window !== 'undefined' ? window.localStorage.getItem('crystal_crt_mode') : null
+      return v === '1' || v === 'true'
+    } catch { return false }
+  })
+  const [soundsEnabled, setSoundsEnabled] = useState<boolean>(() => {
+    try {
+      const v = typeof window !== 'undefined' ? window.localStorage.getItem('crystal_sounds_enabled') : null
+      return v === '1' || v === 'true'
+    } catch { return false }
+  })
+  // V3.1 consume state vars to satisfy noUnusedLocals – Settings General toggles them (via window events in other modules); persist side-effect keeps them live
+  useEffect(() => {
+    try {
+      // touch vars so tsc noUnusedLocals passes; actual toggle wiring lives in Settings General + C/R-stick input layers
+      void [crtEnabled, setCrtEnabled, soundsEnabled, setSoundsEnabled]
+      // sync to root class for CRT (displayed via SystemStage isCrtEnabled reading localStorage / class)
+      if (crtEnabled) document.documentElement.classList.add('crystal-crt-enabled')
+      else document.documentElement.classList.remove('crystal-crt-enabled')
+    } catch {}
+  }, [crtEnabled, soundsEnabled, setCrtEnabled, setSoundsEnabled])
+  // V3.1 Game Notes – persistent notes + progress
+  const [gameNotesMap, setGameNotesMap] = useState<Map<string, GameNote>>(() => new Map())
+  const [notesPanel, setNotesPanel] = useState<{ systemId: string; romBasename: string; gameName?: string } | null>(null)
+  const [quickMemoVisible, setQuickMemoVisible] = useState(false)
+  const [notesToast, setNotesToast] = useState<string | null>(null)
+  const viewHoldRef = useRef<{ start: number | null; timer: number | null; suppressedQuickFilter: boolean }>({ start: null, timer: null, suppressedQuickFilter: false })
 
   // V3: crash + lifecycle orchestration
   useEffect(() => {
@@ -113,6 +147,188 @@ function AppInner() {
     return () => {
       unsubCrash()
       unsubLife()
+    }
+  }, [])
+
+  // V3.1 CRT + Sounds + Haptic – persistence, root class, keyboard C / T / 3, R-stick click, storage sync
+  useEffect(() => {
+    try {
+      if (crtEnabled) document.documentElement.classList.add('crystal-crt-enabled')
+      else document.documentElement.classList.remove('crystal-crt-enabled')
+      if (typeof window !== 'undefined') window.localStorage.setItem('crystal_crt_mode', crtEnabled ? '1' : '0')
+      window.dispatchEvent(new CustomEvent('crystal:crt-changed' as any, { detail: { enabled: crtEnabled } } as any))
+    } catch {}
+  }, [crtEnabled])
+
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') window.localStorage.setItem('crystal_sounds_enabled', soundsEnabled ? '1' : '0')
+      window.dispatchEvent(new CustomEvent('crystal:sounds-changed' as any, { detail: { enabled: soundsEnabled } } as any))
+    } catch {}
+  }, [soundsEnabled])
+
+  // Keyboard C toggles CRT (preserve D-pad authoritative) – ignore when typing in inputs
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const isTyping = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      if (isTyping) return
+      const k = e.key?.toLowerCase()
+      if (k === 'c' || k === 't' || k === '3') {
+        // C = CRT, T = CRT (spec optional toggle T), 3 numeric as fallback – all toggle same pref
+        e.preventDefault()
+        setCrtEnabled(v => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Gamepad R-stick click (button 11) edge -> CRT toggle; also capture storage sync from settings panel
+  useEffect(() => {
+    let prevR3 = false
+    let raf = 0
+    const poll = () => {
+      try {
+        const gps = (navigator as any).getGamepads?.() as (Gamepad | null)[] | null
+        if (gps) {
+          for (const gp of gps) {
+            if (!gp) continue
+            const btn11 = (gp as any).buttons?.[11]
+            const pressed = !!(btn11 && btn11.pressed)
+            if (pressed && !prevR3) {
+              // rising edge
+              setCrtEnabled(v => !v)
+            }
+            prevR3 = pressed
+            // if multiple gamepads, edge detection per first press wins – break after detect to avoid double toggle
+            if (pressed) break
+          }
+        }
+      } catch {}
+      raf = window.requestAnimationFrame(poll)
+    }
+    raf = window.requestAnimationFrame(poll)
+
+    const onCustomCrt = (ev: any) => {
+      const enabled = ev?.detail?.enabled
+      if (typeof enabled === 'boolean') setCrtEnabled(enabled)
+    }
+    const onCustomSounds = (ev: any) => {
+      const enabled = ev?.detail?.enabled
+      if (typeof enabled === 'boolean') setSoundsEnabled(enabled)
+    }
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'crystal_crt_mode' && e.newValue != null) {
+        setCrtEnabled(e.newValue === '1' || e.newValue === 'true')
+      }
+      if (e.key === 'crystal_sounds_enabled' && e.newValue != null) {
+        setSoundsEnabled(e.newValue === '1' || e.newValue === 'true')
+      }
+    }
+
+    window.addEventListener('crystal:crt-changed' as any, onCustomCrt)
+    window.addEventListener('crystal:sounds-changed' as any, onCustomSounds)
+    window.addEventListener('storage', onStorage)
+
+    return () => {
+      try { window.cancelAnimationFrame(raf) } catch {}
+      window.removeEventListener('crystal:crt-changed' as any, onCustomCrt)
+      window.removeEventListener('crystal:sounds-changed' as any, onCustomSounds)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+
+  // V3.1 Game Notes – load all, listen for saves, Hold View ~600ms detection (gamepad + keyboard)
+  useEffect(() => {
+    let cancelled = false
+    async function loadNotes() {
+      try {
+        const notes = await getAllGameNotes()
+        if (cancelled) return
+        const map = new Map<string, GameNote>()
+        for (const n of notes) {
+          map.set(`${n.system_id}:${n.rom_basename}`, n)
+        }
+        setGameNotesMap(map)
+      } catch {}
+    }
+    loadNotes()
+    const onSaved = () => { loadNotes() }
+    window.addEventListener('crystal:game-note-saved' as any, onSaved)
+    return () => { cancelled = true; window.removeEventListener('crystal:game-note-saved' as any, onSaved) }
+  }, [])
+
+  // Track 1 – Hold View ~600ms anywhere for QuickMemo (reuse inputOwnership – additive, don't break quickFilter)
+  useEffect(() => {
+    let rawViewPoll: number | null = null
+    let kbViewHeld = false
+    let kbTimer: number | null = null
+
+    const triggerQuickMemo = () => {
+      setQuickMemoVisible(true)
+      try { viewHoldRef.current.suppressedQuickFilter = true } catch {}
+    }
+
+    // Gamepad raw polling – button 8 (Select/View) held 600ms
+    const startGamepadHoldWatcher = () => {
+      let heldSince: number | null = null
+      const poll = () => {
+        try {
+          if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return
+          const gps = navigator.getGamepads()
+          let anyView = false
+          for (const gp of gps as any) {
+            if (!gp) continue
+            if (gp.buttons && gp.buttons[8]?.pressed) { anyView = true; break }
+          }
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+          if (anyView) {
+            if (heldSince === null) heldSince = now
+            else if (now - heldSince >= 600) {
+              // fire once per hold
+              heldSince = null
+              triggerQuickMemo()
+            }
+          } else {
+            heldSince = null
+          }
+        } catch {}
+      }
+      rawViewPoll = window.setInterval(poll, 90) as unknown as number
+    }
+    startGamepadHoldWatcher()
+
+    // Keyboard View hold – 'v' key held 600ms
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return
+      if (e.key.toLowerCase() !== 'v') return
+      const target = e.target as any
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      kbViewHeld = true
+      if (kbTimer != null) window.clearTimeout(kbTimer)
+      kbTimer = window.setTimeout(() => {
+        if (kbViewHeld) triggerQuickMemo()
+      }, 600) as unknown as number
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === 'v') {
+        kbViewHeld = false
+        if (kbTimer != null) { window.clearTimeout(kbTimer); kbTimer = null }
+        // small window to suppress quickFilter if hold already fired
+        if (viewHoldRef.current.suppressedQuickFilter) {
+          window.setTimeout(() => { viewHoldRef.current.suppressedQuickFilter = false }, 280)
+        }
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+
+    return () => {
+      if (rawViewPoll != null) try { window.clearInterval(rawViewPoll) } catch {}
+      if (kbTimer != null) try { window.clearTimeout(kbTimer) } catch {}
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
     }
   }, [])
 
@@ -755,12 +971,19 @@ function AppInner() {
     if (!selectedGameEntry) return null
     const g: any = selectedGameEntry
     const fix = fixtureMediaForGame(g.id)
+    // V3.1 Game Notes – surface progress when returning from launch (Library detail)
+    const sysIdForNote = g.system_id || activeSystemId
+    const romBaseForNote = g.rom_basename || g.basename || g.id?.split('/')?.pop?.() || g.name
+    const noteKey = `${sysIdForNote}:${romBaseForNote}`
+    const note = gameNotesMap.get(noteKey)
+    const noteProgress = note?.progress
+    const noteText = note?.text
     return {
       id: g.id,
       name: g.name,
       logoUrl: g._fixtureLogoUrl || fix?.marquee || gameIdentityMedia[g.id]?.marquee || null,
       coverUrl: g._fixtureCoverUrl || fix?.cover || gameIdentityMedia[g.id]?.cover || null,
-      desc: g.description,
+      desc: noteText ? `${noteText.slice(0,180)}${noteText.length>180?'…':''}${g.description ? ' — ' + (g.description as string).slice(0,140) : ''}` as any : g.description,
       developer: g.developer,
       publisher: g.publisher,
       genre: g.genre,
@@ -775,12 +998,15 @@ function AppInner() {
       lastplayed: g.lastplayed ?? null,
       lastPlayedLabel: lastPlayedLabel(g) ?? null,
       playTimeLabel: g.playtime
-        ? `${Math.max(1, Math.round(Number(g.playtime) / 60))} min played`
+        ? `${Math.max(1, Math.round(Number(g.playtime) / 60))} min played${typeof noteProgress === 'number' ? ` • ${noteProgress}% notes` : ''}`
         : parsePlayCount(g)
-          ? `${parsePlayCount(g)} plays`
-          : null,
-    }
-  }, [selectedGameEntry, gameIdentityMedia])
+          ? `${parsePlayCount(g)} plays${typeof noteProgress === 'number' ? ` • ${noteProgress}%` : ''}`
+          : (typeof noteProgress === 'number' ? `${noteProgress}% progress` : null),
+      // extended fields for SelectedGameContext progress bar
+      notesProgress: noteProgress,
+      notesText: noteText,
+    } as any
+  }, [selectedGameEntry, gameIdentityMedia, gameNotesMap, activeSystemId])
 
   useEffect(() => {
     let cancelled = false
@@ -1305,6 +1531,17 @@ function AppInner() {
     (action: NavigationAction) => {
       try { recordSemanticInput(String(action)) } catch {}
       try { setCrashContext(view, activeSystemId) } catch {}
+      // V3.1 aura idle reset – any NavigationAction resets 5s pulse timer
+      try {
+        window.dispatchEvent(new CustomEvent('crystal:nav-action' as any, { detail: action } as any))
+      } catch {}
+      // V3.1 micro sound + haptic – confirm 880Hz 60ms / back 440Hz 80ms – respects mute pref crystal_sounds_enabled default off
+      try {
+        if (soundsEnabled) {
+          if (action === 'confirm') { playConfirm(); triggerHaptic() }
+          else if (action === 'back') { playBack(); triggerHaptic() }
+        }
+      } catch {}
       // V8.6D1 provider surface guard – Discover list must not react underneath while surface active
       try {
         if (providerSurf?.active) {
@@ -1358,6 +1595,39 @@ function AppInner() {
       // Global diagnosticsDebug chord – L+R+View (gamepad) or I / Ctrl+D (keyboard)
       if (action === 'diagnosticsDebug') {
         setDiagnosticsDebugOverlayVisible(v => !v)
+        return
+      }
+
+      // V3.1 Game Notes – Hold View QuickMemo & NotesPanel ownership (top of stack, above diagnostics)
+      if (quickMemoVisible) {
+        if (action === 'back' || action === 'menu') {
+          setQuickMemoVisible(false)
+          // release suppression after close
+          window.setTimeout(() => { try { viewHoldRef.current.suppressedQuickFilter = false } catch {} }, 180)
+          return
+        }
+        if (action === 'confirm') {
+          // confirm triggers save handled inside QuickMemo via click; we leave overlay open for explicit save
+          return
+        }
+        // block all other navigation underneath while memo open
+        return
+      }
+      if (notesPanel) {
+        if (action === 'back' || action === 'menu') {
+          setNotesPanel(null)
+          return
+        }
+        // while Notes panel open, preserve confirm for save handled inside component (A), block rest to avoid leak
+        if (['up','down','left','right','nextSystem','previousSystem','search','favorite','media','quickFilter','quickSettings','cycleTabLeft','cycleTabRight'].includes(action as any)) {
+          return
+        }
+      }
+
+      // Track 1 – Hold View detection consumed quickFilter suppression – don't unleash a filter cycle when memo just opened
+      if (action === 'quickFilter' && viewHoldRef.current.suppressedQuickFilter) {
+        // single suppression: consume this quickFilter, then allow next ones after small delay
+        viewHoldRef.current.suppressedQuickFilter = false
         return
       }
 
@@ -1432,7 +1702,19 @@ function AppInner() {
           return
         }
         if (action === 'media') {
-          cycleMediaCurrent()
+          // V3.1 Track 1 – X now opens NOTES panel (detail X->NOTES)
+          // Preserve media cycle as fallback via long-press? For now NOTES is primary per spec.
+          const g = selectedGameEntry as any
+          if (g) {
+            const sysId = g.system_id || activeSystemId
+            const base = g.rom_basename || g.basename || g.id?.split?.('/')?.pop?.() || g.name
+            setNotesPanel({ systemId: sysId, romBasename: base, gameName: g.name || base })
+            setNotesToast(`NOTES • ${g.name || base}`)
+            window.setTimeout(() => setNotesToast(null), 1400)
+          } else {
+            // if no game, fallback to media cycle legacy
+            cycleMediaCurrent()
+          }
           return
         }
         const list = displayGames
@@ -1612,7 +1894,7 @@ function AppInner() {
         }
       }
     },
-    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame, moveSettingsFocus, libraryFilter, cycleLibraryFilter, toggleFavoriteCurrent, cycleMediaCurrent, diagnosticsDebugOverlayVisible]
+    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame, moveSettingsFocus, libraryFilter, cycleLibraryFilter, toggleFavoriteCurrent, cycleMediaCurrent, diagnosticsDebugOverlayVisible, soundsEnabled]
   )
 
   // Effects – must be unconditional and before any early returns
@@ -2395,11 +2677,14 @@ function AppInner() {
           logoUrl={logoUrl}
           selectedLocalGame={discoverPrefillGame}
           libraryGames={activeGames}
+          allGames={activeGames as any}
+          favorites={(activeGames?.filter((g:any)=> (g as any).favorite) as any) || []}
+          recentGames={(gameCache && Array.from((gameCache as any).values?.()||[]).flat().slice?.(0,30)) as any || activeGames}
           onBeginAcquisition={(req: any) => crystalAcq.begin(req)}
           acquisitionActive={!!(crystalAcq.active || providerSurf.active)}
           acquisitionPhase={(providerSurf.phase !== 'IDLE' ? providerSurf.phase : crystalAcq.crystalPhase) as any}
+          onSelectLibraryGame={(g:any)=>{ try{ setSelectedGameId(g.id); setActiveSystemId(g.system_id||activeSystemId); setView('library')}catch{} }}
           onBack={() => {
-            // Crystal B/Back must remain recoverable while provider surface active – block Discover exit underneath?
             if (providerSurf.active) {
               try { providerSurf.cancel(); } catch {}
               return
@@ -2787,6 +3072,74 @@ function AppInner() {
           ✨ {dedupToast}
         </div>
       )}
+
+      {/* V3.1 Game Notes – toast + progress hint */}
+      {notesToast && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute',
+            bottom: 94,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 20,
+            background: theme === 'dark' ? 'rgba(16,24,28,0.92)' : 'rgba(255,255,255,0.94)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.22)' : 'rgba(70,130,255,0.18)'}`,
+            color: theme === 'dark' ? '#c8fcff' : '#1d3a88',
+            padding: '8px 14px',
+            borderRadius: 999,
+            fontFamily: 'var(--crystal-mono)',
+            fontSize: 10.5,
+            letterSpacing: '0.05em',
+            boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
+            pointerEvents: 'none',
+          }}
+        >
+          📝 {notesToast}
+        </div>
+      )}
+
+      {/* V3.1 Game Notes – NOTES panel (detail X) */}
+      {notesPanel && (
+        <GameNotesPanel
+          systemId={notesPanel.systemId}
+          romBasename={notesPanel.romBasename}
+          gameName={notesPanel.gameName}
+          isDark={theme === 'dark'}
+          onClose={() => setNotesPanel(null)}
+          onSaved={(note) => {
+            setGameNotesMap(prev => {
+              const m = new Map(prev)
+              m.set(`${note.system_id}:${note.rom_basename}`, note)
+              return m
+            })
+            setNotesToast(`Saved • ${note.progress}%`)
+            window.setTimeout(() => setNotesToast(null), 1700)
+          }}
+        />
+      )}
+
+      {/* V3.1 Game Notes – QuickMemo Hold View overlay (anywhere) */}
+      <QuickMemoOverlay
+        systemId={(selectedGameEntry as any)?.system_id || activeSystemId}
+        romBasename={(selectedGameEntry as any)?.rom_basename || (selectedGameEntry as any)?.basename || (displayGames[0] as any)?.rom_basename}
+        gameName={(selectedGameEntry as any)?.name || (displayGames[0] as any)?.name}
+        isDark={theme === 'dark'}
+        visible={quickMemoVisible}
+        onClose={() => {
+          setQuickMemoVisible(false)
+          window.setTimeout(() => { try { viewHoldRef.current.suppressedQuickFilter = false } catch {} }, 160)
+        }}
+        onSaved={(note) => {
+          setGameNotesMap(prev => {
+            const m = new Map(prev)
+            m.set(`${note.system_id}:${note.rom_basename}`, note)
+            return m
+          })
+          setNotesToast(`Quick mem • ${note.progress}%`)
+          window.setTimeout(() => setNotesToast(null), 1600)
+        }}
+      />
 
       {/* V8.3.1 Crystal signed updater – restrained boutique card, NEVER force, explicit confirm */}
       {availableUpdate && (

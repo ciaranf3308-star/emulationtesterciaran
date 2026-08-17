@@ -21,6 +21,24 @@
   --crystal-entrance-opacity: 380ms;
   --crystal-entrance-transform: 480ms;
   --crystal-entrance-filter: 420ms;
+
+  /* V3.1 motion choreography stagger – background 0-100ms, hardware 80-560ms, gameplay 160ms */
+  --crystal-bg-delay: 0ms;
+  --crystal-hw-delay: 80ms;
+  --crystal-game-delay: 160ms;
+
+  /* V3.1 premium motion – parallax / glass / aura / spring */
+  --crystal-parallax-x: 0px;
+  --crystal-parallax-y: 0px;
+  --crystal-parallax-bg-x: 0px;
+  --crystal-parallax-bg-y: 0px;
+  --crystal-light-x: 0px;
+  --crystal-light-y: 0px;
+  --crystal-glass-blur: 12px;
+  --crystal-glass-opacity: 0.08;
+  --crystal-aura-color: #7df9ff;
+  --crystal-aura-glow: #a8ffff;
+  --crystal-spring-ease: cubic-bezier(0.34,1.56,0.64,1);
 }
 
 /* ── V3 unified entrance classes ── */
@@ -30,15 +48,38 @@
   transition-property: opacity, transform, filter;
   transition-duration: var(--crystal-entrance-opacity), var(--crystal-entrance-transform), var(--crystal-entrance-filter);
   transition-timing-function: var(--crystal-entrance-ease), var(--crystal-entrance-ease), var(--crystal-entrance-ease);
+  transition-delay: var(--crystal-bg-delay), var(--crystal-hw-delay), var(--crystal-game-delay);
   will-change: opacity, transform;
 }
 
-.crystal-system-enter {
-  /* storefront sharp – no blur in chrome */
+/* V3.1 stagger layer specifics – background 0ms, hardware 80ms, gameplay 160ms */
+.crystal-system-enter .layer-background,
+.crystal-library-enter .layer-background {
+  transition-delay: var(--crystal-bg-delay);
+}
+.crystal-system-enter .hardware-frame,
+.crystal-library-enter .hardware-frame,
+.crystal-system-enter .layer-hardware,
+.crystal-library-enter .layer-hardware {
+  transition-delay: var(--crystal-hw-delay);
+}
+.crystal-system-enter .layer-gameplay,
+.crystal-library-enter .layer-gameplay,
+.crystal-system-enter .hardware-showroom-wrapper,
+.crystal-library-enter .hardware-showroom-wrapper {
+  transition-delay: var(--crystal-game-delay);
 }
 
-.crystal-library-enter {
-  /* library cinematic defocus lives on background layer only – hardware/media sharp filter:none */
+/* Reverse exit choreography – same cubic, reverse 380ms opacity concept */
+.crystal-emulator-transitioning-out .layer-background {
+  transition-delay: 0ms;
+}
+.crystal-emulator-transitioning-out .layer-hardware,
+.crystal-emulator-transitioning-out .hardware-frame {
+  transition-delay: 40ms;
+}
+.crystal-emulator-transitioning-out .layer-gameplay {
+  transition-delay: 80ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -46,13 +87,100 @@
     --crystal-entrance-opacity: 140ms;
     --crystal-entrance-transform: 160ms;
     --crystal-entrance-filter: 120ms;
+    --crystal-bg-delay: 0ms;
+    --crystal-hw-delay: 0ms;
+    --crystal-game-delay: 0ms;
+    --crystal-fade-out: 120ms;
+    --crystal-fade-in: 120ms;
   }
   .crystal-system-enter,
   .crystal-library-enter {
     transition-duration: 140ms, 160ms, 120ms !important;
+    transition-delay: 0ms, 0ms, 0ms !important;
+  }
+  .crystal-system-enter .layer-background,
+  .crystal-library-enter .layer-background,
+  .crystal-system-enter .hardware-frame,
+  .crystal-library-enter .hardware-frame,
+  .crystal-system-enter .layer-hardware,
+  .crystal-library-enter .layer-hardware,
+  .crystal-system-enter .layer-gameplay,
+  .crystal-library-enter .layer-gameplay {
+    transition-delay: 0ms !important;
+    transition-duration: 120ms !important;
+  }
+  .crystal-crt-mode {
+    transform: none !important;
+  }
+  .crystal-crt-mode::after {
+    display: none !important;
   }
 }
 
+/* ── V3.1 CRT Preview Mode ── */
+.crystal-crt-mode {
+  position: relative;
+  border-radius: 3% / 2%;
+  transform: perspective(800px) scale(1.02);
+  overflow: hidden;
+  /* decay-safe: preserve GPU layer */
+  transform-style: preserve-3d;
+  will-change: transform;
+  filter: saturate(1.06) contrast(1.02) brightness(0.98);
+}
+
+.crystal-crt-mode::after {
+  content: "";
+  position: absolute;
+  inset: -2%;
+  width: 104%;
+  height: 104%;
+  pointer-events: none;
+  z-index: 3;
+  /* scanline spec: repeating-linear-gradient 0 2px transparent 1px rgba(0,0,0,0.15) 2px */
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 1px,
+    rgba(0, 0, 0, 0.15) 1px,
+    rgba(0, 0, 0, 0.15) 2px
+  );
+  border-radius: 3% / 2%;
+  mix-blend-mode: multiply;
+  opacity: 0.9;
+}
+
+/* curvature subtle barrel – outer container retains perspective, inner glow adds vignette for CRT feel */
+.crystal-crt-mode::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background:
+    radial-gradient(120% 80% at 50% 35%, transparent 0%, rgba(0,0,0,0.12) 78%, rgba(0,0,0,0.26) 100%),
+    linear-gradient(90deg, rgba(0,0,0,0.06) 0%, transparent 18%, transparent 82%, rgba(0,0,0,0.07) 100%);
+  border-radius: inherit;
+}
+
+/* When CRT active globally via root flag, gameplay regions and library hero get treatment */
+.crystal-crt-enabled .layer-gameplay,
+.crystal-crt-enabled .gameplay-region {
+  /* gameplay itself stays sharp, CRT container adds curvature outside – no double blur */
+}
+
+.crystal-crt-enabled .library-hero-media,
+.crystal-crt-enabled [data-crystal-library-hero-media] {
+  transform: perspective(800px) scale(1.02);
+  border-radius: 3% / 2%;
+}
+
+/* ensure scanline doesn't break reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .crystal-crt-mode {
+    transform: none !important;
+  }
+}
 * { box-sizing: border-box; }
 html, body, #root {
   margin: 0;
@@ -683,5 +811,247 @@ html.crystal-background-suspended *::after {
   outline: 2px solid rgba(125,249,255,.42);
   outline-offset: 3px;
   border-radius: 12px;
+}
+
+/* ── V3.1 Premium Motion – Parallax / Volumetric Light / Liquid Glass / Spring / Aura ── */
+
+/* Parallax depth – GPU transform-only 60fps */
+:root {
+  --crystal-parallax-x: 0px;
+  --crystal-parallax-y: 0px;
+  --crystal-parallax-bg-x: 0px;
+  --crystal-parallax-bg-y: 0px;
+  --crystal-light-x: 0px;
+  --crystal-light-y: 0px;
+}
+
+.crystal-parallax-fg {
+  transform: translate3d(var(--crystal-parallax-x, 0px), var(--crystal-parallax-y, 0px), 0);
+  will-change: transform;
+}
+
+.crystal-parallax-bg {
+  transform: translate3d(var(--crystal-parallax-bg-x, 0px), var(--crystal-parallax-bg-y, 0px), 0);
+  will-change: transform;
+}
+
+/* inner variant for background layer that already has scale handling */
+.crystal-parallax-bg-inner {
+  transform: translate3d(var(--crystal-parallax-bg-x, 0px), var(--crystal-parallax-bg-y, 0px), 0) translateZ(0);
+  will-change: transform;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* Volumetric light – graphite/cyan glass, not orange – ellipse top-right */
+.crystal-volumetric-light {
+  position: absolute;
+  top: -12%;
+  right: -8%;
+  width: 62%;
+  height: 64%;
+  pointer-events: none;
+  z-index: 2;
+  /* 30% 20% focal inside element, ellipse spreads */
+  background: radial-gradient(ellipse 42% 36% at 32% 22%, rgba(125,249,255,0.18) 0%, rgba(125,249,255,0.09) 22%, rgba(125,249,255,0.03) 38%, transparent 64%);
+  filter: blur(24px);
+  transform: translate3d(var(--crystal-light-x, 0px), var(--crystal-light-y, 0px), 0) translateZ(0);
+  will-change: transform, opacity;
+  opacity: 0.96;
+  mix-blend-mode: screen;
+  border-radius: 50%;
+}
+
+.light-theme .crystal-volumetric-light {
+  background: radial-gradient(ellipse 40% 34% at 34% 24%, rgba(90,170,255,0.16) 0%, rgba(90,170,255,0.07) 26%, transparent 62%);
+  mix-blend-mode: normal;
+  opacity: 0.82;
+}
+
+/* second wash for depth – larger subtle graphite/silver */
+.crystal-volumetric-light--silver {
+  position: absolute;
+  top: -8%;
+  right: 12%;
+  width: 48%;
+  height: 50%;
+  pointer-events: none;
+  z-index: 1;
+  background: radial-gradient(ellipse 52% 44% at 38% 30%, rgba(199,202,214,0.10) 0%, rgba(199,202,214,0.04) 28%, transparent 66%);
+  filter: blur(20px);
+  transform: translate3d(calc(var(--crystal-light-x, 0px) * 0.5), calc(var(--crystal-light-y, 0px) * 0.5), 0);
+  will-change: transform;
+  opacity: 0.7;
+  mix-blend-mode: soft-light;
+}
+
+/* Liquid Glass – hardware foreground wrapper */
+.crystal-hardware-glass,
+.crystal-liquid-glass {
+  backdrop-filter: blur(var(--crystal-glass-blur, 12px)) saturate(1.06) brightness(0.96);
+  -webkit-backdrop-filter: blur(var(--crystal-glass-blur, 12px)) saturate(1.06) brightness(0.96);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    inset 0 0 24px rgba(255,255,255,0.03),
+    0 8px 32px rgba(0,0,0,0.22);
+}
+
+.light-theme .crystal-hardware-glass,
+.light-theme .crystal-liquid-glass {
+  border-color: rgba(18,26,44,0.08);
+  background: rgba(255,255,255,0.04);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.72),
+    inset 0 0 22px rgba(90,170,255,0.04),
+    0 6px 18px rgba(18,26,44,0.08);
+}
+
+/* hardware-showroom-wrapper glass treatment when no aura – preserve existing placement transform composition */
+.hardware-showroom-wrapper.crystal-hardware-glass {
+  /* placement transform stays on wrapper via inline style, glass is visual overlay via pseudo */
+  background: transparent;
+}
+
+.hardware-showroom-wrapper.crystal-hardware-glass::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid rgba(255,255,255,0.08);
+  pointer-events: none;
+  opacity: var(--crystal-glass-opacity, 0.8);
+}
+
+/* Spring carousel – systems view */
+.crystal-spring-carousel {
+  perspective: 900px;
+  transform-style: preserve-3d;
+}
+
+.crystal-spring-carousel .carousel-item,
+.carousel.crystal-spring-carousel .carousel-item {
+  --crystal-spring-index: 0;
+  transform-origin: center center;
+  will-change: transform, opacity;
+  transition:
+    transform 440ms var(--crystal-spring-ease, cubic-bezier(0.34,1.56,0.64,1)) calc(var(--crystal-spring-index, 0) * 40ms),
+    opacity 220ms ease calc(var(--crystal-spring-index, 0) * 20ms);
+}
+
+/* centered active scales 1.08, sides 0.92 – GPU only */
+.crystal-spring-carousel .carousel-item.active,
+.carousel.crystal-spring-carousel .carousel-item.active {
+  transform: translateY(-2px) scale(1.08) translateZ(0);
+  opacity: 1;
+}
+
+.crystal-spring-carousel .carousel-item:not(.active) {
+  transform: scale(0.92) translateZ(0);
+  opacity: 0.58;
+}
+
+.crystal-spring-carousel .carousel-item:hover {
+  transform: translateY(-1px) scale(1.02);
+  opacity: 0.92;
+}
+
+/* golden system landing prev/next arrows – spring scale */
+.golden-system-landing [data-nav="prev"],
+.golden-system-landing [data-nav="next"] {
+  transition: transform 360ms var(--crystal-spring-ease), background 220ms ease, border-color 220ms ease;
+  will-change: transform;
+}
+
+.golden-system-landing [data-nav="prev"]:active,
+.golden-system-landing [data-nav="next"]:active {
+  transform: translateY(-50%) scale(0.92) !important;
+}
+
+/* Aura idle – selected system accent pulse 1.2x shadow after 5s */
+.crystal-aura-idle {
+  --crystal-aura-color: #7df9ff;
+  --crystal-aura-scale: 1;
+  position: relative;
+  will-change: transform, box-shadow;
+  transition:
+    box-shadow 480ms cubic-bezier(0.16,1,0.3,1),
+    transform 480ms cubic-bezier(0.16,1,0.3,1);
+}
+
+.crystal-aura-idle.is-aura-active {
+  box-shadow:
+    0 0 0 1px var(--crystal-aura-color),
+    0 0 30px var(--crystal-aura-color),
+    0 0 60px color-mix(in srgb, var(--crystal-aura-color), transparent 40%);
+  transform: translateZ(0) scale(1.02);
+  animation: crystal-aura-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes crystal-aura-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px var(--crystal-aura-color),
+      0 0 18px var(--crystal-aura-color),
+      0 0 40px transparent;
+    transform: scale(1.02);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--crystal-aura-color),
+      0 0 34px var(--crystal-aura-color),
+      0 0 72px color-mix(in srgb, var(--crystal-aura-color), transparent 30%);
+    transform: scale(1.04);
+  }
+}
+
+/* focus-ring harmony with aura – no double outline */
+.crystal-aura-idle.is-aura-active:focus-within {
+  outline: none;
+}
+
+/* 1152x654 @175% safety – never clip, preserve focus-follow */
+@media (min-width: 1100px) and (max-width: 1200px) {
+  .crystal-parallax-fg,
+  .crystal-parallax-bg,
+  .crystal-parallax-bg-inner {
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .hardware-showroom-wrapper {
+    will-change: transform;
+    contain: layout paint;
+  }
+}
+
+/* prefers-reduced-motion – disable parallax, aura, spring excess */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --crystal-parallax-x: 0px !important;
+    --crystal-parallax-y: 0px !important;
+    --crystal-parallax-bg-x: 0px !important;
+    --crystal-parallax-bg-y: 0px !important;
+    --crystal-light-x: 0px !important;
+    --crystal-light-y: 0px !important;
+  }
+  .crystal-parallax-fg,
+  .crystal-parallax-bg,
+  .crystal-parallax-bg-inner,
+  .crystal-volumetric-light,
+  .crystal-volumetric-light--silver {
+    transform: none !important;
+    transition: none !important;
+    animation: none !important;
+  }
+  .crystal-spring-carousel .carousel-item {
+    transition: opacity 140ms ease !important;
+    transform: none !important;
+  }
+  .crystal-aura-idle.is-aura-active {
+    animation: none !important;
+    transform: none !important;
+    box-shadow: 0 0 0 1px var(--crystal-aura-color) !important;
+  }
 }
 

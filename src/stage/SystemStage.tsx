@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useRef, useState, useLayoutEffect, useCallback } from 'react'
 import type { SystemStageProps, GameplaySource } from './types'
+import { getSystemAccent } from './accentMap'
 
 /**
  * SystemStage — V7.3 showroom STORE hero
@@ -327,11 +328,235 @@ export function SystemStage({
   const wrapperMaxW = typeof placementMaxW === 'number' ? `${placementMaxW}px` : placementMaxW
   const wrapperMaxH = typeof placementMaxH === 'number' ? `${placementMaxH}px` : placementMaxH
 
+  // ── V3.1 Premium Motion: Parallax + Aura + Light ──
+  const parallaxRafRef = useRef<number | null>(null)
+  const lastParallaxRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+  const lastInputRef = useRef<number>(Date.now())
+  const [auraActive, setAuraActive] = useState(false)
+  const accent = useMemo(() => getSystemAccent((config as any).systemId || config.systemId), [config])
+
+  // Aura idle – reset on any semantic input (NavigationAction) via global listeners + polling
+  useEffect(() => {
+    const resetIdle = () => {
+      lastInputRef.current = Date.now()
+      setAuraActive(false)
+    }
+
+    const onKey = () => resetIdle()
+    const onPointer = () => resetIdle()
+    const onNav = () => resetIdle()
+    const onCustomNav = (e: any) => {
+      // navigation action from App.tsx via CustomEvent
+      if (e?.detail) resetIdle()
+    }
+    const onCrystalNav = () => resetIdle()
+
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('mousedown', onPointer)
+    window.addEventListener('pointerdown', onPointer as any)
+    window.addEventListener('mousemove', onPointer)
+    window.addEventListener('crystal:nav-action' as any, onNav as any)
+    window.addEventListener('crystal-discover-nav' as any, onNav as any)
+    window.addEventListener('crystal-settings-nav' as any, onNav as any)
+    window.addEventListener('crystal-library-quick-filter' as any, onCustomNav as any)
+    window.addEventListener('crystal:restored' as any, onCrystalNav as any)
+
+    // poll gamepad buttons as semantic input
+    let polling = true
+    let lastBtnPoll = 0
+    const pollButtons = () => {
+      if (!polling) return
+      const now = Date.now()
+      if (now - lastBtnPoll > 200) {
+        lastBtnPoll = now
+        try {
+          const pads = (navigator as any).getGamepads?.() || []
+          for (const pad of pads) {
+            if (!pad) continue
+            const pressed = pad.buttons?.some((b: any) => b.pressed || b.value > 0.5)
+            const axisMove = pad.axes?.some((a: number) => Math.abs(a) > 0.45)
+            if (pressed || axisMove) {
+              resetIdle()
+              break
+            }
+          }
+        } catch {}
+      }
+      if (polling) window.setTimeout(pollButtons, 220)
+    }
+    pollButtons()
+
+    const interval = window.setInterval(() => {
+      const elapsed = Date.now() - lastInputRef.current
+      if (elapsed > 5000) {
+        setAuraActive(prev => {
+          if (prev) return prev
+          return true
+        })
+      } else {
+        setAuraActive(false)
+      }
+    }, 500)
+
+    return () => {
+      polling = false
+      window.clearInterval(interval)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('mousedown', onPointer)
+      window.removeEventListener('pointerdown', onPointer as any)
+      window.removeEventListener('mousemove', onPointer)
+      window.removeEventListener('crystal:nav-action' as any, onNav as any)
+      window.removeEventListener('crystal-discover-nav' as any, onNav as any)
+      window.removeEventListener('crystal-settings-nav' as any, onNav as any)
+      window.removeEventListener('crystal-library-quick-filter' as any, onCustomNav as any)
+      window.removeEventListener('crystal:restored' as any, onCrystalNav as any)
+    }
+  }, [])
+
+  // Parallax Stage Depth 4-6px hardware foreground reacts stick idle, background opposite 0.5x transform-only 60fps
+  useEffect(() => {
+    const isReduced = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (isReduced) {
+      try {
+        const root = document.documentElement
+        root.style.setProperty('--crystal-parallax-x', '0px')
+        root.style.setProperty('--crystal-parallax-y', '0px')
+        root.style.setProperty('--crystal-parallax-bg-x', '0px')
+        root.style.setProperty('--crystal-parallax-bg-y', '0px')
+        root.style.setProperty('--crystal-light-x', '0px')
+        root.style.setProperty('--crystal-light-y', '0px')
+      } catch {}
+      return
+    }
+
+    let raf = 0
+    let lastSet = 0
+    const deadzone = 0.15
+
+    const apply = (xRatio: number, yRatio: number) => {
+      // clamp -1..1
+      const x = Math.max(-1, Math.min(1, xRatio))
+      const y = Math.max(-1, Math.min(1, yRatio))
+      const xFg = x * 6   // -6 to 6 px foreground per spec
+      const yFg = y * 6
+      const xBg = -x * 3  // opposite 0.5x = -3..3
+      const yBg = -y * 3
+      const lx = x * 4 + (accent.lightX || 0) * 0.6 // subtle system bias
+      const ly = y * 4 + (accent.lightY || 0) * 0.6
+
+      // only write if delta >0.15px to reduce style thrash (GPU)
+      const prev = lastParallaxRef.current
+      if (Math.abs(prev.x - xFg) < 0.08 && Math.abs(prev.y - yFg) < 0.08) return
+      lastParallaxRef.current = { x: xFg, y: yFg }
+
+      try {
+        const root = document.documentElement
+        const target = stageRef.current || root
+        // set on both root and stage for scoping flexibility
+        root.style.setProperty('--crystal-parallax-x', `${xFg.toFixed(2)}px`)
+        root.style.setProperty('--crystal-parallax-y', `${yFg.toFixed(2)}px`)
+        root.style.setProperty('--crystal-parallax-bg-x', `${xBg.toFixed(2)}px`)
+        root.style.setProperty('--crystal-parallax-bg-y', `${yBg.toFixed(2)}px`)
+        root.style.setProperty('--crystal-light-x', `${lx.toFixed(2)}px`)
+        root.style.setProperty('--crystal-light-y', `${ly.toFixed(2)}px`)
+        // also stage root custom props for chrome-preserved safety 1152x654 no-clip
+        if (target instanceof HTMLElement) {
+          target.style.setProperty('--crystal-parallax-x', `${xFg.toFixed(2)}px`)
+          target.style.setProperty('--crystal-parallax-y', `${yFg.toFixed(2)}px`)
+          target.style.setProperty('--crystal-parallax-bg-x', `${xBg.toFixed(2)}px`)
+          target.style.setProperty('--crystal-parallax-bg-y', `${yBg.toFixed(2)}px`)
+          target.style.setProperty('--crystal-light-x', `${lx.toFixed(2)}px`)
+          target.style.setProperty('--crystal-light-y', `${ly.toFixed(2)}px`)
+          target.style.setProperty('--crystal-aura-color', accent.color)
+          ;(target.style as any).setProperty('--crystal-aura-glow', accent.glow)
+        }
+      } catch {}
+    }
+
+    const step = (ts: number) => {
+      raf = requestAnimationFrame(step)
+      if (ts - lastSet < 16) return // throttle to ~60fps max
+      lastSet = ts
+      try {
+        const pads = (navigator as any).getGamepads?.() || []
+        let ax = 0, ay = 0, found = false
+        for (const pad of pads) {
+          if (!pad || !pad.axes || pad.axes.length < 2) continue
+          // left stick standard 0,1
+          let rawX = pad.axes[0] || 0
+          let rawY = pad.axes[1] || 0
+          if (Math.abs(rawX) < deadzone && Math.abs(rawY) < deadzone) continue
+          // rescale beyond deadzone for smooth response: (v - deadzone*sign)/(1-deadzone)
+          const scale = (v: number) => {
+            const abs = Math.abs(v)
+            if (abs < deadzone) return 0
+            const sign = v < 0 ? -1 : 1
+            return sign * (abs - deadzone) / (1 - deadzone)
+          }
+          ax = scale(rawX)
+          ay = scale(rawY)
+          found = true
+          break
+        }
+        // idle drift subtle if no stick – tiny sine for premium alive feel, but 0 when prefers-reduced-motion
+        if (!found) {
+          // very subtle breathing idle 0.15px magnitude when not touching stick – keeps GPU alive without layout thrash
+          const t = ts * 0.0006
+          ax = Math.sin(t) * 0.045
+          ay = Math.cos(t * 0.78) * 0.045
+        }
+        apply(ax, ay)
+      } catch {
+        // ignore
+      }
+    }
+    raf = requestAnimationFrame(step)
+    parallaxRafRef.current = raf as any
+
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      parallaxRafRef.current = null
+      try {
+        const root = document.documentElement
+        root.style.removeProperty('--crystal-parallax-x')
+        root.style.removeProperty('--crystal-parallax-y')
+        root.style.removeProperty('--crystal-parallax-bg-x')
+        root.style.removeProperty('--crystal-parallax-bg-y')
+        root.style.removeProperty('--crystal-light-x')
+        root.style.removeProperty('--crystal-light-y')
+      } catch {}
+    }
+  }, [accent.color, accent.lightX, accent.lightY])
+
+  // V3.1 CRT mode detection – localStorage crystal_crt_mode boolean persisted, also root class crystal-crt-enabled
+  const isCrtEnabled = (() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const v = window.localStorage.getItem('crystal_crt_mode')
+        if (v === '1' || v === 'true') return true
+        if (typeof document !== 'undefined' && document.documentElement.classList.contains('crystal-crt-enabled')) return true
+      }
+    } catch {}
+    return false
+  })()
+
   return (
     <div
       ref={stageRef}
-      className={`system-stage ${className || ''} ${entered ? 'is-entered crystal-library-enter' : 'is-storefront crystal-system-enter'}`}
-      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: '#0a0a0f', ...style }}
+      className={`system-stage ${className || ''} ${entered ? 'is-entered crystal-library-enter' : 'is-storefront crystal-system-enter'} ${isCrtEnabled && entered ? 'crystal-crt-enabled' : ''}`}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        overflow: 'hidden',
+        background: '#0a0a0f',
+        ...( {
+          '--crystal-bg-delay': '0ms',
+          '--crystal-hw-delay': '80ms',
+          '--crystal-game-delay': '160ms',
+        } as any),
+        ...style,
+      }}
       data-system-id={config.systemId}
       data-presentation-type={(config as any).presentationType || 'tv'}
       data-hw-ready={frame.ready ? '1' : '0'}
@@ -342,7 +567,7 @@ export function SystemStage({
     >
       {/* 1. environment/background – full viewport – blur ONLY here when entered */}
       <div
-        className="layer layer-background"
+        className="layer layer-background crystal-parallax-bg"
         style={{
           position: 'absolute',
           inset: 0,
@@ -351,9 +576,11 @@ export function SystemStage({
           transform: `translateZ(0) ${entered ? (theme === 'dark' ? 'scale(1.08)' : 'scale(1.06)') : 'scale(1)'}`,
           transformOrigin: 'center',
           transition: `transform ${durTrans} cubic-bezier(0.16,1,0.3,1)`,
+          transitionDelay: 'var(--crystal-bg-delay, 0ms)',
           willChange: 'transform',
         }}
       >
+        <div className="crystal-parallax-bg-inner">
         {bg ? (
           <img
             src={bg}
@@ -378,6 +605,9 @@ export function SystemStage({
         ) : (
           <div style={{ width: '100%', height: '100%', background: 'var(--bg,#121214)' }} />
         )}
+        {/* V3.1 – Volumetric Light + Liquid Glass graphite/silver/cyan – not orange */}
+        <div className="crystal-volumetric-light" aria-hidden style={{ ['--crystal-accent' as any]: accent.color } as any} />
+        <div className="crystal-volumetric-light--silver" aria-hidden />
         <div
           className="bg-vignette"
           style={{
@@ -395,7 +625,7 @@ export function SystemStage({
             inset: 0,
             background: entered
               ? 'transparent'
-              : `radial-gradient(ellipse 42% 54% at ${placementX}% ${placementY}%, rgba(125,249,255,0.08) 0%, rgba(125,249,255,0.04) 22%, transparent 62%)`,
+              : `radial-gradient(ellipse 42% 54% at ${placementX}% ${placementY}%, ${accent.tintBg || 'rgba(125,249,255,0.08)'} 0%, ${accent.color}14 14%, transparent 62%)`,
             opacity: entered ? 0 : 1,
             transition: `opacity ${durFade} ease`,
             pointerEvents: 'none',
@@ -410,7 +640,7 @@ export function SystemStage({
               ? theme === 'dark'
                 ? 'linear-gradient(180deg, rgba(0,0,0,0.32), rgba(0,0,0,0.44) 60%, rgba(0,0,0,0.56))'
                 : 'linear-gradient(180deg, rgba(10,12,20,0.18), rgba(10,12,20,0.26) 60%, rgba(10,12,20,0.34))'
-              : 'linear-gradient(180deg, rgba(125,249,255,0.04), transparent 40%, rgba(10,10,15,0.3))',
+              : `linear-gradient(180deg, ${accent.tintBg || 'rgba(125,249,255,0.04)'}, transparent 40%, rgba(10,10,15,0.3))`,
             pointerEvents: 'none',
             transition: `background ${durFilter} ease, opacity ${durFade} ease`,
           }}
@@ -426,13 +656,16 @@ export function SystemStage({
             pointerEvents: 'none',
           }}
         />
+        </div>
       </div>
 
-      {/* SHOWROOM WRAPPER – outer presentation transform preserves inner calibration */}
+      {/* SHOWROOM WRAPPER – outer presentation transform preserves inner calibration + V3.1 glass + aura */}
       <div
         ref={showroomRef}
-        className="hardware-showroom-wrapper"
+        className={`hardware-showroom-wrapper crystal-hardware-glass crystal-liquid-glass crystal-aura-idle ${auraActive ? 'is-aura-active' : ''}`}
         data-entered={entered ? '1' : '0'}
+        data-aura={auraActive ? '1' : '0'}
+        data-system-accent={accent.color}
         style={{
           position: 'absolute',
           left: wrapperLeft,
@@ -445,14 +678,17 @@ export function SystemStage({
           transformOrigin: 'center',
           zIndex: 2,
           transition: `left ${durTrans} cubic-bezier(0.16,1,0.3,1), top ${durTrans} cubic-bezier(0.16,1,0.3,1), transform ${durHw} cubic-bezier(0.16,1,0.3,1), width ${durTrans} cubic-bezier(0.16,1,0.3,1), height ${durTrans} cubic-bezier(0.16,1,0.3,1)`,
+          transitionDelay: 'var(--crystal-hw-delay, 80ms)',
           willChange: 'transform, left, top',
           overflow: 'visible',
           pointerEvents: 'none',
-        }}
+          ['--crystal-aura-color' as any]: accent.color,
+          ['--crystal-aura-glow' as any]: accent.glow,
+        } as any}
       >
         {frame.ready && (
           <div
-            className="hardware-frame"
+            className="hardware-frame crystal-parallax-fg"
             data-frame="true"
             style={{
               position: 'absolute',
@@ -461,10 +697,11 @@ export function SystemStage({
               width: frame.width,
               height: frame.height,
               zIndex: 2,
-              transform: `translateZ(0) scale(1) translateY(0px)`,
+              transform: `translate3d(var(--crystal-parallax-x, 0px), var(--crystal-parallax-y, 0px), 0) scale(1) translateY(0px)`,
               transformOrigin: 'center',
               opacity: 1,
               transition: `opacity ${durFade} cubic-bezier(0.16,1,0.3,1), transform ${durHw} cubic-bezier(0.16,1,0.3,1)`,
+              transitionDelay: 'var(--crystal-hw-delay, 80ms)',
               willChange: 'opacity, transform',
               overflow: 'visible',
               pointerEvents: 'none',
@@ -479,6 +716,8 @@ export function SystemStage({
                 pointerEvents: 'none',
                 transform: 'translateZ(0)',
                 filter: 'none',
+                transition: `transform ${durTrans} cubic-bezier(0.16,1,0.3,1), opacity ${durFade} cubic-bezier(0.16,1,0.3,1)`,
+                transitionDelay: 'var(--crystal-game-delay, 160ms)',
               }}
             >
               {config.gameplayRegions.map(region => {
@@ -508,7 +747,7 @@ export function SystemStage({
                 return (
                   <div
                     key={region.id}
-                    className={`gameplay-region region-${region.id}`}
+                    className={`gameplay-region region-${region.id} ${isCrtEnabled && entered ? 'crystal-crt-mode' : ''}`}
                     style={{
                       position: 'absolute',
                       left: `${region.x}%`,
@@ -518,7 +757,7 @@ export function SystemStage({
                       aspectRatio: region.aspectRatio ? `${region.aspectRatio}` : undefined,
                       overflow: 'hidden',
                       borderRadius: corner ?? 8,
-                      transform: 'translateZ(0)',
+                      transform: isCrtEnabled && entered ? 'perspective(800px) scale(1.02) translateZ(0)' : 'translateZ(0)',
                       zIndex: rz,
                       border: showGuides ? '1px dashed rgba(125,249,255,0.45)' : undefined,
                       background: showGuides ? 'rgba(125,249,255,0.06)' : 'transparent',

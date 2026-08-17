@@ -83,11 +83,29 @@ export function SettingsTabsView({
   const [safeInsetDebug, setSafeInsetDebug] = useLocalBool('crystal-diagnostics-safe-inset-debug', false)
   const [soakTest, setSoakTest] = useLocalBool('crystal-diagnostics-soak-test', false)
   const [reducedMotion, setReducedMotion] = useLocalBool('crystal-diagnostics-reduced-motion', false)
+  // V3.1 General toggles – CRT preview + Micro Sound/Haptic (default off, persisted)
+  const [crtMode, setCrtMode] = useLocalBool('crystal_crt_mode', false)
+  const [soundsEnabledLocal, setSoundsEnabledLocal] = useLocalBool('crystal_sounds_enabled', false)
   const [crashList, setCrashList] = useState<Array<{ name: string; time?: string }>>([])
   const [restoreClearing, setRestoreClearing] = useState(false)
   const [logsPathInfo, setLogsPathInfo] = useState<string>('D:\\CrystalFrontend\\logs\\')
 
   const contentRef = useRef<HTMLDivElement>(null)
+
+  // V3.1 sync root class + events when CRT/sounds toggled from settings
+  useEffect(() => {
+    try {
+      if (crtMode) document.documentElement.classList.add('crystal-crt-enabled')
+      else document.documentElement.classList.remove('crystal-crt-enabled')
+      window.dispatchEvent(new CustomEvent('crystal:crt-changed' as any, { detail: { enabled: crtMode } } as any))
+    } catch {}
+  }, [crtMode])
+
+  useEffect(() => {
+    try {
+      window.dispatchEvent(new CustomEvent('crystal:sounds-changed' as any, { detail: { enabled: soundsEnabledLocal } } as any))
+    } catch {}
+  }, [soundsEnabledLocal])
 
   // Focus-follow scrolling – similar to V2 audit (spatial D-pad navigation)
   const moveFocus = useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
@@ -370,6 +388,59 @@ export function SettingsTabsView({
                 {onToggleDevMode && (
                   <button data-settings-control onClick={onToggleDevMode} style={{ padding: '8px 14px', borderRadius: 999, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`, background: devMode ? (isDark ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)') : 'transparent', fontFamily: 'var(--crystal-mono)', fontSize: 11, cursor: 'pointer' }}>DEV {devMode ? 'ON' : 'OFF'}</button>
                 )}
+              </div>
+            </div>
+
+            <div style={{ padding: '14px 14px', borderRadius: 12, background: isDark ? (crtMode ? 'rgba(125,249,255,0.10)' : 'rgba(255,255,255,0.04)') : (crtMode ? 'rgba(70,130,255,0.08)' : 'rgba(255,255,255,0.74)'), border: `1px solid ${crtMode ? (isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.16)') : isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.66, letterSpacing: '0.08em', textTransform: 'uppercase' }}>V3.1 • VISUAL & AUDIO</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                <button
+                  data-settings-control
+                  onClick={() => setCrtMode(v => !v)}
+                  style={{
+                    padding: '9px 14px',
+                    borderRadius: 999,
+                    border: `1px solid ${crtMode ? (isDark ? 'rgba(125,249,255,0.28)' : 'rgba(70,130,255,0.24)') : isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                    background: crtMode ? (isDark ? 'rgba(125,249,255,0.14)' : 'rgba(70,130,255,0.12)') : (isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.72)'),
+                    color: crtMode ? (isDark ? '#c8fcff' : '#1e3a8a') : undefined,
+                    fontFamily: 'var(--crystal-mono)',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    boxShadow: crtMode ? `0 0 0 1px ${isDark ? 'rgba(125,249,255,0.10)' : 'rgba(70,130,255,0.10)'} inset` : 'none',
+                  }}
+                >
+                  [C] CRT {crtMode ? 'ON – scanline + curvature' : 'OFF – Library detail CRT (toggle C / R-stick)'} 
+                </button>
+                <button
+                  data-settings-control
+                  onClick={() => {
+                    const next = !soundsEnabledLocal
+                    setSoundsEnabledLocal(next)
+                    // test tick when turning on
+                    if (next) {
+                      try {
+                        import('../lib/sound').then(m => m.playConfirm?.()).catch(() => {})
+                      } catch {}
+                    }
+                  }}
+                  style={{
+                    padding: '9px 14px',
+                    borderRadius: 999,
+                    border: `1px solid ${soundsEnabledLocal ? (isDark ? 'rgba(255,214,90,0.24)' : 'rgba(255,180,0,0.22)') : isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                    background: soundsEnabledLocal ? (isDark ? 'rgba(255,214,90,0.14)' : 'rgba(255,200,60,0.16)') : (isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.62)'),
+                    color: soundsEnabledLocal ? (isDark ? '#fff1b8' : '#6b4a00') : undefined,
+                    fontFamily: 'var(--crystal-mono)',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🔊 SOUNDS {soundsEnabledLocal ? 'ON – tick 880Hz/440Hz + haptic 20ms' : 'OFF – WebAudio 0.12 vol muted pref'} 
+                </button>
+              </div>
+              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.62, lineHeight: 1.45 }}>
+                CRT Preview Mode adds <code style={{ background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', padding: '1px 5px', borderRadius: 5 }}>.crystal-crt-mode</code> scanline repeating-linear-gradient + curvature perspective(800px) scale(1.02) border-radius 3%/2% on Library gameplay (toggle C / gamepad R-stick click via <code style={{ padding:'1px 4px', borderRadius:4, background:isDark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.06)' }}>crystal_crt_mode</code>). Sounds default off, persisted <code style={{ padding:'1px 4px', borderRadius:4, background:isDark?'rgba(255,255,255,0.05)':'rgba(0,0,0,0.06)' }}>crystal_sounds_enabled</code> – WebAudio tick 880Hz 60ms confirm / 440Hz 80ms back, volume 0.12, respects mute pref + window muted. Haptic dual-rumble 20ms where actuator present. D-pad still authoritative.
               </div>
             </div>
 

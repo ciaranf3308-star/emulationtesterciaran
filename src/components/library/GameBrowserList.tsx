@@ -30,7 +30,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
   return (
     <div
       ref={listRef}
-      className="game-browser-list"
+      className="game-browser-list crystal-spring-carousel"
       role="listbox"
       aria-label="Game browser"
       style={{
@@ -47,7 +47,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
         WebkitOverflowScrolling: 'touch',
       }}
     >
-      {games.map((g) => {
+      {games.map((g, idx) => {
         const isSel = g.id === selectedId
         return (
           <button
@@ -57,6 +57,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
             onClick={() => onSelect(g.id)}
             data-game-id={g.id}
             data-selected={isSel ? '1' : '0'}
+            className={`crystal-spring-item ${isSel ? 'active' : ''}`}
             style={{
               appearance: 'none',
               width: '100%',
@@ -87,10 +88,12 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
                 : 'none',
               cursor: 'pointer',
               textAlign: 'left',
-              transition: 'background 160ms ease, border-color 160ms ease, transform 160ms ease, opacity 160ms ease',
+              // V3.1 spring carousel – transform + opacity only, stagger via --crystal-spring-index, D-pad instant nav preserved
+              transition: `transform 440ms var(--crystal-spring-ease, cubic-bezier(0.34,1.56,0.64,1)) calc(var(--crystal-spring-index, 0) * 40ms), opacity 220ms ease calc(var(--crystal-spring-index, 0) * 20ms), background 160ms ease, border-color 160ms ease`,
               opacity: isSel ? 1 : 0.72,
-              transform: isSel ? 'translate3d(5px,0,0) scale(1.015)' : 'translateZ(0)',
-            }}
+              transform: isSel ? 'translate3d(5px,0,0) scale(1.08) translateZ(0)' : 'scale(0.92) translateZ(0)',
+              ['--crystal-spring-index' as any]: idx % 8,
+            } as any}
             onMouseEnter={e => {
               if (!isSel) (e.currentTarget as HTMLButtonElement).style.opacity = '1'
             }}

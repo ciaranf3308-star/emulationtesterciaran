@@ -71,6 +71,9 @@ export function SelectedGameContext({
   const lastLabel = game.lastPlayedLabel || (game.last_played as string) || (game.lastplayed as string) || null
   const playCount = (game.play_count ?? game.playcount ?? (game as any).playCount) as any
   const playTime = (game as any).playTimeLabel as string | null | undefined
+  // V3.1 Game Notes – progress surfaced from LibraryView detail (return from launch)
+  const notesProgress = (game as any).notesProgress as number | undefined
+  const notesText = (game as any).notesText as string | undefined
 
   return (
     <div
@@ -163,6 +166,24 @@ export function SelectedGameContext({
         </div>
       )}
 
+      {/* V3.1 Game Notes – progress bar surfaced on return from launch */}
+      {typeof notesProgress === 'number' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: '6px 0 2px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.68 }}>
+            <span>Notes progress</span>
+            <span style={{ color: isDark ? '#7df9ff' : '#295fdc', fontWeight: 700 }}>{notesProgress}%</span>
+          </div>
+          <div style={{ height: 5, borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)', overflow: 'hidden' }}>
+            <div style={{ width: `${Math.max(0, Math.min(100, notesProgress))}%`, height: '100%', background: isDark ? 'linear-gradient(90deg,#7df9ff,#a0f0ff)' : 'linear-gradient(90deg,#4a86ff,#7aa8ff)', transition: 'width 240ms ease', borderRadius: 999 }} />
+          </div>
+          {notesText && (
+            <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.56, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+              “{notesText.slice(0, 56)}{notesText.length>56?'…':''}”
+            </div>
+          )}
+        </div>
+      )}
+
       {/* actions – CTA hierarchy */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
         <button
@@ -204,19 +225,21 @@ export function SelectedGameContext({
         {onMedia && (
           <button
             onClick={() => onMedia(game.id)}
+            tabIndex={0}
             style={{
               padding: '6px 11px',
               borderRadius: 999,
-              border: `1px solid ${isDark ? 'rgba(255,255,255,0.11)' : 'rgba(18,26,44,0.10)'}`,
-              background: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.70)',
+              border: `1px solid ${typeof notesProgress === 'number' ? (isDark ? 'rgba(125,249,255,0.24)' : 'rgba(70,130,255,0.20)') : isDark ? 'rgba(255,255,255,0.11)' : 'rgba(18,26,44,0.10)'}`,
+              background: typeof notesProgress === 'number' ? (isDark ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)') : isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.70)',
               color: isDark ? 'rgba(230,244,255,0.76)' : 'rgba(18,26,44,0.68)',
               fontFamily: 'var(--crystal-mono)',
               fontSize: 10.5,
               fontWeight: 600,
               cursor: 'pointer',
             }}
+            title="Game notes – progress & memo"
           >
-            <span style={{ fontWeight: 800, opacity: 0.72 }}>X</span> MEDIA
+            <span style={{ fontWeight: 800, opacity: 0.72 }}>X</span> NOTES{typeof notesProgress === 'number' ? ` ${notesProgress}%` : ''}
           </button>
         )}
         {onToggleFavorite && (

@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "crystal-frontend"
-version = "4.5.0"
+version = "5.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",

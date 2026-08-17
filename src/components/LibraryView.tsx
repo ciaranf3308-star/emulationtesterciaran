@@ -1,21 +1,23 @@
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { GameBrowserList } from './library/GameBrowserList'
 import { SelectedGameContext } from './library/SelectedGameContext'
 import { LibraryHero } from './library/LibraryHero'
 import type { CarouselGame } from './GameBoxCarousel'
 import { getLibraryVisualProfile } from './library/libraryVisualProfile'
 import type { CSSProperties } from 'react'
+import { getMostPlayed, getCuratedFallbackGames } from '../lib/mostPopular'
+import { getCuratedForSystem } from '../data/curatedPopular'
+import type { GameEntry } from '../runtime/backend'
+import { getCollections, togglePinned, toggleBacklog, type CollectionState } from '../lib/collections'
 
 /**
- * V8.5 Library — vertical browser + hero composition
- *
- * Changes vs V8.3:
- * - REMOVED bottom GameBoxCarousel primary (22% glass rail deleted)
- * - LEFT 28-32% vertical browser, 6-8 rows, cover thumb 56x56, 13.5px title
- * - REMOVE hard vertical wall — feathered gradients, no giant translucent rectangle, no column border
- * - RIGHT 68-72% hero — SystemStage layered architecture preserved (parent wrapper renders hardware)
- * - Selected info — contextual bottom-left bridge card, NOT giant slab
- * - Typography readable, CTA hierarchy A PLAY primary
- * - Performance: immediate highlight, media debounce preserved in App.tsx
+ * V3.1 Library — Pillar 1 + Most Popular + Pinned Backlog
+ * Preserves V8.5 layout, adds:
+ * - Your Most Played = local scoring playCount*0.6 + playTime + recency
+ * - Curated fallback when <3
+ * - Now Playing Pinned (cross-system max 5) top rail Y+hold (gamepad button 3 / 2 600ms)
+ * - Backlog Queued marks
+ * - D-pad navigable rails via roving tabindex
  */
 
 export type LibraryGameDetail = {
@@ -40,6 +42,9 @@ export type LibraryGameDetail = {
   last_played?: string | null
   lastPlayedLabel?: string | null
   playTimeLabel?: string | null
+  system_id?: string
+  rom_basename?: string
+  rom_path?: string
 }
 
 export type LibraryQuickFilter = 'all' | 'fav' | 'recent' | 'unplayed'
@@ -62,7 +67,6 @@ export type LibraryViewProps = {
   stageNode?: React.ReactNode
   safeMode?: boolean
   onSafeModeBlocked?: () => void
-  // Pillar 2 enhancements
   filter?: LibraryQuickFilter
   onFilterChange?: (f: LibraryQuickFilter) => void
   chipFocused?: boolean
@@ -70,6 +74,117 @@ export type LibraryViewProps = {
   continueGames?: Array<{ id: string; name: string; coverUrl?: string | null; lastPlayedLabel?: string | null }>
   isEmptyDriveState?: boolean
   onRefresh?: () => void
+  // V3.1 additions – rich games full GameEntry for scoring
+  richGames?: GameEntry[]
+  allGames?: GameEntry[]
+  // collections external lifted state optional (App may own)
+  collections?: CollectionState | null
+  onCollectionsChange?: (s: CollectionState) => void
+}
+
+type RailProps = {
+  title: string
+  items: Array<{ id: string; name: string; coverUrl?: string | null; systemId?: string; subtitle?: string | null; reason?: string }>
+  selectedId: string
+  onSelect: (id: string) => void
+  isDark: boolean
+  accent: string
+  emphasize?: boolean
+}
+
+function Rail({ title, items, selectedId, onSelect, isDark, accent, emphasize }: RailProps) {
+  const rowRef = useRef<HTMLDivElement>(null)
+  const [focusedIdx, setFocusedIdx] = useState(0)
+
+  useEffect(() => {
+    const idx = items.findIndex(i => i.id === selectedId)
+    if (idx >= 0) setFocusedIdx(idx)
+  }, [selectedId, items])
+
+  const onKey = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      setFocusedIdx(i => {
+        const n = Math.min(items.length - 1, i + 1)
+        const next = items[n]
+        if (next) onSelect(next.id)
+        return n
+      })
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      setFocusedIdx(i => {
+        const n = Math.max(0, i - 1)
+        const next = items[n]
+        if (next) onSelect(next.id)
+        return n
+      })
+    }
+  }, [items, onSelect])
+
+  if (!items || items.length === 0) return null
+  return (
+    <div
+      role="region"
+      aria-label={title}
+      data-rail={title}
+      tabIndex={0}
+      onKeyDown={onKey}
+      ref={rowRef}
+      style={{
+        position: 'relative',
+        zIndex: 1,
+        padding: '6px 0 8px',
+        borderRadius: 10,
+        background: emphasize
+          ? (isDark ? 'rgba(125,249,255,0.06)' : 'rgba(70,130,255,0.08)')
+          : (isDark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.52)'),
+        border: `1px solid ${emphasize ? (isDark ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.18)') : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)')}`,
+        overflow: 'hidden'
+      }}
+    >
+      <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, letterSpacing: '0.10em', opacity: 0.62, textTransform: 'uppercase', padding: '0 8px 6px', display: 'flex', justifyContent: 'space-between' }}>
+        <span style={{ color: emphasize ? accent : undefined, fontWeight: emphasize ? 800 : 600 }}>{title}</span>
+        <span style={{ opacity: .44 }}>{items.length}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '0 8px 6px', scrollbarWidth: 'none' }}>
+        {items.map((g, idx) => {
+          const isFocused = idx === focusedIdx
+          const isSel = g.id === selectedId
+          return (
+            <button
+              key={g.id}
+              data-rail-item={g.id}
+              data-focused={isFocused ? '1' : '0'}
+              onClick={() => { setFocusedIdx(idx); onSelect(g.id) }}
+              style={{
+                minWidth: 78,
+                maxWidth: 96,
+                flexShrink: 0,
+                borderRadius: 8,
+                border: `1px solid ${isSel ? accent : (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)')}`,
+                background: isSel ? (isDark ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)') : (isDark ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.78)'),
+                padding: 6,
+                cursor: 'pointer',
+                textAlign: 'left',
+                boxShadow: isFocused ? `0 0 0 2px ${isDark ? 'rgba(125,249,255,0.26)' : 'rgba(70,130,255,0.22)'}` : 'none',
+                transform: isFocused ? 'translateY(-1px)' : 'none',
+                transition: 'all 140ms',
+              }}
+            >
+              {g.coverUrl ? (
+                <img src={g.coverUrl} alt="" style={{ width: '100%', height: 48, objectFit: 'cover', borderRadius: 6, display: 'block' }} />
+              ) : (
+                <div style={{ width: '100%', height: 48, borderRadius: 6, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', display: 'grid', placeItems: 'center', fontSize: 11 }}>◐</div>
+              )}
+              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: isDark ? 'rgba(230,244,255,0.92)' : '#1a2a52' }}>{g.name.slice(0, 16)}</div>
+              {g.subtitle && <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 8, opacity: .52, whiteSpace: 'nowrap', overflow: 'hidden' }}>{g.subtitle}</div>}
+              {g.reason && <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 7, opacity: .54, whiteSpace: 'nowrap', overflow: 'hidden', color: accent }}>{g.reason}</div>}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 export function LibraryView({
@@ -96,9 +211,168 @@ export function LibraryView({
   continueGames = [],
   isEmptyDriveState = false,
   onRefresh,
+  richGames,
+  allGames,
+  collections: externalCollections,
+  onCollectionsChange,
 }: LibraryViewProps) {
   const isDark = theme === 'dark'
   const visual = getLibraryVisualProfile(systemId)
+
+  const [localCollections, setLocalCollections] = useState<CollectionState>({ pinned: [], backlog: [], version: 1 })
+  const collections = externalCollections ?? localCollections
+
+  const rich = useMemo(() => {
+    if (richGames && richGames.length) return richGames as any[]
+    // fallback: map CarouselGame to minimal GameLike – play counts missing, scoring will fallback to curated
+    return games as any[]
+  }, [richGames, games])
+
+  const mostPlayed = useMemo(() => {
+    try { return getMostPlayed(systemId, rich as any) } catch { return [] }
+  }, [systemId, rich])
+
+  const curatedFallback = useMemo(() => {
+    const count = mostPlayed.length
+    if (count >= 3) return [] as string[]
+    return getCuratedFallbackGames(systemId, count)
+  }, [systemId, mostPlayed])
+
+  const mostPlayedRailItems = useMemo(() => {
+    // map mostPlayed GameEntry to rail shape with cover
+    const list = mostPlayed as any[]
+    return list.slice(0,5).map((g:any) => {
+      const cover = games.find(cg => cg.id === g.id)?.coverUrl || (g as any).coverUrl || null
+      return { id: g.id, name: g.name || g.rom_basename || 'Game', coverUrl: cover, systemId: g.system_id || systemId, subtitle: g.play_count ? `${g.play_count} plays` : g.last_played ? 'Recent' : undefined }
+    })
+  }, [mostPlayed, games, systemId])
+
+  const curatedRailItems = useMemo(() => {
+    if (curatedFallback.length === 0) return []
+    const titles = curatedFallback.length ? curatedFallback : getCuratedForSystem(systemId).slice(0,5 - mostPlayed.length)
+    return titles.map((t,i)=> ({ id: `curated-${systemId}-${i}`, name: t, coverUrl: null as any, systemId, subtitle: 'Curated', reason: mostPlayed.length===0 ? 'Popular' : 'Fallback' }))
+  }, [curatedFallback, systemId, mostPlayed])
+
+  // Collections load
+  useEffect(() => {
+    if (externalCollections) return
+    getCollections().then(setLocalCollections).catch(()=>{})
+  }, [externalCollections])
+
+  useEffect(() => {
+    const onUpdate = (e:any) => {
+      const s = e?.detail as CollectionState
+      if (s) {
+        if (onCollectionsChange) onCollectionsChange(s)
+        else setLocalCollections(s)
+      }
+    }
+    window.addEventListener('crystal:collections-updated' as any, onUpdate)
+    return () => window.removeEventListener('crystal:collections-updated' as any, onUpdate)
+  }, [onCollectionsChange])
+
+  const pinnedRailItems = useMemo(() => {
+    const pins = collections?.pinned || []
+    return pins.slice(0,5).map(p => {
+      // try resolve game from allGames or games
+      const pool = (allGames || []) as any[]
+      const found = pool.find((g:any)=> g.system_id===p.system_id && g.rom_basename===p.rom_basename)
+      const cover = found ? (games.find(cg=>cg.id===found.id)?.coverUrl || null) : null
+      return { id: `${p.system_id}:${p.rom_basename}`, name: p.name || found?.name || p.rom_basename, coverUrl: cover, systemId: p.system_id, subtitle: p.system_id }
+    })
+  }, [collections, allGames, games])
+
+  const backlogSet = useMemo(() => {
+    const set = new Set<string>()
+    for (const b of (collections?.backlog||[])) set.add(`${b.system_id.toLowerCase()}::${b.rom_basename.toLowerCase()}`)
+    return set
+  }, [collections])
+
+  const handleTogglePinned = useCallback(async (sysId?: string, romBase?: string, name?: string, romPath?: string) => {
+    const sid = sysId || systemId
+    const base = romBase || (selectedGame as any)?.rom_basename || (selectedGame as any)?.id?.split(':')?.[1] || selectedGame?.name || 'unknown'
+    if (!base || base==='unknown') return
+    try {
+      const res = await togglePinned({ system_id: sid, rom_basename: String(base), rom_path: romPath || null, name: name || String(base) } as any)
+      if (onCollectionsChange) onCollectionsChange(res)
+      else setLocalCollections(res)
+      window.dispatchEvent(new CustomEvent('crystal:collections-updated' as any, { detail: res } as any))
+      // toast via custom event? simple console
+    } catch (e:any) {
+      const msg = e?.message||String(e)
+      if (msg.includes('MAX_5')) {
+        try { window.dispatchEvent(new CustomEvent('crystal:toast' as any, { detail: 'Pinned max 5 reached' } as any)) } catch {}
+      }
+    }
+  }, [systemId, selectedGame, onCollectionsChange])
+
+  const handleToggleBacklog = useCallback(async () => {
+    const g:any = selectedGame as any
+    if (!g) return
+    const sid = g.system_id || systemId
+    const base = g.rom_basename || g.id?.split(':')?.[1] || g.name
+    if (!base) return
+    try {
+      const res = await toggleBacklog({ system_id: sid, rom_basename: String(base), rom_path: g.rom_path || null, name: g.name, queued: true } as any)
+      if (onCollectionsChange) onCollectionsChange(res)
+      else setLocalCollections(res)
+      window.dispatchEvent(new CustomEvent('crystal:collections-updated' as any, { detail: res } as any))
+    } catch {}
+  }, [selectedGame, systemId, onCollectionsChange])
+
+  // Y+hold detection gamepad button 3 (Y) or 2 (X) 600ms
+  const holdRef = useRef<{ start: number | null; triggered: boolean }>({ start: null, triggered: false })
+  useEffect(() => {
+    let raf=0
+    const poll = () => {
+      try {
+        const pads = navigator.getGamepads ? navigator.getGamepads() : []
+        for (const pad of pads) {
+          if (!pad) continue
+          // button 3 is Y on standard, button 2 is X; we accept both 3 and 2 as hold source per spec
+          const bY = pad.buttons[3]
+          const bX = pad.buttons[2]
+          const active = (bY && bY.pressed) || (bX && bX.pressed)
+          if (active) {
+            const now = performance.now()
+            if (holdRef.current.start == null) holdRef.current.start = now
+            const elapsed = now - (holdRef.current.start||now)
+            if (elapsed >= 600 && !holdRef.current.triggered) {
+              holdRef.current.triggered = true
+              handleTogglePinned()
+              // visual pulse?
+              try { window.dispatchEvent(new CustomEvent('crystal:pinned-toggle' as any, { detail: { systemId, id: selectedId } } as any)) } catch {}
+            }
+          } else {
+            holdRef.current.start = null
+            holdRef.current.triggered = false
+          }
+        }
+      } catch {}
+      raf = window.requestAnimationFrame(poll)
+    }
+    raf = window.requestAnimationFrame(poll)
+    return () => { try { window.cancelAnimationFrame(raf) } catch {} }
+  }, [handleTogglePinned, systemId, selectedId])
+
+  // Keyboard alternative: Y hold via key 'y' held 600ms – emulate
+  useEffect(() => {
+    let timer:number|null=null
+    let down=false
+    const onDown=(e:KeyboardEvent)=>{
+      if (e.key.toLowerCase()!=='y' || down) return
+      down=true
+      timer=window.setTimeout(()=>{ handleTogglePinned() },600) as any
+    }
+    const onUp=(e:KeyboardEvent)=>{
+      if (e.key.toLowerCase()!=='y') return
+      down=false
+      if (timer!=null){ window.clearTimeout(timer); timer=null }
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return ()=>{ window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp); if (timer!=null) window.clearTimeout(timer) }
+  }, [handleTogglePinned])
 
   return (
     <div
@@ -119,352 +393,124 @@ export function LibraryView({
         overflow: 'hidden',
       } as CSSProperties}
     >
-      {/* TOP 48px minimal header — preserved */}
-      <div
-        style={{
-          height: 48,
-          flexShrink: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 22px 0 18px',
-          borderBottom: `1px solid ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(18,26,44,0.055)'}`,
-          backdropFilter: 'blur(18px) saturate(1.12)',
-          WebkitBackdropFilter: 'blur(18px) saturate(1.12)',
-          background: isDark ? 'rgba(4,7,13,0.44)' : 'rgba(245,248,253,0.58)',
-          position: 'relative',
-        }}
-      >
-        <div
-          aria-hidden
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: isDark
-              ? 'linear-gradient(90deg, rgba(125,249,255,0.05) 0%, transparent 24%, transparent 100%)'
-              : 'linear-gradient(90deg, rgba(70,130,255,0.05) 0%, transparent 28%, transparent 100%)',
-            pointerEvents: 'none',
-            opacity: 0.5,
-          }}
-        />
-        <button
-          onClick={onBack}
-          data-action="back-to-system"
-          style={{
-            appearance: 'none',
-            background: 'transparent',
-            border: 'none',
-            color: isDark ? 'rgba(230,244,255,0.86)' : 'rgba(18,26,44,0.78)',
-            fontFamily: 'var(--crystal-mono)',
-            fontSize: 11,
-            fontWeight: 600,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            letterSpacing: '0.04em',
-            position: 'relative',
-            zIndex: 1,
-          }}
-        >
-          <span
-            style={{
-              width: 24,
-              height: 24,
-              borderRadius: '50%',
-              display: 'grid',
-              placeItems: 'center',
-              border: `1px solid ${isDark ? 'rgba(255,255,255,0.11)' : 'rgba(18,26,44,0.10)'}`,
-              background: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.72)',
-              fontSize: 12,
-              lineHeight: 1,
-            }}
-          >
-            ←
-          </span>
-          <span style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}>{fullName}</span>
-          <span style={{ opacity: 0.42, fontWeight: 500 }}>| MY LIBRARY</span>
+      <div style={{ height: 48, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 22px 0 18px', borderBottom: `1px solid ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(18,26,44,0.055)'}`, backdropFilter: 'blur(18px) saturate(1.12)', WebkitBackdropFilter: 'blur(18px) saturate(1.12)', background: isDark ? 'rgba(4,7,13,0.44)' : 'rgba(245,248,253,0.58)', position: 'relative' }}>
+        <div aria-hidden style={{ position:'absolute', inset:0, background: isDark? 'linear-gradient(90deg, rgba(125,249,255,0.05), transparent 24%)':'linear-gradient(90deg, rgba(70,130,255,0.05), transparent 28%)', pointerEvents:'none', opacity:0.5 }}/>
+        <button onClick={onBack} data-action="back-to-system" style={{ appearance:'none', background:'transparent', border:'none', color:isDark?'rgba(230,244,255,0.86)':'rgba(18,26,44,0.78)', fontFamily:'var(--crystal-mono)', fontSize:11, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:10, letterSpacing:'0.04em', position:'relative', zIndex:1 }}>
+          <span style={{ width:24, height:24, borderRadius:'50%', display:'grid', placeItems:'center', border:`1px solid ${isDark?'rgba(255,255,255,0.11)':'rgba(18,26,44,0.10)'}`, background:isDark?'rgba(255,255,255,0.05)':'rgba(255,255,255,0.72)', fontSize:12, lineHeight:1 }}>←</span>
+          <span style={{ textTransform:'uppercase', letterSpacing:'0.06em' }}>{fullName}</span><span style={{ opacity:0.42, fontWeight:500 }}>| MY LIBRARY</span>
         </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative', zIndex: 1 }}>
-          {logoUrl && (
-            <img
-              src={logoUrl}
-              alt=""
-              style={{ height: 20, width: 'auto', maxWidth: 96, objectFit: 'contain', opacity: isDark ? 0.88 : 0.86, display: 'block' }}
-            />
-          )}
+        <div style={{ display:'flex', alignItems:'center', gap:10, position:'relative', zIndex:1 }}>
+          {logoUrl && <img src={logoUrl} alt="" style={{ height:20, width:'auto', maxWidth:96, objectFit:'contain', opacity:isDark?0.88:0.86, display:'block' }} />}
+          {collections?.pinned?.length ? <span title={`Pinned ${collections.pinned.length}/5`} style={{ fontFamily:'var(--crystal-mono)', fontSize:9, padding:'3px 7px', borderRadius:999, border:`1px solid ${isDark?'rgba(125,249,255,0.18)':'rgba(70,130,255,0.18)'}`, background:isDark?'rgba(125,249,255,0.08)':'rgba(70,130,255,0.08)', color: visual.accent }}>📌 {collections.pinned.length}/5</span>:null}
         </div>
       </div>
 
-      {/* MAIN — LEFT 30% browser + RIGHT 70% hero */}
-      <div className="library-scene" style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative', minHeight: 0 }}>
-        {/* LEFT — feathered, no hard wall, shared scene */}
-        <div
-          className="library-left"
-          style={{
-            width: '30%',
-            minWidth: '30%',
-            maxWidth: '30%',
-            height: '100%',
-            overflow: 'hidden',
-            scrollbarWidth: 'thin',
-            scrollbarColor: isDark ? 'rgba(125,249,255,0.20) transparent' : 'rgba(70,130,255,0.20) transparent',
-            padding: '16px 12px 16px 14px',
-            boxSizing: 'border-box',
-            display: 'grid',
-            gridTemplateRows: 'auto auto auto minmax(0, 1.04fr) minmax(0, .90fr)',
-            gap: 10,
-            // feathered to transparent — no giant translucent rectangle, no visible column boundary
-            background: isDark
-              ? 'linear-gradient(90deg, rgba(3,7,15,.92) 0%, rgba(6,11,20,.80) 76%, rgba(6,11,20,.20) 96%, transparent 100%)'
-              : 'linear-gradient(90deg, rgba(247,250,255,.94) 0%, rgba(239,244,252,.84) 76%, rgba(239,244,252,.20) 96%, transparent 100%)',
-            position: 'relative',
-          }}
-        >
-          {/* subtle atmospheric glows that bleed into hero — not a wall */}
-          <div
-            aria-hidden
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: isDark
-                ? 'radial-gradient(ellipse 86% 42% at 18% 12%, rgba(125,249,255,0.05), transparent 56%)'
-                : 'radial-gradient(ellipse 84% 38% at 16% 10%, rgba(70,130,255,0.06), transparent 58%)',
-              pointerEvents: 'none',
-              opacity: 0.9,
-            }}
-          />
+      <div className="library-scene" style={{ flex:1, display:'flex', overflow:'hidden', position:'relative', minHeight:0 }}>
+        <div className="library-left" style={{ width:'30%', minWidth:'30%', maxWidth:'30%', height:'100%', overflow:'hidden', scrollbarWidth:'thin', scrollbarColor:isDark?'rgba(125,249,255,0.20) transparent':'rgba(70,130,255,0.20) transparent', padding:'14px 12px 14px 14px', boxSizing:'border-box', display:'grid', gridTemplateRows:'auto auto auto auto auto minmax(0, 1.04fr) minmax(0, .90fr)', gap:10, background:isDark?'linear-gradient(90deg, rgba(3,7,15,.92), rgba(6,11,20,.80) 76%, rgba(6,11,20,.20) 96%, transparent)':'linear-gradient(90deg, rgba(247,250,255,.94), rgba(239,244,252,.84) 76%, rgba(239,244,252,.20) 96%, transparent)', position:'relative' }}>
+          <div aria-hidden style={{ position:'absolute', inset:0, background:isDark?'radial-gradient(ellipse 86% 42% at 18% 12%, rgba(125,249,255,0.05), transparent 56%)':'radial-gradient(ellipse 84% 38% at 16% 10%, rgba(70,130,255,0.06), transparent 58%)', pointerEvents:'none', opacity:0.9 }} />
 
-          <div style={{ position: 'relative', zIndex: 1, fontFamily: 'var(--crystal-mono)', fontSize: 10, letterSpacing: '0.08em', opacity: 0.56, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ color: visual.accent, opacity: 1 }}>{String(Math.max(1, games.findIndex(g => g.id === selectedId) + 1)).padStart(2, '0')}</span>
-            <span style={{ opacity: .35 }}> / {String(games.length).padStart(2, '0')}</span>
-            <span style={{ marginLeft: 10, opacity: .72 }}>{visual.label}</span>
-            <span style={{ marginLeft: 8, opacity: .32 }}>• {visual.concept}</span>
-            {chipFocused && <span style={{ marginLeft: 12, fontSize: 9, opacity: .52, color: visual.accent }}>◂ CHIP NAV ▸</span>}
+          <div style={{ position:'relative', zIndex:1, fontFamily:'var(--crystal-mono)', fontSize:10, letterSpacing:'0.08em', opacity:0.56, textTransform:'uppercase', display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ color:visual.accent, opacity:1 }}>{String(Math.max(1, games.findIndex(g=>g.id===selectedId)+1)).padStart(2,'0')}</span>
+            <span style={{ opacity:.35 }}> / {String(games.length).padStart(2,'0')}</span>
+            <span style={{ marginLeft:10, opacity:.72 }}>{visual.label}</span>
+            <span style={{ marginLeft:8, opacity:.32 }}>• {visual.concept}</span>
+            {chipFocused && <span style={{ marginLeft:12, fontSize:9, opacity:.52, color:visual.accent }}>◂ CHIP NAV ▸</span>}
           </div>
 
-          {/* Smart filter chips – D-pad navigable, left/right cycles chips, A toggles, not text search clutter */}
-          <div
-            role="tablist"
-            aria-label="Library quick filters"
-            data-library-chip-row
-            data-chip-focused={chipFocused ? '1' : '0'}
-            style={{
-              position: 'relative',
-              zIndex: 1,
-              display: 'flex',
-              gap: 6,
-              flexWrap: 'wrap',
-              padding: '2px 0 4px',
-            }}
-          >
-            {(['all','fav','recent','unplayed'] as const).map(fid => {
-              const active = filter === fid
-              const label = fid === 'all' ? 'All' : fid === 'fav' ? '★ Favorites' : fid === 'recent' ? 'Recent' : 'Unplayed'
-              return (
-                <button
-                  key={fid}
-                  role="tab"
-                  aria-selected={active}
-                  data-library-chip={fid}
-                  data-selected={active ? '1' : '0'}
-                  data-chip-focused-row={chipFocused ? '1' : '0'}
-                  onClick={() => onFilterChange?.(fid)}
-                  onFocus={() => onChipFocusChange?.(true)}
-                  style={{
-                    appearance: 'none',
-                    borderRadius: 999,
-                    padding: '5px 11px',
-                    fontFamily: 'var(--crystal-mono)',
-                    fontSize: 10,
-                    letterSpacing: '0.06em',
-                    fontWeight: active ? 800 : 600,
-                    border: active
-                      ? `1px solid ${isDark ? 'rgba(125,249,255,0.42)' : 'rgba(70,130,255,0.34)'}`
-                      : `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
-                    background: active
-                      ? (isDark ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.14)')
-                      : (isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.62)'),
-                    color: active ? (isDark ? '#c8fcff' : '#1d3a88') : (isDark ? 'rgba(230,244,255,0.72)' : 'rgba(18,26,44,0.68)'),
-                    cursor: 'pointer',
-                    boxShadow: active && chipFocused ? `0 0 0 2px ${isDark ? 'rgba(125,249,255,0.30)' : 'rgba(70,130,255,0.24)'}` : active ? `0 2px 12px ${isDark ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.12)'}` : 'none',
-                    transform: active ? 'translateZ(0) scale(1.02)' : 'none',
-                    transition: 'all 160ms cubic-bezier(.2,.8,.2,1)',
-                  }}
-                >
-                  {label}
-                </button>
-              )
+          {/* Smart filter chips – preserved */}
+          <div role="tablist" aria-label="Library quick filters" data-library-chip-row data-chip-focused={chipFocused?'1':'0'} style={{ position:'relative', zIndex:1, display:'flex', gap:6, flexWrap:'wrap', padding:'2px 0 4px' }}>
+            {(['all','fav','recent','unplayed'] as const).map(fid=>{
+              const active=filter===fid
+              const label=fid==='all'?'All':fid==='fav'?'★ Favorites':fid==='recent'?'Recent':'Unplayed'
+              return <button key={fid} role="tab" aria-selected={active} data-library-chip={fid} data-selected={active?'1':'0'} onClick={()=>onFilterChange?.(fid)} onFocus={()=>onChipFocusChange?.(true)} style={{ appearance:'none', borderRadius:999, padding:'5px 11px', fontFamily:'var(--crystal-mono)', fontSize:10, letterSpacing:'0.06em', fontWeight:active?800:600, border:active?`1px solid ${isDark?'rgba(125,249,255,0.42)':'rgba(70,130,255,0.34)'}`:`1px solid ${isDark?'rgba(255,255,255,0.10)':'rgba(18,26,44,0.10)'}`, background:active?(isDark?'rgba(125,249,255,0.16)':'rgba(70,130,255,0.14)'):(isDark?'rgba(255,255,255,0.04)':'rgba(255,255,255,0.62)'), color:active?(isDark?'#c8fcff':'#1d3a88'):(isDark?'rgba(230,244,255,0.72)':'rgba(18,26,44,0.68)'), cursor:'pointer', boxShadow:active&&chipFocused?`0 0 0 2px ${isDark?'rgba(125,249,255,0.30)':'rgba(70,130,255,0.24)'}`:active?`0 2px 12px ${isDark?'rgba(125,249,255,0.16)':'rgba(70,130,255,0.12)'}`:'none', transform:active?'translateZ(0) scale(1.02)':'none' }}>{label}</button>
             })}
           </div>
 
-          {/* Continue Playing row – if system has games with last_played, sort descending, show top 3-5 – uses existing metadata parser from Rust */}
-          {continueGames.length > 0 && (
-            <div style={{ position: 'relative', zIndex: 1, padding: '6px 0 8px', borderRadius: 10, background: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.52)', border: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`, overflow: 'hidden' }}>
-              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, letterSpacing: '0.10em', opacity: 0.56, textTransform: 'uppercase', padding: '0 8px 6px', display: 'flex', justifyContent: 'space-between' }}>
-                <span>↺ Continue Playing</span><span style={{ opacity: .44 }}>{continueGames.length}</span>
-              </div>
-              <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '0 8px 6px', scrollbarWidth: 'none' }}>
-                {continueGames.slice(0, 5).map(g => (
-                  <button
-                    key={g.id}
-                    onClick={() => onSelect(g.id)}
-                    style={{
-                      minWidth: 74,
-                      maxWidth: 92,
-                      flexShrink: 0,
-                      borderRadius: 8,
-                      border: `1px solid ${selectedId === g.id ? visual.accent : (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)')}`,
-                      background: selectedId === g.id ? (isDark ? 'rgba(125,249,255,0.10)' : 'rgba(70,130,255,0.10)') : (isDark ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.72)'),
-                      padding: 6,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                    }}
-                  >
-                    {g.coverUrl ? (
-                      <img src={g.coverUrl} alt="" style={{ width: '100%', height: 48, objectFit: 'cover', borderRadius: 6, display: 'block' }} />
-                    ) : (
-                      <div style={{ width: '100%', height: 48, borderRadius: 6, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', display: 'grid', placeItems: 'center', fontSize: 11 }}>◐</div>
-                    )}
-                    <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: isDark ? 'rgba(230,244,255,0.88)' : '#1a2a52' }}>{g.name.slice(0, 14)}</div>
-                    {g.lastPlayedLabel && <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 8, opacity: .52, whiteSpace: 'nowrap', overflow: 'hidden' }}>{g.lastPlayedLabel}</div>}
+          {/* V3.1 Now Playing Pinned – cross-system max5 – Y+hold */}
+          {pinnedRailItems.length>0 && (
+            <Rail title="📌 Now Playing" items={pinnedRailItems as any} selectedId={selectedId} onSelect={onSelect} isDark={isDark} accent={visual.accent} emphasize />
+          )}
+
+          {/* Your Most Played */}
+          {mostPlayedRailItems.length>0 && (
+            <Rail title="🔥 Your Most Played" items={mostPlayedRailItems as any} selectedId={selectedId} onSelect={onSelect} isDark={isDark} accent={visual.accent} />
+          )}
+
+          {/* Curated fallback when <3-5 */}
+          {curatedRailItems.length>0 && (
+            <Rail title={mostPlayedRailItems.length===0 ? "🌟 Popular in System" : "💡 Curated Picks"} items={curatedRailItems as any} selectedId={selectedId} onSelect={(id)=>{
+              // curated items are not launchable real games – if select curated, attempt to open discover? fallback no-op
+              if (id.startsWith('curated-')) {
+                // open discover with prefill
+                onDiscover?.(id)
+                return
+              }
+              onSelect(id)
+            }} isDark={isDark} accent={visual.accent} />
+          )}
+
+          {continueGames.length>0 && (
+            <div style={{ position:'relative', zIndex:1, padding:'6px 0 8px', borderRadius:10, background:isDark?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.52)', border:`1px solid ${isDark?'rgba(255,255,255,0.06)':'rgba(18,26,44,0.06)'}`, overflow:'hidden' }}>
+              <div style={{ fontFamily:'var(--crystal-mono)', fontSize:9, letterSpacing:'0.10em', opacity:0.56, textTransform:'uppercase', padding:'0 8px 6px', display:'flex', justifyContent:'space-between' }}><span>↺ Continue Playing</span><span style={{ opacity:.44 }}>{continueGames.length}</span></div>
+              <div style={{ display:'flex', gap:8, overflowX:'auto', padding:'0 8px 6px', scrollbarWidth:'none' }}>
+                {continueGames.slice(0,5).map(g=>(
+                  <button key={g.id} onClick={()=>onSelect(g.id)} style={{ minWidth:74, maxWidth:92, flexShrink:0, borderRadius:8, border:`1px solid ${selectedId===g.id?visual.accent:(isDark?'rgba(255,255,255,0.08)':'rgba(18,26,44,0.08)')}`, background:selectedId===g.id?(isDark?'rgba(125,249,255,0.10)':'rgba(70,130,255,0.10)'):(isDark?'rgba(0,0,0,0.18)':'rgba(255,255,255,0.72)'), padding:6, cursor:'pointer', textAlign:'left' }}>
+                    {g.coverUrl?<img src={g.coverUrl} alt="" style={{ width:'100%', height:48, objectFit:'cover', borderRadius:6 }}/>:<div style={{ width:'100%', height:48, borderRadius:6, background:isDark?'rgba(255,255,255,0.06)':'rgba(18,26,44,0.06)', display:'grid', placeItems:'center', fontSize:11 }}>◐</div>}
+                    <div style={{ fontFamily:'var(--crystal-mono)', fontSize:9, marginTop:5, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', color:isDark?'rgba(230,244,255,0.88)':'#1a2a52' }}>{g.name.slice(0,14)}</div>
+                    {g.lastPlayedLabel && <div style={{ fontFamily:'var(--crystal-mono)', fontSize:8, opacity:.52 }}>{g.lastPlayedLabel}</div>}
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* D-drive unplugged empty state – beautiful graphite illustration placeholder, not crash */}
           {isEmptyDriveState ? (
-            <div style={{ position: 'relative', zIndex: 1, minHeight: 180, borderRadius: 14, border: `1px dashed ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.12)'}`, background: isDark ? 'linear-gradient(145deg, rgba(22,24,28,0.86), rgba(18,20,24,0.72))' : 'linear-gradient(145deg, rgba(255,255,255,0.86), rgba(242,245,248,0.86))', display: 'grid', placeItems: 'center', padding: 18, textAlign: 'center' }}>
-              {/* Graphite illustration – subtle drive with detached cable */}
-              <div style={{ width: 86, height: 86, borderRadius: 18, background: isDark ? 'radial-gradient(120% 120% at 30% 20%, #2a2e36, #1a1e24 60%, #13161b)' : 'radial-gradient(120% 120% at 30% 20%, #f8fafc, #e8edf3 62%, #dfe6ee)', border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}`, display: 'grid', placeItems: 'center', boxShadow: isDark ? '0 12px 28px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)' : '0 10px 22px rgba(18,26,44,0.10), inset 0 1px 0 rgba(255,255,255,0.84)' }}>
-                <svg width="42" height="42" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <defs>
-                    <linearGradient id="graphite-drive" x1="0" y1="0" x2="1" y2="1">
-                      <stop offset="0%" stopColor={isDark ? "#7a828e" : "#98a6ba"} />
-                      <stop offset="100%" stopColor={isDark ? "#3a3f4a" : "#cbd5e1"} />
-                    </linearGradient>
-                  </defs>
-                  <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10V4.2A1.8 1.8 0 0 1 11.8 2.4H16.8A1.8 1.8 0 0 1 18.6 4.2V5H18.52A2.5 2.5 0 0 1 21 7.5V15.5A2.5 2.5 0 0 1 18.5 18H5.5A2.5 2.5 0 0 1 3 15.5V7.5Z" stroke="url(#graphite-drive)" strokeWidth="1.25" strokeLinejoin="round" opacity=".9"/>
-                  {/* detached cable hint */}
-                  <path d="M9 14.5C9 16 8 17 10 18.2" stroke={isDark ? "#5b6472" : "#94a3b8"} strokeWidth="1.1" strokeLinecap="round" strokeDasharray="3 3" opacity=".9"/>
-                  <circle cx="10.4" cy="18.8" r="1.2" fill={isDark ? "#6b7684" : "#cbd5e1"} opacity=".9"/>
-                  <circle cx="7" cy="10" r="1" fill={visual.accent} opacity=".86"/>
-                </svg>
+            <div style={{ position:'relative', zIndex:1, minHeight:180, borderRadius:14, border:`1px dashed ${isDark?'rgba(255,255,255,0.10)':'rgba(18,26,44,0.12)'}`, background:isDark?'linear-gradient(145deg, rgba(22,24,28,0.86), rgba(18,20,24,0.72))':'linear-gradient(145deg, rgba(255,255,255,0.86), rgba(242,245,248,0.86))', display:'grid', placeItems:'center', padding:18, textAlign:'center' }}>
+              <div style={{ width:86, height:86, borderRadius:18, background:isDark?'radial-gradient(120% 120% at 30% 20%, #2a2e36, #1a1e24 60%, #13161b)':'radial-gradient(120% 120% at 30% 20%, #f8fafc, #e8edf3 62%, #dfe6ee)', border:`1px solid ${isDark?'rgba(255,255,255,0.08)':'rgba(18,26,44,0.08)'}`, display:'grid', placeItems:'center' }}>
+                <span style={{ fontSize:26, opacity:0.7 }}>💾</span>
               </div>
-              <div style={{ marginTop: 12, fontFamily: 'var(--crystal-display)', fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: isDark ? '#e6f0ff' : '#1a2a4a' }}>Connect your library drive</div>
-              <div style={{ marginTop: 6, fontFamily: 'var(--crystal-mono)', fontSize: 10.5, lineHeight: 1.5, opacity: .68, maxWidth: 220, color: isDark ? 'rgba(230,244,255,0.68)' : 'rgba(18,26,44,0.68)' }}>
-                Plug in your <span style={{ color: visual.accent, fontWeight: 700 }}>D:\\Emulation</span> external drive to browse {fullName}. No crash – just vibing dark.
+              <div style={{ marginTop:12, fontFamily:'var(--crystal-display)', fontSize:13, fontWeight:700, color:isDark?'#e6f0ff':'#1a2a4a' }}>Connect your library drive</div>
+              <div style={{ marginTop:6, fontFamily:'var(--crystal-mono)', fontSize:10.5, opacity:.68, maxWidth:220, color:isDark?'rgba(230,244,255,0.68)':'rgba(18,26,44,0.68)' }}>
+                Plug in your <span style={{ color:visual.accent, fontWeight:700 }}>D:\Emulation</span> external drive to browse {fullName}.
               </div>
-              {onRefresh && (
-                <button onClick={onRefresh} style={{ marginTop: 12, appearance: 'none', borderRadius: 999, padding: '7px 14px', fontFamily: 'var(--crystal-mono)', fontSize: 10, fontWeight: 700, border: `1px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.92)', color: isDark ? '#eef7ff' : '#16213e', cursor: 'pointer' }}>
-                  ↺ Refresh
-                </button>
-              )}
+              {onRefresh && <button onClick={onRefresh} style={{ marginTop:12, borderRadius:999, padding:'7px 14px', fontFamily:'var(--crystal-mono)', fontSize:10, fontWeight:700, border:`1px solid ${isDark?'rgba(255,255,255,0.12)':'rgba(18,26,44,0.12)'}`, background:isDark?'rgba(255,255,255,0.06)':'rgba(255,255,255,0.92)', color:isDark?'#eef7ff':'#16213e', cursor:'pointer' }}>↺ Refresh</button>}
             </div>
           ) : (
-            <GameBrowserList theme={theme} systemId={systemId} games={games} selectedId={selectedId} onSelect={onSelect} />
+            <div style={{ position:'relative' }}>
+              <GameBrowserList theme={theme} systemId={systemId} games={games} selectedId={selectedId} onSelect={onSelect} />
+              {/* Backlog marks overlay hint */}
+              {backlogSet.size>0 && <div style={{ position:'absolute', top:-22, right:0, fontFamily:'var(--crystal-mono)', fontSize:8, opacity:0.5 }}>backlog {backlogSet.size}</div>}
+            </div>
           )}
 
-          <section className="library-details" style={{ minHeight: 0, overflow: 'auto', position: 'relative', zIndex: 1 }}>
-            <SelectedGameContext
-              theme={theme}
-              systemId={systemId}
-              game={selectedGame}
-              mediaResolving={mediaResolving}
-              onLaunch={onLaunch}
-              onToggleFavorite={onToggleFavorite}
-              onMedia={onMedia}
-              onDiscover={onDiscover}
-              safeMode={safeMode}
-              onSafeModeBlocked={onSafeModeBlocked}
-            />
+          <section className="library-details" style={{ minHeight:0, overflow:'auto', position:'relative', zIndex:1 }}>
+            <SelectedGameContext theme={theme} systemId={systemId} game={selectedGame} mediaResolving={mediaResolving} onLaunch={onLaunch} onToggleFavorite={onToggleFavorite} onMedia={onMedia} onDiscover={onDiscover} safeMode={safeMode} onSafeModeBlocked={onSafeModeBlocked} />
+            {/* Y hold + Backlog buttons */}
+            <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
+              <button onClick={()=>handleTogglePinned()} title="Hold Y 600ms to pin (max 5) – Now Playing" style={{ appearance:'none', borderRadius:999, padding:'5px 10px', fontFamily:'var(--crystal-mono)', fontSize:9, border:`1px solid ${isDark?'rgba(125,249,255,0.18)':'rgba(70,130,255,0.18)'}`, background:isDark?'rgba(125,249,255,0.08)':'rgba(70,130,255,0.08)', color:isDark?'#bafcff':'#2a4d9e', cursor:'pointer' }}>
+                {collections?.pinned?.find(p=> `${p.system_id}:${p.rom_basename}`===`${systemId}:${(selectedGame as any)?.rom_basename}`) ? '📌 Unpin [Y hold]' : '📌 Pin [Y hold]'}
+              </button>
+              <button onClick={()=>handleToggleBacklog()} title="Backlog queued toggle" style={{ appearance:'none', borderRadius:999, padding:'5px 10px', fontFamily:'var(--crystal-mono)', fontSize:9, border:`1px solid ${isDark?'rgba(255,255,255,0.10)':'rgba(18,26,44,0.10)'}`, background:isDark?'rgba(255,255,255,0.06)':'rgba(255,255,255,0.72)', color:isDark?'#eef7ff':'#16213e', cursor:'pointer' }}>
+                {backlogSet.has(`${systemId.toLowerCase()}::${String((selectedGame as any)?.rom_basename||'').toLowerCase()}`) ? '✓ Queued Backlog' : '+ Backlog'}
+              </button>
+            </div>
           </section>
         </div>
 
-        {/* RIGHT HERO — more room, pushed right via paddingLeft in LibraryHero, SystemStage hardware stable */}
-        <LibraryHero
-          theme={theme}
-          systemId={systemId}
-          selectedCoverUrl={selectedGame?.coverUrl}
-          selectedTitle={selectedGame?.name}
-        />
+        <LibraryHero theme={theme} systemId={systemId} selectedCoverUrl={selectedGame?.coverUrl} selectedTitle={selectedGame?.name} />
       </div>
 
-      {/* keyframes reused */}
       <style>{`
         @keyframes crystal-spin { to { transform: rotate(360deg); } }
-        @keyframes library-arrive { from { opacity: 0; transform: translate3d(-18px,0,0); } to { opacity: 1; transform: none; } }
-        @keyframes hero-breathe { 0%,100% { transform: scale(1); opacity:.55 } 50% { transform: scale(1.04); opacity:.82 } }
-        @keyframes scan-drift { from { transform: translateY(-28px) } to { transform: translateY(28px) } }
+        @keyframes library-arrive { from { opacity:0; transform:translate3d(-18px,0,0);} to { opacity:1; transform:none;} }
         .golden-library.v85 .library-left { animation: library-arrive 420ms cubic-bezier(.2,.8,.2,1) both; }
         .golden-library.v85 .game-browser-list button { position:relative; }
         .golden-library.v85 .game-browser-list button[data-selected="1"]::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:3px; border-radius:4px; background:var(--library-accent); box-shadow:0 0 18px var(--library-accent); }
-        .golden-library.v85[data-library-family="cartridge"] .game-browser-list button { clip-path:polygon(0 0,96% 0,100% 14%,100% 100%,0 100%); }
-        .golden-library.v85[data-library-family="dual-screen"] .game-browser-list button[data-selected="1"] { border-top-color:var(--library-accent)!important; border-bottom-color:var(--library-accent-2)!important; }
-        .golden-library.v85[data-system-id="nds"] .library-left{width:27%!important;min-width:27%!important;max-width:27%!important;padding:12px 8px 12px 14px!important;grid-template-rows:auto minmax(0,1.22fr) minmax(0,.78fr);background:linear-gradient(90deg,rgba(4,8,14,.97),rgba(7,14,23,.86) 82%,transparent)!important}
-        .golden-library.v85[data-system-id="nds"][data-theme="light"] .library-left{background:linear-gradient(90deg,rgba(234,242,251,.98),rgba(222,234,247,.91) 82%,transparent)!important}
-        .golden-library.v85[data-system-id="nds"] .game-browser-list{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px!important;padding-right:4px!important;align-content:start}
-        .golden-library.v85[data-system-id="nds"] .game-browser-list button{height:94px!important;min-height:94px!important;width:auto!important;min-width:0!important;padding:7px!important;border-radius:7px 16px 16px 7px!important;display:grid!important;grid-template-columns:46px minmax(0,1fr)!important;gap:8px!important;overflow:hidden!important;box-shadow:inset 3px 0 rgba(255,255,255,.09),0 7px 18px rgba(0,0,0,.12)!important}
-        .golden-library.v85[data-system-id="nds"] .game-browser-list button::after{content:"DS";position:absolute;right:5px;bottom:3px;font:700 7px var(--crystal-mono);letter-spacing:.18em;opacity:.28}
-        .golden-library.v85[data-system-id="nds"] .game-browser-list button>div:first-of-type{width:46px!important;height:70px!important;border-radius:5px!important;align-self:center}
-        .golden-library.v85[data-system-id="nds"] .game-browser-list button>div:nth-of-type(2)>div:first-child{font-size:10px!important;white-space:normal!important;line-height:1.18!important;display:-webkit-box!important;-webkit-line-clamp:3;-webkit-box-orient:vertical}
-        .golden-library.v85[data-system-id="nds"] .game-browser-list button[data-selected="1"]{transform:translateX(4px) scale(1.025);background:linear-gradient(135deg,color-mix(in srgb,var(--library-accent),transparent 76%),color-mix(in srgb,var(--library-accent-2),transparent 88%))!important;box-shadow:0 0 0 1px var(--library-accent),0 10px 28px color-mix(in srgb,var(--library-accent),transparent 72%)!important}
-        .golden-library.v85[data-system-id="nds"] .library-details{border:1px solid color-mix(in srgb,var(--library-accent),transparent 62%);border-radius:18px 18px 28px 28px;padding:10px;background:linear-gradient(160deg,rgba(7,15,25,.92),rgba(10,24,35,.72))!important;box-shadow:inset 0 0 32px rgba(71,177,255,.06),0 16px 35px rgba(0,0,0,.22)}
-        .golden-library.v85[data-system-id="nds"][data-theme="light"] .library-details{background:linear-gradient(160deg,rgba(240,247,255,.96),rgba(213,230,246,.90))!important}
-        .nds-touchscreen-content{position:absolute;left:35.2%;top:48.2%;width:22.7%;height:25.4%;z-index:4;overflow:hidden;border-radius:5px;background:linear-gradient(145deg,rgba(8,17,25,.96),rgba(18,35,48,.94));box-shadow:inset 0 0 25px rgba(73,174,255,.18);display:grid;grid-template-columns:42% 58%;align-items:center;padding:8px;box-sizing:border-box;animation:nds-screen-on 320ms ease-out both;pointer-events:none}
-        .nds-touchscreen-content img{width:74%;height:82%;object-fit:contain;justify-self:center;filter:drop-shadow(0 5px 7px rgba(0,0,0,.48));animation:nds-card-in 330ms cubic-bezier(.2,.8,.2,1) both}
-        .nds-touchscreen-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(78,180,255,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(78,180,255,.09) 1px,transparent 1px);background-size:12px 12px;mask-image:linear-gradient(90deg,#000,transparent)}
-        .nds-touchscreen-copy{min-width:0;display:flex;flex-direction:column;gap:6px;text-align:left;color:#d9f3ff;font-family:var(--crystal-mono);position:relative}
-        .nds-touchscreen-copy span{font-size:6px;letter-spacing:.18em;color:var(--library-accent)}.nds-touchscreen-copy strong{font-size:8px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
-        .nds-stylus-cursor{position:absolute;width:7px;height:7px;border:1px solid var(--library-accent);border-radius:50%;right:13%;bottom:14%;box-shadow:0 0 12px var(--library-accent);animation:nds-tap 2.8s ease-in-out infinite}
-        @keyframes nds-screen-on{from{opacity:0;filter:brightness(2);transform:scaleY(.04)}to{opacity:1;filter:none;transform:none}}@keyframes nds-card-in{from{opacity:0;transform:translateY(18px) rotate(-5deg)}to{opacity:1;transform:none}}@keyframes nds-tap{0%,65%,100%{transform:translate(0,0);opacity:.35}75%{transform:translate(-18px,-10px);opacity:1}82%{transform:translate(-18px,-10px) scale(.65);opacity:1}}
-        .golden-library.v85[data-library-family="handheld"] .game-browser-list button[data-selected="1"] { box-shadow:0 0 0 1px color-mix(in srgb,var(--library-accent),transparent 62%),0 12px 28px color-mix(in srgb,var(--library-accent),transparent 80%)!important; }
-        .golden-library.v85[data-list-mode="spine"] .game-browser-list button { border-radius:3px 14px 14px 3px!important; }
-        .golden-library.v85[data-list-mode="blade"] .game-browser-list button { clip-path:polygon(0 0,94% 0,100% 50%,94% 100%,0 100%); border-radius:2px!important; }
-        .golden-library.v85[data-list-mode="channel"] .game-browser-list { display:grid!important; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-content:start; }
-        .golden-library.v85[data-list-mode="channel"] .game-browser-list button { min-width:0!important; width:auto!important; height:92px!important; min-height:92px!important; flex-direction:column; align-items:flex-start!important; gap:4px!important; padding:7px!important; }
-        .golden-library.v85[data-list-mode="channel"] .game-browser-list button>div:nth-of-type(2) { width:100%; }
-        .golden-library.v85[data-list-mode="channel"] .game-browser-list button>div:nth-of-type(2)>div:first-child { font-size:10px!important; white-space:normal!important; display:-webkit-box!important; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
-        .golden-library.v85[data-list-mode="channel"] .game-browser-list button>div:first-of-type { width:38px!important; height:34px!important; }
-        .golden-library.v85[data-list-mode="disc"] .game-browser-list button>div:first-of-type { border-radius:50%!important; width:48px!important; height:48px!important; }
-        .golden-library.v85[data-list-mode="tile"] .game-browser-list button { border-radius:16px!important; }
-        .console-atmosphere{position:absolute;inset:0;overflow:hidden;opacity:.68;contain:paint;}
-        .console-atmosphere .motif{position:absolute;pointer-events:none;}
-        .dot-matrix{inset:9%;background-image:radial-gradient(currentColor 1px,transparent 1.5px);background-size:12px 12px;opacity:.13;mask-image:linear-gradient(90deg,transparent,#000 30%,#000,transparent)}
-        .lcd-battery{right:5%;bottom:8%;font:9px var(--crystal-mono);letter-spacing:.18em;opacity:.7}.color-bars{right:7%;top:13%;width:42%;height:5px;background:linear-gradient(90deg,#e94b35,#e7ce38,#4ed273,#4bbbe9,#8a5de8);box-shadow:0 0 24px currentColor}.pixel-cross{right:8%;bottom:12%;font-size:72px;opacity:.08}
-        .advance-grid{inset:6%;background-image:linear-gradient(currentColor 1px,transparent 1px),linear-gradient(90deg,currentColor 1px,transparent 1px);background-size:28px 28px;opacity:.08;mask-image:radial-gradient(circle at 60% 45%,#000,transparent 70%)}.shoulder-line{right:4%;top:8%;font:9px var(--crystal-mono);letter-spacing:.25em}
-        .ds-hinge{left:14%;right:14%;top:50%;height:2px;background:linear-gradient(90deg,transparent,currentColor,transparent);box-shadow:0 0 18px currentColor}.touch-radar{right:8%;bottom:9%;width:90px;height:90px;border:1px solid currentColor;border-radius:50%;display:grid;place-items:center;font:8px var(--crystal-mono);letter-spacing:.2em;opacity:.35}
-        .depth-lines{inset:10%;background:repeating-radial-gradient(ellipse at 58% 44%,transparent 0 34px,currentColor 35px 36px);opacity:.10}.depth-meter{right:4%;top:13%;font:9px var(--crystal-mono);line-height:2;letter-spacing:.2em}
-        .n64-polygons{right:4%;top:7%;width:70%;height:76%;background:conic-gradient(from 30deg at 50% 50%,transparent,currentColor 2deg,transparent 4deg 40deg,currentColor 42deg,transparent 44deg);opacity:.08}.cart-slot{right:31%;bottom:7%;border:1px solid currentColor;padding:5px 34px;font:8px var(--crystal-mono);letter-spacing:.2em}
-        .mode7-plane{right:5%;bottom:-18%;width:75%;height:65%;transform:perspective(300px) rotateX(64deg);background-image:linear-gradient(currentColor 1px,transparent 1px),linear-gradient(90deg,currentColor 1px,transparent 1px);background-size:34px 34px;opacity:.13}.snes-buttons{right:6%;top:12%;letter-spacing:8px;opacity:.45}
-        .blast-wave{right:4%;top:42%;width:70%;height:90px;background:repeating-linear-gradient(90deg,currentColor 0 2px,transparent 2px 13px);clip-path:polygon(0 48%,8% 46%,12% 20%,18% 78%,24% 35%,30% 64%,38% 48%,100% 48%,100% 52%,0 52%);opacity:.25}.sixteen-bit{right:6%;bottom:8%;font:700 56px var(--crystal-display);opacity:.06}
-        .mega-ring,.ring-light,.disc-orbit,.umd-ring{right:12%;top:15%;width:42%;aspect-ratio:1;border:2px solid currentColor;border-radius:50%;box-shadow:0 0 45px color-mix(in srgb,currentColor,transparent 62%),inset 0 0 45px color-mix(in srgb,currentColor,transparent 72%)}.mega-speed{right:7%;top:10%;font:800 15px var(--crystal-display);font-style:italic}.cube-wire{right:12%;top:14%;width:32%;aspect-ratio:1;border:1px solid currentColor;transform:rotate(30deg) skew(-8deg);box-shadow:22px 22px 0 -1px transparent,22px 22px 0 0 currentColor;opacity:.18}.disc-orbit{border-style:dashed;opacity:.22}
-        .dream-spiral{right:10%;top:12%;font-size:260px;line-height:1;opacity:.08;transform:rotate(28deg)}.vmu-window{right:7%;bottom:10%;border:1px solid currentColor;padding:10px 18px;font:9px var(--crystal-mono)}.ps-grid{inset:7%;background:linear-gradient(30deg,transparent 48%,currentColor 49% 50%,transparent 51%),linear-gradient(-30deg,transparent 48%,currentColor 49% 50%,transparent 51%);background-size:60px 60px;opacity:.05}.memory-card{right:5%;bottom:7%;font:8px var(--crystal-mono);letter-spacing:.16em;border-top:1px solid currentColor;padding-top:7px}.blue-towers{inset:6%;background:repeating-linear-gradient(90deg,transparent 0 28px,currentColor 29px 30px);opacity:.06;transform:perspective(400px) rotateX(55deg)}.ps2-data{right:3%;top:12%;writing-mode:vertical-rl;font:8px var(--crystal-mono);letter-spacing:.2em}
-        .xmb-wave{right:-5%;top:24%;width:78%;height:44%;border-radius:50%;border-top:2px solid currentColor;transform:rotate(-8deg);box-shadow:0 -18px 0 -17px currentColor,0 -38px 0 -37px currentColor;opacity:.24}.umd-ring{display:grid;place-items:center;font:9px var(--crystal-mono);letter-spacing:.2em}.xbox-reactor{right:10%;top:10%;font:900 290px var(--crystal-display);line-height:1;color:currentColor;opacity:.055}.xbox-data{right:6%;bottom:8%;font:8px var(--crystal-mono);letter-spacing:.25em}.blade-lines{right:4%;top:13%;width:58%;height:68%;background:repeating-linear-gradient(110deg,transparent 0 40px,currentColor 41px 42px);opacity:.08}
-        .channel-grid{right:5%;top:10%;width:58%;height:70%;background-image:linear-gradient(currentColor 1px,transparent 1px),linear-gradient(90deg,currentColor 1px,transparent 1px);background-size:92px 66px;opacity:.12;border:1px solid currentColor;border-radius:18px}.pointer{right:24%;top:28%;font-size:25px;text-shadow:0 0 20px currentColor}.signal-arcs{right:6%;top:15%;width:55%;height:55%;background:repeating-radial-gradient(circle at 50% 60%,transparent 0 35px,currentColor 36px 37px);opacity:.12}.gamepad-link{right:6%;bottom:8%;font:8px var(--crystal-mono);letter-spacing:.2em}.steam-nodes{right:6%;top:12%;width:58%;height:64%;background:radial-gradient(circle at 20% 30%,currentColor 0 4px,transparent 5px),radial-gradient(circle at 70% 65%,currentColor 0 7px,transparent 8px),linear-gradient(25deg,transparent 49%,currentColor 50% 51%,transparent 52%);opacity:.14}.pc-status{right:5%;bottom:8%;font:8px var(--crystal-mono);letter-spacing:.2em}
-        .motion-orbit .disc-orbit,.motion-orbit .ring-light,.motion-orbit .dream-spiral{animation:console-orbit 18s linear infinite}.motion-pulse .motif{animation:console-pulse 4s ease-in-out infinite}.motion-float .motif{animation:console-float 7s ease-in-out infinite}.motion-scan .advance-grid,.motion-scan .dot-matrix,.motion-scan .color-bars{animation:console-scan 8s linear infinite}.motion-slide .blast-wave,.motion-slide .xmb-wave{animation:console-slide 6s ease-in-out infinite}
-        @keyframes console-orbit{to{transform:rotate(360deg)}}@keyframes console-pulse{50%{opacity:.3}}@keyframes console-float{50%{translate:0 -8px}}@keyframes console-scan{50%{background-position:18px 28px}}@keyframes console-slide{50%{translate:18px 0}}
-        @media(prefers-reduced-motion:reduce){.console-atmosphere .motif,.library-hero-orbit{animation:none!important}.game-browser-list button{transition:none!important}}
-        @media(prefers-reduced-motion:reduce){.nds-touchscreen-content,.nds-touchscreen-content img,.nds-stylus-cursor{animation:none!important}}
-        .library-left { scrollbar-width: thin; }
-        .library-left::-webkit-scrollbar { width: 6px; }
-        .library-left::-webkit-scrollbar-track { background: transparent; }
-        .library-left::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.12); border-radius: 999px; }
-        .game-browser-list::-webkit-scrollbar, .library-details::-webkit-scrollbar { width: 5px; }
-        .game-browser-list::-webkit-scrollbar-track, .library-details::-webkit-scrollbar-track { background: transparent; }
-        .game-browser-list::-webkit-scrollbar-thumb, .library-details::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.16); border-radius: 999px; }
-        @media (max-width: 1280px) {
-          .golden-library.v85 .library-left { min-width: 330px !important; width: 30% !important; max-width: 30% !important; }
-          .golden-library.v85[data-system-id="nds"] .library-left{min-width:296px!important;width:27%!important;max-width:27%!important}
-        }
-        @media (max-height: 720px) {
-          .golden-library.v85 .library-left { gap: 8px !important; padding: 12px 10px 10px 12px !important; }
-        }
+        .library-left { scrollbar-width:thin; }
+        .library-left::-webkit-scrollbar { width:6px; }
+        .library-left::-webkit-scrollbar-thumb { background: rgba(125,249,255,0.12); border-radius:999px; }
       `}</style>
     </div>
   )
 }
-
 export default LibraryView
