@@ -22,6 +22,9 @@ import { deriveSystemSummary, getRecent, getMostPlayed, getSurprise } from './pr
 import { useSemanticInput } from './hooks/useSemanticInput'
 import type { NavigationAction } from './input/types'
 import { getTauriInvoker } from './runtime/tauri'
+// V3 crash & lifecycle
+import { setupCrashHandlers, setCrashContext, recordSemanticInput } from './lib/crashReporter'
+import { setupLifecycleHandlers } from './controllers/lifecycle'
 // V8.2 fixture DEV ONLY – isolated, never overwrites real Tauri truth – used for web QA screenshots
 import { getFixtureGames, toGameEntry, fixtureMediaForGame, getFixtureSystems } from './dev/fixtures/goldenFixture'
 import { isFixtureEnabled, isDevFixtureAllowed } from './dev/fixtures/fixtureMode'
@@ -35,12 +38,16 @@ import { buildCanonicalDetailUrl as buildRomsFunCanonicalForBegin } from './disc
 import { checkForUpdate } from './updater/crystalUpdater'
 import type { CrystalUpdateInfo } from './updater/crystalUpdater'
 import { UpdaterBanner } from './components/UpdaterBanner'
-import { SettingsUpdaterPanel } from './components/SettingsUpdaterPanel'
-import { DownloadResolverPanel } from './components/DownloadResolverPanel'
 
 import DiscoverView from './components/DiscoverView'
+import { RESTORED_FLAG_KEY, saveLocalNav, type CrystalNavPersist } from './lifecycle/launchCycle'
+import { SettingsTabsView } from './components/SettingsTabsView'
+import { DiagnosticsDebugOverlay } from './components/DiagnosticsDebugOverlay'
+
 
 type View = 'system' | 'library' | 'allgames' | 'favorites' | 'recent' | 'settings' | 'discover'
+
+type LibraryQuickFilter = 'all' | 'fav' | 'recent' | 'unplayed'
 
 function parsePlayCount(g: GameEntry & { [k: string]: any }): number | null {
   const raw = (g as any).play_count ?? (g as any).playcount ?? (g as any).playCount
@@ -76,7 +83,7 @@ function lastPlayedLabel(g: GameEntry): string | null {
 }
 
 function AppInner() {
-  const { config, isExample, isRealMachine, loading: machineLoading, error: machineError, validationErrors, blockingError } = useMachineConfig() as any
+  const { config, isRealMachine, loading: machineLoading, error: machineError, validationErrors, blockingError } = useMachineConfig() as any
   const { theme, toggle, manifest, resolver, manifestLoading } = useThemeAssets()
 
   const [activeSystemId, setActiveSystemId] = useState<string>('ps2')
@@ -85,51 +92,180 @@ function AppInner() {
   const [devMode, setDevMode] = useState(false)
   const [safeMode, setSafeMode] = useState(false)
   const [safeModeToast, setSafeModeToast] = useState<string | null>(null)
+  const [dedupToast, setDedupToast] = useState<string | null>(null)
+  const [libraryChipFocused, setLibraryChipFocused] = useState(false)
+  const [diagnosticsDebugOverlayVisible, setDiagnosticsDebugOverlayVisible] = useState(false)
+  const [libraryFilter, setLibraryFilter] = useState<LibraryQuickFilter>('all')
 
-  // V8.7 – restore on mount (fullscreen/focus/context return journey)
+  // V3: crash + lifecycle orchestration
+  useEffect(() => {
+    const unsubCrash = setupCrashHandlers()
+    // attempt to write bounded logs on unmount? nothing else
+    const unsubLife = setupLifecycleHandlers({
+      onSuspend: () => {
+        // pause videos/animation handled via CSS class crystal-background-suspended
+        try { document.documentElement.classList.add('crystal-background-suspended') } catch {}
+      },
+      onResume: () => {
+        try { document.documentElement.classList.remove('crystal-background-suspended') } catch {}
+      },
+    })
+    return () => {
+      unsubCrash()
+      unsubLife()
+    }
+  }, [])
+
+  // Pillar 1 – Navigation & Restore: spatial memory + instant restore + cinematic bridge state
+  const [instantRestoring, setInstantRestoring] = useState<{ active: boolean; systemId?: string } | null>(null)
+  const [isRestoredBoot, setIsRestoredBoot] = useState<boolean>(false)
+  const navDebounceRef = useRef<number | null>(null)
+  const lastNavPersistRef = useRef<CrystalNavPersist | null>(null)
+
+  // V8.7 + Pillar 1 – restore on mount (fullscreen/focus/context return journey)
+  // Extended: spatial memory, instant optimistic restore <5min, cinematic fade-in, localStorage fallback
   useEffect(() => {
     let cancelled = false
     async function tryRestore() {
       try {
         const mod = await import('./lifecycle/launchCycle')
+
+        // Detect --crystal-restored arg or localStorage flag for cinematic in
+        let flaggedRestored = false
+        try {
+          const sp = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '')
+          if (sp.has('crystal-restored') || sp.get('restored') === '1') flaggedRestored = true
+        } catch {}
+        try {
+          if (typeof window !== 'undefined' && window.localStorage.getItem(RESTORED_FLAG_KEY)) {
+            flaggedRestored = true
+          }
+        } catch {}
+        // Also check for Tauri args containing --crystal-restored via invoke if possible
+        try {
+          if (isTauriEnvironment()) {
+            // backend already logged restored_boot flag at startup; we treat presence of restore.json as restored
+          }
+        } catch {}
+
+        if (flaggedRestored) {
+          setIsRestoredBoot(true)
+          // Trigger cinematic in class on documentElement
+          try {
+            document.documentElement.classList.add('crystal-emulator-transitioning-in')
+            // Remove after animation to clean up
+            window.setTimeout(() => {
+              try { document.documentElement.classList.remove('crystal-emulator-transitioning-in') } catch {}
+              try { window.localStorage.removeItem(RESTORED_FLAG_KEY) } catch {}
+            }, 600)
+          } catch {}
+        }
+
         const state = await mod.getRestoreState().catch(() => null)
         if (cancelled) return
-        if (!state) return
+
+        // Pillar 1 – attempt localStorage fallback regardless of Tauri restore presence
+        const localNav = mod.loadLocalNav()
+
+        if (!state) {
+          // No backend restore – fallback to localStorage crystal:nav
+          if (localNav && localNav.ts && (Date.now() - localNav.ts) < 5 * 60 * 1000) {
+            if (localNav.systemId) setActiveSystemId(localNav.systemId)
+            if (localNav.view && ['system','library','discover','settings','allgames','favorites','recent'].includes(localNav.view)) {
+              setView(localNav.view as any)
+            }
+            // If gameIndex present, optimistic select later when activeGames populated – handled downstream
+            console.info('[nav] fallback localStorage restore', localNav)
+          }
+          setInstantRestoring(null)
+          return
+        }
+
         // Must be recent (<5 min) and bounded – backend already validates sympathy
         if (!mod.isRestoreRecent(state as any, 300)) {
           // stale – clear to avoid loop
           try { await mod.clearRestoreState() } catch {}
+          // Still attempt local fallback
+          if (localNav && localNav.ts && (Date.now() - localNav.ts) < 5 * 60 * 1000) {
+            if (localNav.systemId) setActiveSystemId(localNav.systemId)
+            if (localNav.view) setView(localNav.view as any)
+          }
+          setInstantRestoring(null)
           return
         }
-        console.info('[lifecycle] restore_state recent', state.system_id, state.rom_basename)
-        // restore previous system where practical
-        if (state.system_id) {
-          setActiveSystemId(state.system_id)
+
+        console.info('[lifecycle] restore_state recent', state.system_id, state.rom_basename, 'view', (state as any).view, 'sysIdx', (state as any).last_system_index, 'gameIdx', (state as any).game_index)
+
+        // Instant restore – optimistic before enumeration finishes
+        setInstantRestoring({ active: true, systemId: state.system_id })
+
+        // Restore previous system where practical
+        let targetSystemId = state.system_id
+        if ((state as any).last_system_index != null) {
+          // last_system_index is advisory; system_id authoritative
+          targetSystemId = state.system_id
         }
-        // restore previous selected game where practical – defer until gameCache populated; we can attempt via id = system:basename
+        if (targetSystemId) {
+          setActiveSystemId(targetSystemId)
+        }
+
+        // Restore view – library|systems|discover|settings|downloads – map downloads->settings as safe fallback
+        const restoreViewRaw = (state as any).view as string | undefined
+        if (restoreViewRaw) {
+          const norm = restoreViewRaw.toLowerCase()
+          if (['library','discover','settings','system','systems','allgames','favorites','recent'].includes(norm)) {
+            const mapped: any = norm === 'systems' ? 'system' : norm === 'system' ? 'system' : norm
+            setView(mapped as any)
+          } else if (norm === 'downloads') {
+            setView('settings') // Downloads inbox lives in Settings
+          }
+        } else {
+          setView('library')
+        }
+
+        // Restore previous selected game where practical – defer until gameCache populated; we can attempt via id = system:basename
         const plausibleId = `${state.system_id}:${state.rom_basename}`
-        // if cache has this id quickly, set it; otherwise let library view auto-select first then clear
         try {
-          // optimistic – if not present, selection will be updated when library loads; failure to restore exact selection should NOT prevent launch
           setSelectedGameId(plausibleId)
         } catch {}
-        setView('library')
+
+        // If spatial memory game_index present and local scroll index present, we can later scroll browser
+        // Persist to localStorage for current session
+        try {
+          const merged: CrystalNavPersist = {
+            view: restoreViewRaw || 'library',
+            systemId: targetSystemId,
+            systemIndex: (state as any).last_system_index ?? undefined,
+            gameIndex: (state as any).game_index ?? undefined,
+            scrollIndex: (state as any).scroll_index ?? undefined,
+            restored: true,
+            ts: Date.now(),
+          }
+          mod.saveLocalNav(merged)
+        } catch {}
+
         // recover focus – dispatcher will handle controller focus via autofocus of LibraryView
         try {
           window.dispatchEvent(new CustomEvent('crystal:restored' as any, { detail: state }))
         } catch {}
-        // finally clear to avoid loop
-        try { await mod.clearRestoreState() } catch {}
+
+        // finally clear to avoid loop – small delay so optimistic nav seen
+        // keep restore file until after optimistic nav is applied? spec says clear after restore to avoid loop – we do after 800ms
+        window.setTimeout(() => {
+          mod.clearRestoreState().catch(() => {})
+          setInstantRestoring(null)
+        }, 650)
+
         // fullscreen – Tauri window should already be fullscreen, but ensure focus
         try {
           const tauriWin = (window as any).__TAURI__?.window?.getCurrentWindow?.()
           if (tauriWin?.setFocus) await tauriWin.setFocus().catch(() => {})
         } catch {}
       } catch {
-        // non-fatal
+        setInstantRestoring(null)
       }
     }
-    // delay slightly to allow machine config to load
+    // delay slightly to allow machine config to load – 500ms mirrors previous behavior
     const t = window.setTimeout(tryRestore, 500)
     return () => { cancelled = true; window.clearTimeout(t) }
   }, [])
@@ -409,32 +545,211 @@ function AppInner() {
     return dedupeLibraryGames(gameCache.get(activeSystemId) || [])
   }, [gameCache, activeSystemId])
 
+  // Smart filter chips: All / Favorites / Recent / Unplayed – filtering logic reusable for LibraryView
+  const parseLastPlayedMs = useCallback((g: any): number | null => {
+    const raw = g?.last_played ?? g?.lastplayed ?? null
+    if (!raw) return null
+    const text = String(raw).trim()
+    const esde = text.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/)
+    if (esde) {
+      const d = new Date(Number(esde[1]), Number(esde[2]) - 1, Number(esde[3]), Number(esde[4]), Number(esde[5]), Number(esde[6]))
+      return d.getTime() || null
+    }
+    const ms = Date.parse(text)
+    return isNaN(ms) ? null : ms
+  }, [])
+
+  const filteredActiveGames = useMemo(() => {
+    if (view !== 'library') return activeGames
+    const filter = libraryFilter
+    if (filter === 'all') return activeGames
+    if (filter === 'fav') return activeGames.filter((g: any) => !!(g as any).favorite)
+    if (filter === 'recent') {
+      // sort descending by last_played where exists
+      const withPlay = activeGames
+        .map(g => ({ g, ms: parseLastPlayedMs(g as any) }))
+        .filter(x => x.ms != null)
+        .sort((a, b) => (b.ms! - a.ms!))
+        .map(x => x.g)
+      return withPlay as any
+    }
+    if (filter === 'unplayed') {
+      return activeGames.filter((g: any) => {
+        const pc = (g as any).play_count ?? (g as any).playcount ?? null
+        if (pc != null && Number(pc) > 0) return false
+        if (parseLastPlayedMs(g as any) != null) return false
+        const pt = (g as any).playtime
+        if (pt != null && Number(pt) > 0) return false
+        return true
+      })
+    }
+    return activeGames
+  }, [activeGames, view, libraryFilter, parseLastPlayedMs])
+
+  const continuePlayingGames = useMemo(() => {
+    // Continue Playing row: top 3-5 sorted descending where last_played exists
+    const sorted = activeGames
+      .map((g: any) => ({ g, ms: parseLastPlayedMs(g) }))
+      .filter((x: any) => x.ms != null)
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 5)
+      .map((x: any) => x.g)
+    return sorted as GameEntry[]
+  }, [activeGames, parseLastPlayedMs])
+
+  const isLibraryEmptyDriveState = useMemo(() => {
+    if (view !== 'library') return false
+    if (activeGames.length > 0) return false
+    // If cache has no games for this system and we are on real machine with D drive path, treat as unplugged empty
+    try {
+      const romRoot = (config as any)?.roots?.rom || ''
+      if (typeof romRoot === 'string' && romRoot.toUpperCase().startsWith('D:')) {
+        return true // heuristic: real ROG Ally X library lives on D:\Emulation\roms
+      }
+    } catch {}
+    // In web preview where no games enumerated but config null, still show empty hint after load settled
+    const cached = gameCache.get(activeSystemId)
+    if (cached && cached.length === 0) return true
+    if (!config && !machineLoading) {
+      // If no Tauri and no fixture, consider empty as drive missing illustration
+      return activeGames.length === 0
+    }
+    return false
+  }, [view, activeGames, config, gameCache, activeSystemId, machineLoading])
+
   const summary = useMemo(() => {
     if (!activeGames.length) return { total: 0, favoriteCount: 0, continuePlaying: undefined, recent: undefined, mostPlayed: undefined, surprise: undefined } as any
     return deriveSystemSummary(activeGames as any)
   }, [activeGames])
 
+  const displayGames = useMemo(() => {
+    if (view === 'library') return filteredActiveGames
+    return activeGames
+  }, [view, filteredActiveGames, activeGames])
+
   const selectedIndex = useMemo(() => {
-    if (!activeGames.length) return -1
+    const src = displayGames
+    if (!src.length) return -1
     if (!selectedGameId) return 0
-    const i = activeGames.findIndex(g => g.id === selectedGameId)
+    const i = src.findIndex(g => g.id === selectedGameId)
     return i >= 0 ? i : 0
-  }, [activeGames, selectedGameId])
+  }, [displayGames, selectedGameId])
 
   const selectedGameEntry = useMemo(() => {
-    if (!activeGames.length) return null
-    if (selectedIndex >= 0 && selectedIndex < activeGames.length) return activeGames[selectedIndex]
-    return activeGames[0] ?? null
-  }, [activeGames, selectedIndex])
+    if (!displayGames.length) return null
+    if (selectedIndex >= 0 && selectedIndex < displayGames.length) return displayGames[selectedIndex]
+    return displayGames[0] ?? null
+  }, [displayGames, selectedIndex])
+
+  // Pillar 1 – Spatial memory persistence: Systems carousel index + Library game index + scroll
+  // Captures last_system_index on left/right, game_index+scroll debounced 500ms, writes localStorage & restore.json
+  useEffect(() => {
+    // Resolve system carousel index
+    let sysIdx: number | undefined = undefined
+    try {
+      const sysIds = populatedSystems.map(s => s.id)
+      sysIdx = sysIds.indexOf(activeSystemId)
+      if (sysIdx < 0) sysIdx = undefined
+    } catch {}
+
+    const gameIdx = selectedIndex >= 0 ? selectedIndex : undefined
+
+    // Read scroll – LibraryView exposes #crystal-library-scroll container
+    let scrollIdx: number | undefined = undefined
+    try {
+      const candidates = [
+        document.querySelector('[data-crystal-library-scroll]') as HTMLElement | null,
+        document.querySelector('.library-left') as HTMLElement | null,
+        document.querySelector('.game-browser-list') as HTMLElement | null,
+        document.querySelector('.library-details') as HTMLElement | null,
+      ].filter(Boolean) as HTMLElement[]
+      for (const sc of candidates) {
+        if (sc && sc.scrollTop > 0) { scrollIdx = Math.round(sc.scrollTop); break }
+        if (sc) { scrollIdx = Math.round(sc.scrollTop); break }
+      }
+    } catch {}
+
+    const nav: CrystalNavPersist = {
+      view,
+      systemId: activeSystemId,
+      systemIndex: sysIdx,
+      gameIndex: gameIdx,
+      scrollIndex: scrollIdx,
+      ts: Date.now(),
+    }
+
+    // Avoid writing duplicate nav quickly
+    const last = lastNavPersistRef.current
+    if (last && last.view === nav.view && last.systemId === nav.systemId && last.gameIndex === nav.gameIndex && last.systemIndex === nav.systemIndex) {
+      // Still update timestamp for scroll – allow small scroll delta
+      if (typeof nav.scrollIndex === 'number' && typeof last.scrollIndex === 'number' && Math.abs(nav.scrollIndex - last.scrollIndex) < 24) {
+        return
+      }
+    }
+    lastNavPersistRef.current = nav
+
+    // Always localStorage – cheap, controller-safe
+    try { saveLocalNav(nav) } catch {}
+
+    // Debounce Tauri save_launch_restore_state (500ms) with extended nav fields
+    // Only when we have a valid ROM-ish payload OR we want spatial-only restore
+    try {
+      if (navDebounceRef.current != null) { window.clearTimeout(navDebounceRef.current) }
+      navDebounceRef.current = window.setTimeout(async () => {
+        try {
+          if (!isTauriEnvironment()) return
+          // When library entry present, use its rom path/basename
+          let romPath = (selectedGameEntry as any)?.path ?? (selectedGameEntry as any)?.rom_path ?? `${activeSystemId}/_nav`
+          let romBasename = (selectedGameEntry as any)?.basename ?? (selectedGameEntry as any)?.rom_basename ?? (selectedGameEntry as any)?.name ?? `_spatial_${activeSystemId}`
+          // Sanitize basename for validation (no / \ :)
+          romBasename = String(romBasename).replace(/[\\/:]/g, '_').slice(0,120) || `_spatial_${activeSystemId}`
+
+          const mod = await import('./lifecycle/launchCycle')
+          await mod.saveRestoreState(activeSystemId, String(romPath), String(romBasename), {
+            scroll_index: typeof scrollIdx === 'number' ? scrollIdx : null,
+            view: view === 'system' ? 'systems' : view,
+            game_index: typeof gameIdx === 'number' ? gameIdx : null,
+            last_system_index: typeof sysIdx === 'number' ? sysIdx : null,
+          }).catch(() => {})
+        } catch {}
+      }, 500) as any
+    } catch {}
+  }, [activeSystemId, view, selectedIndex, populatedSystems, selectedGameEntry])
+
+  // Instant restore – re-apply scroll position after library populated with spatial scroll_index
+  useEffect(() => {
+    if (!instantRestoring?.active) return
+    if (!activeGames.length) return
+    try {
+      import('./lifecycle/launchCycle').then(mod => {
+        const nav = mod.loadLocalNav()
+        if (!nav) return
+        const scrollTarget = (nav.scrollIndex ?? (nav as any).scroll_top) as number | undefined
+        if (typeof scrollTarget === 'number' && scrollTarget > 0) {
+          const sc = (document.querySelector('[data-crystal-library-scroll]') || document.querySelector('.library-left') || document.querySelector('.game-browser-list')) as HTMLElement | null
+          if (sc) {
+            sc.scrollTop = scrollTarget
+          }
+        }
+        // If gameIndex stored, ensure selection matches
+        if (typeof nav.gameIndex === 'number' && activeGames[nav.gameIndex]) {
+          const target = activeGames[nav.gameIndex]
+          if (target && target.id !== selectedGameId) {
+            setSelectedGameId(target.id)
+          }
+        }
+      }).catch(() => {})
+    } catch {}
+  }, [instantRestoring, activeGames, selectedGameId])
 
   const carouselGames: CarouselGame[] = useMemo(() => {
-    return activeGames.slice(0, 200).map(g => {
+    return displayGames.slice(0, 200).map(g => {
       const anyG = g as any
       const fixCover = anyG._fixtureCoverUrl || null
       const fixMedia = fixtureMediaForGame(g.id)
       return { id: g.id, name: g.name, coverUrl: fixCover || fixMedia?.cover || gameIdentityMedia[g.id]?.cover || null }
     })
-  }, [activeGames, gameIdentityMedia])
+  }, [displayGames, gameIdentityMedia])
 
   const librarySelectedDetail: LibraryGameDetail | null | undefined = useMemo(() => {
     if (!selectedGameEntry) return null
@@ -469,7 +784,7 @@ function AppInner() {
 
   useEffect(() => {
     let cancelled = false
-    Promise.all(activeGames.slice(0, 200).map(async game => {
+    Promise.all(displayGames.slice(0, 200).map(async game => {
       const g = game as GameEntry & { cover_path?: string; marquee_path?: string }
       const [cover, marquee] = await Promise.all([
         g.cover_path ? toAssetUrl(g.cover_path) : Promise.resolve(null),
@@ -480,7 +795,76 @@ function AppInner() {
       if (!cancelled) setGameIdentityMedia(Object.fromEntries(entries))
     })
     return () => { cancelled = true }
-  }, [activeGames])
+  }, [displayGames])
+
+  // Dedup trust toast: listen for dedupeLibraryGames event when duplicates removed
+  useEffect(() => {
+    const onDedup = (e: any) => {
+      const detail = e?.detail || {}
+      const count = Number(detail.removed || 0)
+      if (count <= 0) return
+      setDedupToast(`Cleaned ${count} duplicate${count === 1 ? '' : 's'}`)
+      window.setTimeout(() => setDedupToast(null), 3000)
+    }
+    window.addEventListener('crystal:dedup-cleaned' as any, onDedup)
+    return () => window.removeEventListener('crystal:dedup-cleaned' as any, onDedup)
+  }, [])
+
+  // After return from emulator – refresh metadata (real playtime) – lifecycle restore handling
+  useEffect(() => {
+    const onRestored = async (e: any) => {
+      try {
+        const detail = e?.detail || {}
+        const sysId = detail.system_id || activeSystemId
+        if (!sysId) return
+        // Refresh gamelist metadata via backend – real playtime surfaces in LibraryView details + Continue Playing row
+        try {
+          const fresh = await listGames(sysId)
+          setGameCache(prev => {
+            const m = new Map(prev)
+            m.set(sysId, fresh)
+            return m
+          })
+        } catch {}
+        // Also call Rust refresh_metadata_after_launch for logging / play stats count if Tauri
+        if (isTauriEnvironment()) {
+          try {
+            await invokeBackend('refresh_metadata_after_launch', { system_id: sysId })
+          } catch {}
+          try {
+            const favs = await getFavorites().catch(() => [] as any)
+            // Merge favorites into cache optimistic if needed – fav flag already in gamelist
+            if (favs && Array.isArray(favs)) {
+              // optional: update cache favorites flags from favs list if present
+            }
+          } catch {}
+        }
+        setSafeModeToast('Library refreshed after play')
+        window.setTimeout(() => setSafeModeToast(null), 2000)
+      } catch {}
+    }
+    window.addEventListener('crystal:restored' as any, onRestored)
+    // Also listen to Tauri window focus (return from emulator foreground restore)
+    let unlistenFocus: (() => void) | null = null
+    try {
+      if (isTauriEnvironment()) {
+        const tauriWindow = (window as any).__TAURI__?.window
+        if (tauriWindow?.getCurrentWindow) {
+          const cur = tauriWindow.getCurrentWindow()
+          cur?.onFocusChanged?.((ev: any) => {
+            if (ev?.payload) {
+              // window gained focus after emulator exit – trigger refresh
+              onRestored({ detail: { system_id: activeSystemId } })
+            }
+          }).then((un: any) => { unlistenFocus = un }).catch(() => {})
+        }
+      }
+    } catch {}
+    return () => {
+      window.removeEventListener('crystal:restored' as any, onRestored)
+      try { if (unlistenFocus) unlistenFocus() } catch {}
+    }
+  }, [activeSystemId])
 
   const metaForLanding = useMemo(() => getSystemMeta(activeSystemId), [activeSystemId])
   const activeIndex = useMemo(() => {
@@ -544,7 +928,115 @@ function AppInner() {
         setTimeout(() => setSafeModeToast(null), 5000)
         return
       }
+      // V3 P0 Steam – never through generic shell; route via safe_steam_launch
+      try {
+        const sysIdLc = (game.system_id || '').toLowerCase()
+        const tmpl = (req as any).backendRequest?.commandTemplate || ''
+        const romLc = (game.rom_path || '').toLowerCase()
+        const isSteamLike = sysIdLc === 'steam' || /OS-?SHELL/i.test(tmpl) || romLc.startsWith('steam://')
+        if (isSteamLike) {
+          // Set crash context with basename only
+          try { const base = (game.rom_path||'').split(/[\\/]/).pop(); setCrashContext('library', sysIdLc || 'steam'); recordSemanticInput(`LAUNCH ${sysIdLc} ${base}`) } catch {}
+          const { invoke } = await import('@tauri-apps/api/core')
+          await invoke('safe_steam_launch', { romPath: game.rom_path })
+          setSafeModeToast(`LAUNCHED • ${game.name} (Steam)`)
+          setTimeout(() => setSafeModeToast(null), 1800)
+          setTimeout(() => { launchInFlightRef.current = false }, 800)
+          return
+        }
+      } catch (e: any) {
+        const msg = e?.message || String(e)
+        console.error('[steam-launch] failed, falling back?', msg)
+        if (msg.includes('STEAM_') || msg.includes('SAFE_MODE')) {
+          setSafeModeToast(`STEAM LAUNCH FAILED • ${msg.slice(0,80)}`)
+          setTimeout(() => setSafeModeToast(null), 4000)
+          launchInFlightRef.current = false
+          return
+        }
+        // otherwise fall through to normal path? but for steam we should not fallback to arbitrary shell
+        setSafeModeToast(`STEAM LAUNCH BLOCKED • ${msg.slice(0,80)}`)
+        setTimeout(() => setSafeModeToast(null), 4000)
+        launchInFlightRef.current = false
+        return
+      }
       launchInFlightRef.current = true
+
+      // Pillar 1 – spatial memory: persist final selection before launch (immediate, not debounced)
+      try {
+        const mod = await import('./lifecycle/launchCycle')
+        const scrollIdx = (() => {
+          try {
+            const sc = (document.querySelector('[data-crystal-library-scroll]') || document.querySelector('.library-left') || document.querySelector('.game-browser-list')) as HTMLElement | null
+            return sc ? Math.round(sc.scrollTop) : null
+          } catch { return null }
+        })()
+        const systemIdx = (() => {
+          try { return populatedSystems.findIndex(s => s.id === game.system_id) } catch { return -1 }
+        })()
+        const gameIdx = (() => {
+          try { return activeGames.findIndex(g => g.id === (game as any).id) } catch { return -1 }
+        })()
+        await mod.saveRestoreState(game.system_id, game.rom_path, String((game as any).basename || game.name), {
+          scroll_index: scrollIdx,
+          view: 'library',
+          game_index: gameIdx >= 0 ? gameIdx : null,
+          last_system_index: systemIdx >= 0 ? systemIdx : null,
+        }).catch(() => {})
+        try { mod.saveLocalNav({ view: 'library', systemId: game.system_id, systemIndex: systemIdx >=0?systemIdx:undefined, gameIndex: gameIdx>=0?gameIdx:undefined, scrollIndex: scrollIdx ?? undefined, ts: Date.now() }) } catch {}
+        // Flag for restored boot in-animation next launch
+        try { if (typeof window !== 'undefined') window.localStorage.setItem(RESTORED_FLAG_KEY, '1') } catch {}
+      } catch {}
+
+      // Pillar 1 – Cinematic fade-out → then handoff
+      const triggerCinematicOut = async () => {
+        try {
+          document.documentElement.classList.add('crystal-emulator-transitioning-out')
+          await new Promise<void>(res => setTimeout(res, 380)) // match --crystal-fade-out
+        } catch { /* ignore */ }
+      }
+
+      // Attempt V8.7 handoff path first (watcher BEFORE exit) – this was disabled in legacy branch
+      // We re-enable for ROG FIRST-BOOT verification but keep fallback to resident launch
+      try {
+        await triggerCinematicOut()
+        const { launchWithHandoff, runPreExitCleanup, exitAfterHandoff } = await import('./lifecycle/launchCycle')
+        const handoff = await launchWithHandoff(req.backendRequest)
+        if (!handoff || !handoff.pid) throw new Error('Handoff missing pid')
+        runPreExitCleanup((typeof providerSurf !== 'undefined' ? providerSurf : null) as any, (typeof crystalAcq !== 'undefined' ? crystalAcq : null) as any)
+        console.info('[lifecycle] handoff_ready pid=', handoff.pid, 'session=', handoff.session_id, '-> exiting Crystal (cinematic)')
+        await exitAfterHandoff().catch(() => {
+          try {
+            const win = (window as any).__TAURI__?.window?.getCurrentWindow?.()
+            if (win?.close) win.close()
+            else window.close()
+          } catch {}
+        })
+        return
+      } catch (e: any) {
+        // Remove fade-out class if we fell back
+        try { document.documentElement.classList.remove('crystal-emulator-transitioning-out') } catch {}
+        const msg = e?.message || String(e)
+        if (msg.includes('SAFE_MODE_BLOCKED_LAUNCH')) {
+          console.warn('[lifecycle] handoff blocked by SAFE_MODE – staying open')
+          setSafeModeToast('SAFE MODE – launch blocked')
+          setTimeout(() => setSafeModeToast(null), 2400)
+          launchInFlightRef.current = false
+          return
+        }
+        if (msg.includes('WATCHER_CREATE_FAILED') || msg.includes('RESTORE_SAVE_FAILED')) {
+          launchInFlightRef.current = false
+          console.warn('[lifecycle] watcher creation failed – stay open, no orphan –', msg)
+          return
+        }
+        // Fallback to resident launch if handoff not available (command not found etc)
+        if (msg.includes('not found') || msg.includes('unknown command') || msg.includes('not registered')) {
+          console.debug('[lifecycle] handoff not available, fallback classic launch')
+        } else {
+          console.debug('[lifecycle] handoff error fallback classic launch:', msg)
+        }
+      }
+
+      // Classic resident launch – keep Crystal open behind emulator (works in flatpak/bundle without watcher)
       try {
         await getLauncherBridge().launch(req.backendRequest)
         setSafeModeToast(`LAUNCHED • ${game.name}`)
@@ -557,66 +1049,8 @@ function AppInner() {
       } finally {
         setTimeout(() => { launchInFlightRef.current = false }, 1200)
       }
-      return
-      /* legacy handoff removed
-      // V8.7 – zero-overhead handoff + return watcher: attempt new path first, secure watcher BEFORE exit, keep Crystal open on failure
-      try {
-        // Keep Crystal resident behind the emulator. The watcher/exit handoff was
-        // unreliable on the Ally and made successful launches look like failures.
-        await getLauncherBridge().launch(req.backendRequest)
-        setSafeModeToast(`LAUNCHED • ${game.name}`)
-        setTimeout(() => setSafeModeToast(null), 1800)
-        setTimeout(() => { launchInFlightRef.current = false }, 1200)
-        return
-        legacy handoff removed: Crystal stays resident while emulator owns focus
-        const { launchWithHandoff, runPreExitCleanup, exitAfterHandoff } = await import('./lifecycle/launchCycle')
-        // Persist restore state implicitly inside backend (also does explicit save)
-        const handoff = await launchWithHandoff(req.backendRequest)
-        if (!handoff || !handoff.pid) throw new Error('Handoff missing pid')
-        // Pre-launch cleanup – close provider WebView, stop acquisition/video/animations/timers, release media
-        runPreExitCleanup((typeof providerSurf !== 'undefined' ? providerSurf : null) as any, (typeof crystalAcq !== 'undefined' ? crystalAcq : null) as any)
-        console.info('[lifecycle] handoff_ready pid=', handoff.pid, 'session=', handoff.session_id, '-> exiting Crystal')
-        await exitAfterHandoff().catch(() => {
-          // If exit command missing (old build), fall back to window close
-          try {
-            const win = (window as any).__TAURI__?.window?.getCurrentWindow?.()
-            if (win?.close) win.close()
-            else window.close()
-          } catch {}
-        })
-        return
-	      } catch (e: any) {
-        const msg = e?.message || String(e)
-        // WATCHER_CREATE_FAILED or missing command – keep Crystal open, fallback to legacy launch if appropriate
-        if (msg.includes('SAFE_MODE_BLOCKED_LAUNCH')) {
-          console.warn('[lifecycle] handoff blocked by SAFE_MODE – staying open')
-          setSafeModeToast('SAFE MODE – launch blocked')
-          setTimeout(() => setSafeModeToast(null), 2400)
-          launchInFlightRef.current = false
-          return
-	      }
-        if (msg.includes('WATCHER_CREATE_FAILED') || msg.includes('RESTORE_SAVE_FAILED')) {
-          launchInFlightRef.current = false
-          console.warn('[lifecycle] watcher creation failed – stay open, no orphan –', msg)
-          return
-        }
-        // If command not found (old binary) or other error, fallback to authoritative legacy launch
-        console.debug('[lifecycle] handoff not available or failed, fallback classic launch:', msg)
-      }
-      try {
-        await getLauncherBridge().launch(req.backendRequest)
-      } catch (e: any) {
-        const msg = e?.message || String(e)
-        console.error('[launch] failed:', msg)
-        setSafeModeToast(`LAUNCH FAILED • ${msg}`)
-        setTimeout(() => setSafeModeToast(null), 5000)
-      }
-      finally {
-        launchInFlightRef.current = false
-      }
-      */
     },
-    [config, safeMode]
+    [config, safeMode, populatedSystems, activeGames]
   )
 
   const handleSelectGame = useCallback(
@@ -741,6 +1175,7 @@ function AppInner() {
   )
 
   const moveSettingsFocus = useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
+    // Legacy fallback for monolithic settings – SettingsTabsView also listens to crystal-settings-nav
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.crystal-settings button:not(:disabled)'))
       .filter(button => button.offsetParent !== null)
     if (!buttons.length) return
@@ -773,8 +1208,103 @@ function AppInner() {
     next.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
   }, [])
 
+  const cycleLibraryFilter = useCallback((dir: 1 | -1 = 1) => {
+    const order: LibraryQuickFilter[] = ['all', 'fav', 'recent', 'unplayed']
+    setLibraryFilter(cur => {
+      const idx = order.indexOf(cur)
+      const nextIdx = (idx + dir + order.length) % order.length
+      return order[nextIdx]
+    })
+  }, [])
+
+  const toggleFavoriteCurrent = useCallback(() => {
+    const g = selectedGameEntry as any
+    if (!g) return
+    const system_id = g.system_id || activeSystemId
+    const rom_basename = g.rom_basename || g.basename || g.id?.split('/')?.[1] || g.name
+    const rom_path = g.rom_path || g.path || ''
+    const prevFav = !!g.favorite
+    const nextFav = !prevFav
+
+    // Optimistic update via setGameCache creation for immediate UI feedback – library detail binds favorite
+    setGameCache(prev => {
+      const m = new Map(prev)
+      const list = m.get(system_id)
+      if (list) {
+        const nextList = list.map((item: any) => {
+          if ((item.id && item.id === g.id) || (item.rom_basename && item.rom_basename === rom_basename && item.system_id === system_id)) {
+            return { ...item, favorite: nextFav }
+          }
+          return item
+        })
+        m.set(system_id, nextList)
+      }
+      return m
+    })
+
+    // Call backend set_favorite – preserve ES-DE gamelist.xml only, safe_mode checked in Rust
+    if (!isTauriEnvironment()) {
+      // Web preview fallback – in-memory only, toast success
+      setSafeModeToast(nextFav ? '★ Favorited (preview)' : '☆ Unfavorited (preview)')
+      setTimeout(() => setSafeModeToast(null), 2000)
+      return
+    }
+
+    invokeBackend('set_favorite', { system_id, rom_basename, rom_path, favorite: nextFav })
+      .then(() => {
+        setSafeModeToast(nextFav ? '★ Added to favorites' : '☆ Removed from favorites')
+        setTimeout(() => setSafeModeToast(null), 2000)
+      })
+      .catch((e: any) => {
+        console.error('[favorite] persistence failed', e)
+        // Rollback on failure
+        setGameCache(prev => {
+          const m = new Map(prev)
+          const list = m.get(system_id)
+          if (list) {
+            const rolled = list.map((item: any) => {
+              if ((item.id && item.id === g.id) || (item.rom_basename && item.rom_basename === rom_basename)) {
+                return { ...item, favorite: prevFav }
+              }
+              return item
+            })
+            m.set(system_id, rolled)
+          }
+          return m
+        })
+        const msg = (e as any)?.message || String(e || '')
+        if (String(msg).includes('SAFE_MODE_BLOCKED')) {
+          setSafeModeToast('SAFE MODE – favorite blocked')
+        } else {
+          setSafeModeToast(`Favorite failed – ${String(msg).slice(0, 60)}`)
+        }
+        setTimeout(() => setSafeModeToast(null), 3500)
+      })
+  }, [selectedGameEntry, activeSystemId])
+
+  const cycleMediaCurrent = useCallback(() => {
+    try {
+      const candidates = availableGameplayCandidatesRef.current
+      if (!candidates || candidates.length <= 1) {
+        console.info('[Library] media cycle single/no source')
+        return
+      }
+      const regions = stageConfig.gameplayRegions
+      if (!regions || regions.length === 0) return
+      gameplayCycleIndexRef.current = (gameplayCycleIndexRef.current + 1) % candidates.length
+      const next = candidates[gameplayCycleIndexRef.current]
+      setSelectedGameplaySources([{ regionId: regions[0].id, url: next.url, mediaType: next.type as any }])
+      try {
+        const ev = new CustomEvent('crystal-library-media-cycle' as any, { detail: { index: gameplayCycleIndexRef.current, url: next.url } })
+        window.dispatchEvent(ev)
+      } catch {}
+    } catch {}
+  }, [stageConfig.gameplayRegions])
+
   const onNav = useCallback(
     (action: NavigationAction) => {
+      try { recordSemanticInput(String(action)) } catch {}
+      try { setCrashContext(view, activeSystemId) } catch {}
       // V8.6D1 provider surface guard – Discover list must not react underneath while surface active
       try {
         if (providerSurf?.active) {
@@ -789,18 +1319,17 @@ function AppInner() {
             if (fg) { handleLaunchGame(fg as any); return }
             return
           }
-          // Block left/right/system navigation underneath – no accidental A PLAY
-          if (['left','right','up','down','previousSystem','nextSystem','search','favorite','media'].includes(action as any)) return
+          // Block left/right/system navigation underneath – no accidental A PLAY leak
+          if (['left','right','up','down','previousSystem','nextSystem','search','favorite','media','quickFilter','quickSettings','diagnosticsDebug','cycleTabLeft','cycleTabRight'].includes(action as any)) return
         }
       } catch {}
 
-      // V8.6C2.1 – Acquisition controller input guard – deterministic semantics, no dead-end on ALREADY
+      // V8.6C2.1 – Acquisition controller input guard
       try {
         const ext = (crystalAcq as any)?.externalState
         const phase = (crystalAcq as any)?.crystalPhase as string
         if (ext && phase) {
           const terminalReady = phase === "READY_TO_PLAY"
-          // V8.6C2.1: ALREADY_IN_LIBRARY is NOT terminalCloseable – only blocking while refresh in progress, after -> READY or NOT_FOUND
           const terminalCloseable = ["FILE_CONFLICT","MULTIPLE_DOWNLOADS_FOUND","FAILED","SAFE_MODE","TIMED_OUT","INSTALLED_GAME_NOT_FOUND","LIBRARY_REFRESH_FAILED","CANCELLED"].includes(phase as any)
           const nonTerminalBlocking = ["PREPARING","OPENING_GAME_PAGE","WAITING_FOR_DOWNLOAD","DOWNLOAD_DETECTED","FINISHING_DOWNLOAD","ADDING_TO_LIBRARY","REFRESHING_LIBRARY","ALREADY_IN_LIBRARY"].includes(phase as any)
           if (action === "back") {
@@ -820,25 +1349,38 @@ function AppInner() {
               if (sel) { handleLaunchGame(sel as any); return }
               return
             }
-            if (nonTerminalBlocking && acquisitionOwnsConfirm(view, phase)) {
-              return
-            }
-            if (terminalCloseable && acquisitionOwnsConfirm(view, phase)) {
-              return
-            }
+            if (nonTerminalBlocking && acquisitionOwnsConfirm(view, phase)) return
+            if (terminalCloseable && acquisitionOwnsConfirm(view, phase)) return
           }
         }
       } catch {}
 
+      // Global diagnosticsDebug chord – L+R+View (gamepad) or I / Ctrl+D (keyboard)
+      if (action === 'diagnosticsDebug') {
+        setDiagnosticsDebugOverlayVisible(v => !v)
+        return
+      }
+
+      // Global quickSettings – Menu button (gamepad 9 / keyboard O) → Settings General immediately
+      if (action === 'quickSettings') {
+        setView('settings')
+        // dispatch to set tab general when SettingsTabsView mounted
+        try {
+          window.setTimeout(() => {
+            try { window.dispatchEvent(new CustomEvent('crystal-settings-jump' as any, { detail: 'general' } as any)) } catch {}
+          }, 80)
+        } catch {}
+        return
+      }
 
       if (view === 'system') {
-        if (action === 'left' || action === 'up' || action === 'previousSystem') {
+        if (action === 'left' || action === 'up' || action === 'previousSystem' || action === 'cycleTabLeft') {
           setActiveSystemId(current => {
             const idx = systemIds.indexOf(current)
             const safe = idx < 0 ? 0 : idx
             return systemIds[(safe - 1 + systemIds.length) % systemIds.length] ?? current
           })
-        } else if (action === 'right' || action === 'down' || action === 'nextSystem') {
+        } else if (action === 'right' || action === 'down' || action === 'nextSystem' || action === 'cycleTabRight') {
           setActiveSystemId(current => {
             const idx = systemIds.indexOf(current)
             const safe = idx < 0 ? 0 : idx
@@ -848,17 +1390,31 @@ function AppInner() {
           setView('library')
         } else if (action === 'menu') {
           setView('settings')
-        } else if (action === 'search' || action === 'favorite') {
-          // V8.4.1 DISCOVER – ADDITIVE: System Landing uses dedicated SEARCH (gamepad View/Select button 8, keyboard / ?)
-          // Y (favorite) is NOT hijacked, preserves any prior System favorite if present. Only SEARCH triggers DISCOVER.
+        } else if (action === 'search' || action === 'quickFilter') {
+          // View = quick filter in system context → cycle filter? System uses Discover but we map quickFilter → Discover prefill search
+          setDiscoverPrefillGame(null)
+          setDiscoverOrigin('system')
+          setView('discover')
+        } else if (action === 'favorite') {
+          // Y no-op preserved in system
+        } else if (action === 'media') {
+          // X media in system – attempt discover? preserve
           setDiscoverPrefillGame(null)
           setDiscoverOrigin('system')
           setView('discover')
         }
-        // favorite (Y) in System view: no-op preserved – does not trigger Discover, keeps prior behavior intact
       } else if (view === 'library') {
+        // View (quick filter) → cycle filter chips All/Fav/Recent/Unplayed
+        if (action === 'quickFilter') {
+          cycleLibraryFilter(1)
+          setLibraryChipFocused(true)
+          try {
+            const ev = new CustomEvent('crystal-library-quick-filter' as any, { detail: { filter: libraryFilter } as any })
+            window.dispatchEvent(ev)
+          } catch {}
+          return
+        }
         if (action === 'search') {
-          // Library DISCOVER additive – only SEARCH (View/Select) triggers discover, X/Y preserved for media/favorite
           const g = selectedGameEntry as any
           if (g) {
             setDiscoverPrefillGame(g)
@@ -866,60 +1422,80 @@ function AppInner() {
             setView('discover')
             return
           }
-          // if no game, still allow empty discover
           setDiscoverPrefillGame(null)
           setDiscoverOrigin('library')
           setView('discover')
           return
         }
         if (action === 'favorite') {
-          // Library Y – favorite toggle preserved – do NOT open Discover
-          // Optimistic toggle in-memory (persistence beyond needs optional future DB write)
-          const g = selectedGameEntry as any
-          if (g) {
-            // flip favorite flag visually – LibraryView already reads selectedGame.favorite
-            try {
-              g.favorite = !g.favorite
-              // Force re-render via setSelectedGameId identity bump? Keep selected but trigger via recreation of activeGames derived? simplest: overwrite local state via setSelectedGameId itself unchanged – we push mutation to ref of activeGames entries which are same object; React will re-render due to setView? Use toast + force via small state? We use console and trigger synthetic update by re-setting game list type ref as new array via triggering config change not needed – toggle will show next render when selection changes; still we preserve binding semantics by not hijacking discover.
-              console.info('[Library] favorite toggled', g.id, !!g.favorite)
-            } catch {}
-          }
+          toggleFavoriteCurrent()
           return
         }
         if (action === 'media') {
-          // Library X – REAL media cycle V8.4.1: rotate through available gameplay candidates
-          try {
-            const candidates = availableGameplayCandidatesRef.current
-            if (!candidates || candidates.length <= 1) {
-              // No alternative media – still acknowledge but no visual change if single; if zero, nothing to do
-              if (candidates && candidates.length === 1) {
-                console.info('[Library] media cycle single source – no alternative')
-              } else {
-                console.info('[Library] media cycle requested – no media')
-              }
-              return
-            }
-            const regions = stageConfig.gameplayRegions
-            if (!regions || regions.length === 0) return
-            gameplayCycleIndexRef.current = (gameplayCycleIndexRef.current + 1) % candidates.length
-            const next = candidates[gameplayCycleIndexRef.current]
-            setSelectedGameplaySources([{ regionId: regions[0].id, url: next.url, mediaType: next.type as any }])
-            console.info('[Library] media cycle ->', gameplayCycleIndexRef.current, next.url.slice(-40))
-            // also dispatch legacy event for any external consumers / tests that still listen
-            try {
-              const ev = new CustomEvent('crystal-library-media-cycle' as any, { detail: { index: gameplayCycleIndexRef.current, url: next.url } })
-              window.dispatchEvent(ev)
-            } catch {}
-          } catch {}
+          cycleMediaCurrent()
           return
         }
-        if (!activeGames.length) {
+        const list = displayGames
+        if (!list.length) {
+          // Even when library empty due to filter/drive missing, back still returns
           if (action === 'back') setView('system')
+          // Chip nav still allowed when empty – left/right cycles filter when chip focused, else moves to chip
+          if (libraryChipFocused) {
+            if (action === 'left') { cycleLibraryFilter(-1 as any); return }
+            if (action === 'right') { cycleLibraryFilter(1); return }
+            if (action === 'down' || action === 'up') {
+              setLibraryChipFocused(false)
+              return
+            }
+          } else {
+            if (action === 'up') {
+              setLibraryChipFocused(true)
+              return
+            }
+          }
+          return
+        }
+        // Smart filter chip D-pad navigable – when chip focused, left/right cycles chips, up/down moves games
+        if (libraryChipFocused) {
+          if (action === 'left') {
+            cycleLibraryFilter(-1 as any)
+            return
+          }
+          if (action === 'right') {
+            cycleLibraryFilter(1)
+            return
+          }
+          if (action === 'down') {
+            setLibraryChipFocused(false)
+            // move to first or keep selection? move to first entry for clarity
+            if (list[0]) setSelectedGameId(list[0].id)
+            return
+          }
+          if (action === 'up') {
+            // up from chip goes to game list bottom? keep simple – go to last game then exit chip
+            setLibraryChipFocused(false)
+            const last = list[list.length - 1]
+            if (last) setSelectedGameId(last.id)
+            return
+          }
+          if (action === 'confirm') {
+            // A toggles – filter already toggled via left/right, but A confirms selection and exits chip focus to games
+            setLibraryChipFocused(false)
+            return
+          }
+          if (action === 'back') { setLibraryChipFocused(false); return }
           return
         }
         if (action === 'left' || action === 'up') {
+          // If at first item and pressing up, move focus to chip row (boutique navigation)
+          if (action === 'up') {
+            const curIdx = selectedGameId ? list.findIndex(g => g.id === selectedGameId) : 0
+            if (curIdx <= 0) {
+              setLibraryChipFocused(true)
+              return
+            }
+          }
           setSelectedGameId(prev => {
-            const list = activeGames
             const curIdx = prev ? list.findIndex(g => g.id === prev) : 0
             const safe = curIdx < 0 ? 0 : curIdx
             const nextIdx = (safe - 1 + list.length) % list.length
@@ -927,13 +1503,14 @@ function AppInner() {
           })
         } else if (action === 'right' || action === 'down') {
           setSelectedGameId(prev => {
-            const list = activeGames
             const curIdx = prev ? list.findIndex(g => g.id === prev) : 0
             const safe = curIdx < 0 ? 0 : curIdx
             const nextIdx = (safe + 1) % list.length
             return list[nextIdx].id
           })
         } else if (action === 'confirm') {
+          // Ensure provider acquisition still cannot leak A PLAY
+          if (providerSurf?.active || (crystalAcq as any)?.active) return
           if (safeMode) {
             console.warn('[SAFE MODE] controller launch blocked')
             setSafeModeToast('SAFE MODE – launch blocked')
@@ -941,49 +1518,101 @@ function AppInner() {
             return
           }
           const g = selectedGameEntry
-          if (g) handleLaunchGame(g)
+          if (g) handleLaunchGame(g as any)
         } else if (action === 'back') {
           setView('system')
         } else if (action === 'menu') {
           setView('settings')
+        } else if (action === 'previousSystem' || action === 'cycleTabLeft') {
+          setActiveSystemId(current => {
+            const idx = systemIds.indexOf(current)
+            const safe = idx < 0 ? 0 : idx
+            return systemIds[(safe - 1 + systemIds.length) % systemIds.length] ?? current
+          })
+        } else if (action === 'nextSystem' || action === 'cycleTabRight') {
+          setActiveSystemId(current => {
+            const idx = systemIds.indexOf(current)
+            const safe = idx < 0 ? 0 : idx
+            return systemIds[(safe + 1) % systemIds.length] ?? current
+          })
         }
       } else if (view === 'discover') {
-        // forward to DiscoverView via custom event for gamepad continuity; back/menu close to origin
+        if (action === 'quickFilter') {
+          cycleLibraryFilter(1)
+          return
+        }
+        if ((action as string) === 'quickSettings') {
+          setView('settings')
+          return
+        }
         try {
           const ev = new CustomEvent('crystal-discover-nav', { detail: action })
           window.dispatchEvent(ev)
         } catch {}
-        if (action === 'back' || action === 'menu') {
-          // allow discover view internal to handle detail close first – we check if it prevented default by inspecting window flag? Simple: if no detail open logic external cannot know.
-          // We let DiscoverView close detail on back; if it wants to exit view, it calls onBack prop which restores origin.
-          // So we only fallback if discover hasn't handled: treat back as exit to origin when not in detail mode.
-          // Heuristic: we emit but also after tiny delay if still in discover view we pop to origin is allowed via onBack callback override in DiscoverView internal? Simpler: DiscoverView's onBack prop restores origin.
-          // For V8.4 stub we close on double back is handled inside view itself via key listener; this here is gamepad bridge – we forward and also allow view to manage.
-          // Prevent accidental system switch.
-        }
-        // don't switch systems in discover
         return
       } else if (view === 'settings') {
         if (action === 'back' || action === 'menu') {
+          // if debug overlay open, close it first
+          if (diagnosticsDebugOverlayVisible) {
+            setDiagnosticsDebugOverlayVisible(false)
+            return
+          }
           setView('system')
-        } else if (action === 'up' || action === 'left' || action === 'down' || action === 'right') {
-          moveSettingsFocus(action)
-        } else if (action === 'confirm') {
+          return
+        }
+        if (action === 'quickFilter' || action === 'search') {
+          // In Diagnostics tab View toggles debug overlay, else cycles library filter inside settings? We map quickFilter to debug overlay only when in diagnostics tab
+          try {
+            const activeTabEl = document.querySelector('[data-settings-tab][style*=\"#7df9ff\"], [data-settings-tab][style*=\"#295fdc\"]') as HTMLElement | null
+            const isDiagnostics = activeTabEl?.getAttribute('data-settings-tab') === 'diagnostics'
+            // fallback heuristic – query active tab state via DOM aria? simpler dispatch event and let SettingsTabsView decide
+            if (isDiagnostics) {
+              setDiagnosticsDebugOverlayVisible(v => !v)
+              return
+            }
+          } catch {}
+          // In non-diagnostics, View jumps to quickFilter? No – we treat as no-op
+        }
+        if (action === 'up' || action === 'down') {
+          try { window.dispatchEvent(new CustomEvent('crystal-settings-nav' as any, { detail: action })) } catch {}
+          moveSettingsFocus(action as any)
+          return
+        }
+        if (action === 'left' || action === 'right' || action === 'previousSystem' || action === 'nextSystem' || action === 'cycleTabLeft' || action === 'cycleTabRight') {
+          const dir = (action === 'left' || action === 'previousSystem' || action === 'cycleTabLeft') ? 'left' : 'right'
+          try { window.dispatchEvent(new CustomEvent('crystal-settings-nav' as any, { detail: dir })) } catch {}
+          // Extra: also directly cycle via custom event for tab handlers
+          try { window.dispatchEvent(new CustomEvent('crystal-settings-nav' as any, { detail: dir === 'left' ? 'previousSystem' : 'nextSystem' })) } catch {}
+          return
+        }
+        if (action === 'confirm') {
           const focused = document.activeElement as HTMLButtonElement | null
           if (focused?.matches('.crystal-settings button:not(:disabled)')) focused.click()
-          else moveSettingsFocus('down')
+          else {
+            try { window.dispatchEvent(new CustomEvent('crystal-settings-nav' as any, { detail: 'down' })) } catch {}
+            moveSettingsFocus('down')
+          }
+          return
+        }
+        if (action === 'favorite') {
+          // Y in settings – reserved no-op / dev toggle
+          return
+        }
+        if (action === 'media') {
+          // X cycle media unavailable in settings – no-op
+          return
         }
         return
       } else {
         if (action === 'back') setView('system')
-        if (action === 'search') {
+        if (action === 'search' || action === 'quickFilter') {
           setDiscoverPrefillGame(null)
           setDiscoverOrigin(view as any)
           setView('discover')
         }
       }
     },
-    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame, moveSettingsFocus]
+    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame, moveSettingsFocus, libraryFilter, cycleLibraryFilter, toggleFavoriteCurrent, cycleMediaCurrent, diagnosticsDebugOverlayVisible]
   )
 
   // Effects – must be unconditional and before any early returns
@@ -1423,7 +2052,58 @@ function AppInner() {
   }
 
   return (
-    <div className={`fullscreen-root ${theme}-theme`} style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative', background: '#0a0a0f' }}>
+    <div className={`fullscreen-root ${theme}-theme ${isRestoredBoot ? 'crystal-emulator-transitioning-in' : ''} ${instantRestoring?.active ? 'crystal-is-restoring' : ''} ${(providerSurf?.active || (crystalAcq as any)?.active) ? 'provider-surface-active' : ''}`} style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative', background: '#0a0a0f' }}>
+      <style>{`
+        .provider-surface-active .golden-system-landing,
+        .provider-surface-active .golden-library,
+        .provider-surface-active [data-crystal-system-landing],
+        .provider-surface-active [data-crystal-library-view] {
+          filter: brightness(0.6);
+          pointer-events: none;
+          user-select: none;
+        }
+        .provider-surface-active .crystal-provider-dim-overlay {
+          display: block !important;
+        }
+        .provider-surface-active {
+          --provider-owns: 1;
+        }
+      `}</style>
+      {(providerSurf?.active || (crystalAcq as any)?.active) && (
+        <div className="crystal-provider-dim-overlay" style={{ position: 'absolute', inset: 0, zIndex: 7, pointerEvents: 'none', background: 'rgba(6,10,16,0.4)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)', display: 'block' }} />
+      )}
+      {(providerSurf?.active || (crystalAcq as any)?.active) && (
+        <div
+          data-testid="provider-owns-badge"
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 96,
+            zIndex: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '6px 12px',
+            borderRadius: 999,
+            background: theme === 'dark' ? 'rgba(12,18,28,0.82)' : 'rgba(255,255,255,0.88)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.22)' : 'rgba(70,130,255,0.20)'}`,
+            color: theme === 'dark' ? '#7df9ff' : '#2a5fdc',
+            fontFamily: 'var(--crystal-mono)',
+            fontSize: 10.5,
+            letterSpacing: '0.06em',
+            fontWeight: 700,
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+            boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
+            pointerEvents: 'none',
+          }}
+        >
+          <span style={{ fontSize: 12 }}>🔒</span> Provider owns controls
+        </div>
+      )}
+      {instantRestoring?.active && (
+        <div className="crystal-instant-restore-placeholder" data-system={instantRestoring.systemId || activeSystemId} />
+      )}
       {view === 'system' && (
         <div style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'hidden' }}>
           {bgUrl ? (
@@ -1653,7 +2333,7 @@ function AppInner() {
             fullName={fullName}
             theme={theme}
             games={carouselGames}
-            selectedId={selectedGameId || (activeGames[0]?.id ?? '')}
+            selectedId={selectedGameId || (displayGames[0]?.id ?? activeGames[0]?.id ?? '')}
             selectedGame={librarySelectedDetail}
             safeMode={safeMode}
             onSafeModeBlocked={() => {
@@ -1663,7 +2343,7 @@ function AppInner() {
             }}
             onSelect={id => setSelectedGameId(id)}
             onLaunch={g => {
-              const real = activeGames.find(ag => ag.id === g.id)
+              const real = displayGames.find(ag => ag.id === g.id) || activeGames.find(ag => ag.id === g.id)
               if (real) handleLaunchGame(real)
             }}
             onDiscover={() => {
@@ -1676,10 +2356,32 @@ function AppInner() {
               setView('system')
               setSelectedGameplaySources(undefined)
               setSelectedPhysicalUrl(undefined)
+              setLibraryChipFocused(false)
             }}
             mediaResolving={mediaResolving}
             logoUrl={logoUrl}
             stageNode={null}
+            filter={libraryFilter}
+            onFilterChange={f => setLibraryFilter(f)}
+            chipFocused={libraryChipFocused}
+            onChipFocusChange={setLibraryChipFocused}
+            continueGames={continuePlayingGames.map((g: any) => ({
+              id: g.id,
+              name: g.name,
+              coverUrl: (g as any)._fixtureCoverUrl || null,
+              lastPlayedLabel: ((g as any).last_played || (g as any).lastplayed) ? lastPlayedLabel(g as any) as any : null,
+            }))}
+            isEmptyDriveState={isLibraryEmptyDriveState}
+            onRefresh={async () => {
+              try {
+                const games = await listGames(activeSystemId)
+                setGameCache(prev => {
+                  const m = new Map(prev)
+                  m.set(activeSystemId, games)
+                  return m
+                })
+              } catch {}
+            }}
           />
         </SystemStage>
       )}
@@ -1972,261 +2674,40 @@ function AppInner() {
             <div style={{ position: 'absolute', inset: 0, background: theme === 'dark' ? 'linear-gradient(180deg, rgba(10,12,18,0.42), rgba(8,10,16,0.68)), radial-gradient(86% 70% at 50% 18%, transparent 12%, rgba(6,9,14,0.48) 78%)' : 'linear-gradient(180deg, rgba(251,253,255,0.72), rgba(244,247,255,0.82)), radial-gradient(86% 70% at 50% 18%, transparent 10%, rgba(232,238,248,0.48) 72%)' }} />
           </div>
 
-          <div
-            style={{
-              position: 'relative',
-              zIndex: 2,
-              height: 84,
-              minHeight: 84,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0 24px',
-              borderBottom: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
-              backdropFilter: 'blur(22px) saturate(1.12)',
-              WebkitBackdropFilter: 'blur(22px) saturate(1.12)',
-              background: theme === 'dark' ? 'rgba(10,12,18,0.34)' : 'rgba(255,255,255,0.58)',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 999,
-                  display: 'grid',
-                  placeItems: 'center',
-                  background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)',
-                  border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
-                  color: theme === 'dark' ? '#7df9ff' : '#3a6ee8',
-                  fontFamily: 'var(--crystal-mono)',
-                  fontSize: 12,
-                  fontWeight: 800,
-                }}
-              >
-                ✦
-              </div>
-              <div>
-                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, letterSpacing: '0.12em', opacity: 0.56, textTransform: 'uppercase' }}>CRYSTAL OS • PREFERENCES</div>
-                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 19, fontWeight: 720, letterSpacing: '-0.02em', marginTop: 1 }}>Settings</div>
-              </div>
-            </div>
-            <button
-              onClick={() => setView('system')}
-              style={{
-                padding: '9px 16px',
-                borderRadius: 999,
-                border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
-                background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.84)',
-                color: theme === 'dark' ? '#eef7ff' : '#16213e',
-                fontFamily: 'var(--crystal-mono)',
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              [B] CLOSE
-            </button>
-          </div>
-
-          <div data-settings-content style={{ position: 'relative', zIndex: 2, flex: 1, overflowY: 'auto', padding: '22px 24px 32px', display: 'flex', flexDirection: 'column', gap: 16, scrollBehavior: 'smooth' }}>
-            {/* Premium hardware context */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14 }}>
-              <div
-                style={{
-                  padding: '18px 18px',
-                  borderRadius: 16,
-                  background: theme === 'dark' ? 'linear-gradient(180deg, rgba(22,26,42,0.78), rgba(16,20,32,0.72))' : 'linear-gradient(180deg, rgba(255,255,255,0.88), rgba(251,253,255,0.84))',
-                  border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
-                  boxShadow: theme === 'dark' ? '0 12px 28px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.04)' : '0 10px 24px rgba(18,26,44,0.08), inset 0 1px 0 rgba(255,255,255,0.9)',
-                }}
-              >
-                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.56, letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 10 }}>SYSTEM • ENVIRONMENT</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.6 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ opacity: 0.6 }}>Machine</span>
-                    <span style={{ fontWeight: 700, color: isRealMachine ? (theme === 'dark' ? '#7df9ff' : '#295fdc') : theme === 'dark' ? '#ffd885' : '#8a5a00' }}>
-                      {isRealMachine ? 'ROG • Real via get_machine_config' : isExample ? 'SANITIZED EXAMPLE • browser dev' : 'No machine loaded'}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ opacity: 0.6 }}>Systems</span>
-                    <span>{systemsForUI.length} calibrated</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ opacity: 0.6 }}>Theme</span>
-                    <span style={{ textTransform: 'uppercase' }}>{theme}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ opacity: 0.6 }}>Crystal</span>
-                    <span>v{/* version injected */}4.5.0 • graphite / silver / cyan acrylic</span>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    onClick={toggle}
-                    style={{
-                      padding: '8px 14px',
-                      borderRadius: 999,
-                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
-                      background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.82)',
-                      color: theme === 'dark' ? '#eef7ff' : '#16213e',
-                      fontFamily: 'var(--crystal-mono)',
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ⇄ Toggle {theme === 'dark' ? 'Light' : 'Dark'}
-                  </button>
-                  <button
-                    onClick={() => setShowGuides(v => !v)}
-                    style={{
-                      padding: '8px 14px',
-                      borderRadius: 999,
-                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
-                      background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.72)',
-                      color: theme === 'dark' ? '#eef7ff' : '#16213e',
-                      fontFamily: 'var(--crystal-mono)',
-                      fontSize: 11,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {showGuides ? 'Hide guides' : 'Guides'}
-                  </button>
-                </div>
-
-                {devMode && (
-                  <div
-                    style={{
-                      marginTop: 14,
-                      padding: '10px 12px',
-                      borderRadius: 10,
-                      background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.66)',
-                      border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
-                      fontFamily: 'var(--crystal-mono)',
-                      fontSize: 10,
-                      lineHeight: 1.6,
-                      opacity: 0.86,
-                    }}
-                  >
-                    <div>Active: {activeSystemId} / {fullName} • {systemIds.length}</div>
-                    <div>Cache: {Array.from(gameCache.entries()).map(([k, v]) => `${k}:${v.length}`).join(', ') || 'empty'} • View: {view} • Sel: {selectedGameId || 'none'}</div>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div
-                  style={{
-                    padding: '14px 14px',
-                    borderRadius: 14,
-                    background: theme === 'dark' ? 'rgba(125,249,255,0.08)' : 'rgba(70,130,255,0.08)',
-                    border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.14)' : 'rgba(70,130,255,0.14)'}`,
-                  }}
-                >
-                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.7, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>CRYSTAL TIPS • CONTROLLER FIRST</div>
-                  <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 11.5, lineHeight: 1.5, opacity: 0.86 }}>
-                    <div>[A] PLAY / ENTER • [B] BACK • [X] MEDIA CYCLE • [Y] FAVORITE • [VIEW] DISCOVER • [MENU] SETTINGS</div>
-                    <div style={{ marginTop: 6, fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.66 }}>D-PAD up/down browses games, left/right switches system. Media aligns with SystemStage video → screenshot → title → mix → cover.</div>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    padding: '14px 14px',
-                    borderRadius: 12,
-                    background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.74)',
-                    border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.08)'}`,
-                  }}
-                >
-                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.66, letterSpacing: '0.08em', marginBottom: 6 }}>SAFE MODE • WRITE GUARD</div>
-                  <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, lineHeight: 1.5, opacity: 0.78 }}>
-                    Crystal keeps app data under <span style={{ fontFamily: 'var(--crystal-mono)', background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', padding: '1px 6px', borderRadius: 6 }}>%LOCALAPPDATA%\\CrystalFrontend\\</span> and writes game imports only to the selected EmuDeck ROM folder. ES-DE configuration and BIOS files remain untouched. {safeMode ? 'SAFE MODE active — launch blocked.' : 'Normal operation — ROG ready.'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <SettingsUpdaterPanel theme={theme} />
-
-            <DownloadResolverPanel
+          <div style={{ position: 'relative', zIndex: 2, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <SettingsTabsView
               theme={theme}
+              onToggleTheme={toggle}
+              showGuides={showGuides}
+              onToggleGuides={() => setShowGuides(v => !v)}
+              devMode={devMode}
+              onToggleDevMode={() => setDevMode(v => !v)}
+              safeMode={safeMode}
               systems={systemsForUI.map(s => ({ id: s.id, fullName: s.fullName }))}
-              initialSystemId={activeSystemId}
+              populatedSystems={populatedSystems as any}
+              config={config}
+              activeSystemId={activeSystemId}
               onLibraryChanged={async (systemId) => {
                 const games = await listGames(systemId)
                 setGameCache(prev => new Map(prev).set(systemId, games))
               }}
+              onClose={() => setView('system')}
+              onDebugOverlayToggle={() => setDiagnosticsDebugOverlayVisible(v => !v)}
+              debugOverlayVisible={diagnosticsDebugOverlayVisible}
             />
-
-            {/* Discovery entry */}
-            <div
-              style={{
-                padding: '16px 16px',
-                borderRadius: 14,
-                background: theme === 'dark' ? 'linear-gradient(100deg, rgba(22,26,42,0.72), rgba(18,22,36,0.68))' : 'linear-gradient(100deg, rgba(255,255,255,0.86), rgba(248,250,255,0.84))',
-                border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.12)'}`,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <div>
-                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 700, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  DISCOVER — VIMM'S LAIR
-                  <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 8px', borderRadius: 999, background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)', border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.16)'}`, color: theme === 'dark' ? '#7df9ff' : '#295fdc' }}>IN-APP PROVIDER • SAFE DOWNLOAD CAPTURE</span>
-                </div>
-                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, lineHeight: 1.5, marginTop: 6, maxWidth: 560 }}>
-                  Browse Vimm's catalog in Crystal with controller-first search and detail views. Provider pages open externally when needed; completed downloads can be resolved safely from Settings.
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setDiscoverPrefillGame(null)
-                  setDiscoverOrigin('settings')
-                  setView('discover')
-                }}
-                style={{
-                  padding: '10px 16px',
-                  borderRadius: 999,
-                  border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
-                  background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : '#4a86ff',
-                  color: theme === 'dark' ? '#7df9ff' : '#fff',
-                  fontFamily: 'var(--crystal-mono)',
-                  fontSize: 11,
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                  boxShadow: theme === 'dark' ? '0 6px 16px rgba(125,249,255,0.18)' : '0 6px 16px rgba(70,130,255,0.18)',
-                }}
-              >
-                OPEN DISCOVERY
-              </button>
-            </div>
-
-            <div style={{ padding: 16, borderRadius: 14, background: theme === 'dark' ? 'rgba(70,18,26,0.34)' : 'rgba(255,244,246,0.90)', border: `1px solid ${theme === 'dark' ? 'rgba(255,118,138,0.20)' : 'rgba(176,38,62,0.16)'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 720 }}>Exit Crystal</div>
-                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, marginTop: 5 }}>Close the frontend and return to Windows.</div>
-              </div>
-              <button
-                onClick={() => { invokeBackend<void>('exit_crystal').catch(() => window.close()) }}
-                style={{ padding: '10px 16px', borderRadius: 999, border: `1px solid ${theme === 'dark' ? 'rgba(255,118,138,0.28)' : 'rgba(176,38,62,0.22)'}`, background: theme === 'dark' ? 'rgba(255,92,118,0.14)' : 'rgba(176,38,62,0.10)', color: theme === 'dark' ? '#ff9bad' : '#a7223d', fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
-              >
-                [A] EXIT CRYSTAL
-              </button>
-            </div>
           </div>
-          <style>{`
-            .crystal-settings button:focus-visible {
-              outline: 2px solid ${theme === 'dark' ? '#7df9ff' : '#4a86ff'};
-              outline-offset: 3px;
-              box-shadow: 0 0 0 5px ${theme === 'dark' ? 'rgba(125,249,255,0.13)' : 'rgba(74,134,255,0.13)'};
-            }
-          `}</style>
         </div>
       )}
+
+      {/* Diagnostics Debug Overlay – L+R+View chord, View in Diagnostics tab */}
+      <DiagnosticsDebugOverlay
+        theme={theme as any}
+        systemId={activeSystemId}
+        visible={diagnosticsDebugOverlayVisible}
+        onClose={() => setDiagnosticsDebugOverlayVisible(false)}
+      />
+
+      {/* Pillar 2 – Filter chips now live inside LibraryView (boutique integration) – legacy absolute chips removed to avoid clutter */}
 
       {/* Global SAFE MODE indicator for non-system views – subtle dev-only pill */}
       {safeMode && view !== 'system' && (
@@ -2278,6 +2759,32 @@ function AppInner() {
           }}
         >
           {safeModeToast}
+        </div>
+      )}
+
+      {/* Dedup trust toast – small, bounded, after dedupeLibraryGames cleans duplicates */}
+      {dedupToast && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute',
+            bottom: 68,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 19,
+            background: theme === 'dark' ? 'rgba(16,22,28,0.90)' : 'rgba(255,255,255,0.92)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.24)' : 'rgba(70,130,255,0.18)'}`,
+            color: theme === 'dark' ? '#c8fcff' : '#1e3a8a',
+            padding: '8px 14px',
+            borderRadius: 999,
+            fontFamily: 'var(--crystal-mono)',
+            fontSize: 10.5,
+            letterSpacing: '0.05em',
+            boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
+            pointerEvents: 'none',
+          }}
+        >
+          ✨ {dedupToast}
         </div>
       )}
 
@@ -2390,8 +2897,15 @@ export default function App() {
   return (
     <ThemeProvider>
       <MachineConfigProvider>
-        <AppInner />
+        <CrystalErrorBoundaryWrapper>
+          <AppInner />
+        </CrystalErrorBoundaryWrapper>
       </MachineConfigProvider>
     </ThemeProvider>
   )
+}
+
+import { CrystalErrorBoundary } from './components/CrystalErrorBoundary'
+function CrystalErrorBoundaryWrapper({ children }: { children: React.ReactNode }) {
+  return <CrystalErrorBoundary>{children}</CrystalErrorBoundary>
 }

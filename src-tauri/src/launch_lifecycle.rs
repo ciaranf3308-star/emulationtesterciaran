@@ -22,6 +22,15 @@ pub struct RestoreState {
     pub rom_basename: String,
     pub timestamp: u64,
     pub version: u8,
+    // Pillar 1 – Navigation & Restore extensions (optional, backwards-compatible)
+    #[serde(default)]
+    pub scroll_index: Option<u32>,
+    #[serde(default)]
+    pub view: Option<String>,
+    #[serde(default)]
+    pub game_index: Option<u32>,
+    #[serde(default)]
+    pub last_system_index: Option<u32>,
 }
 
 fn now_ts() -> u64 {
@@ -69,11 +78,37 @@ pub fn save_restore_state(state: &RestoreState) -> Result<PathBuf, String> {
             state.rom_basename
         ));
     }
+    // validate optional view string if present – whitelist
+    if let Some(view) = &state.view {
+        let v = view.trim().to_lowercase();
+        if !v.is_empty() {
+            let allowed = ["library", "systems", "discover", "settings", "downloads", "system", "allgames", "favorites", "recent"];
+            if !allowed.contains(&v.as_str()) {
+                return Err(format!("RESTORE_VIEW_INVALID: '{}'", view));
+            }
+        }
+    }
+    // reject overly large optional indices – sanity
+    if let Some(idx) = state.scroll_index {
+        if idx > 100_000 {
+            return Err(format!("RESTORE_SCROLL_INDEX_OOB: {}", idx));
+        }
+    }
+    if let Some(idx) = state.game_index {
+        if idx > 100_000 {
+            return Err(format!("RESTORE_GAME_INDEX_OOB: {}", idx));
+        }
+    }
+    if let Some(idx) = state.last_system_index {
+        if idx > 5000 {
+            return Err(format!("RESTORE_SYSTEM_INDEX_OOB: {}", idx));
+        }
+    }
     let json =
         serde_json::to_string(state).map_err(|e| format!("RESTORE_SERIALIZE_FAILED: {}", e))?;
-    if json.len() > 2048 {
+    if json.len() > 3072 {
         return Err(format!(
-            "RESTORE_BOUNDED_EXCEEDED: {} bytes > 2048",
+            "RESTORE_BOUNDED_EXCEEDED: {} bytes > 3072",
             json.len()
         ));
     }
@@ -92,8 +127,8 @@ pub fn save_restore_state(state: &RestoreState) -> Result<PathBuf, String> {
     log_event(
         "info",
         &format!(
-            "restore_saved system={} rom={} ts={}",
-            state.system_id, state.rom_basename, state.timestamp
+            "restore_saved system={} rom={} ts={} view={:?} sys_idx={:?} game_idx={:?} scroll={:?}",
+            state.system_id, state.rom_basename, state.timestamp, state.view, state.last_system_index, state.game_index, state.scroll_index
         ),
     );
     Ok(path)
@@ -534,6 +569,14 @@ pub struct SaveRestoreArgs {
     pub system_id: String,
     pub rom_path: String,
     pub rom_basename: String,
+    #[serde(default)]
+    pub scroll_index: Option<u32>,
+    #[serde(default)]
+    pub view: Option<String>,
+    #[serde(default)]
+    pub game_index: Option<u32>,
+    #[serde(default)]
+    pub last_system_index: Option<u32>,
 }
 
 #[tauri::command]
@@ -541,6 +584,10 @@ pub fn save_launch_restore_state(
     system_id: String,
     rom_path: String,
     rom_basename: String,
+    #[allow(non_snake_case)] scroll_index: Option<u32>,
+    #[allow(non_snake_case)] view: Option<String>,
+    #[allow(non_snake_case)] game_index: Option<u32>,
+    #[allow(non_snake_case)] last_system_index: Option<u32>,
 ) -> Result<RestoreState, String> {
     let state = RestoreState {
         system_id: system_id.trim().to_string(),
@@ -548,9 +595,23 @@ pub fn save_launch_restore_state(
         rom_basename: rom_basename.trim().to_string(),
         timestamp: now_ts(),
         version: 1,
+        scroll_index,
+        view: view.map(|v| v.trim().to_string()).filter(|s| !s.is_empty()),
+        game_index,
+        last_system_index,
     };
     let _path = save_restore_state(&state)?;
     Ok(state)
+}
+
+#[tauri::command]
+pub fn save_launch_restore_state_compat(
+    system_id: String,
+    rom_path: String,
+    rom_basename: String,
+) -> Result<RestoreState, String> {
+    // Legacy shim – keep backward compat for older frontends that only send 3 args
+    save_launch_restore_state(system_id, rom_path, rom_basename, None, None, None, None)
 }
 
 #[tauri::command]
@@ -603,16 +664,69 @@ mod tests {
                 rom_basename: "game".to_string(),
                 timestamp: 123456,
                 version: 1,
+                scroll_index: None,
+                view: None,
+                game_index: None,
+                last_system_index: None,
             };
             let p = save_restore_state(&state).expect("save");
             assert!(p.exists());
             let s = std::fs::read_to_string(&p).unwrap();
-            assert!(s.len() < 2048);
+            assert!(s.len() < 3072);
             let loaded = load_restore_state().expect("load");
             assert_eq!(loaded.system_id, "ps2");
             assert_eq!(loaded.rom_basename, "game");
             clear_restore_state();
             assert!(load_restore_state().is_none());
+        })
+    }
+
+    #[test]
+    fn restore_roundtrip_with_nav() {
+        with_temp_root(|| {
+            let state = RestoreState {
+                system_id: "gc".to_string(),
+                rom_path: "D:/Emulation/roms/gc/game.iso".to_string(),
+                rom_basename: "game".to_string(),
+                timestamp: now_ts(),
+                version: 1,
+                scroll_index: Some(2),
+                view: Some("library".to_string()),
+                game_index: Some(5),
+                last_system_index: Some(3),
+            };
+            let p = save_restore_state(&state).expect("save nav");
+            assert!(p.exists());
+            let s = std::fs::read_to_string(&p).unwrap();
+            assert!(s.len() < 3072);
+            assert!(s.contains("scroll_index"));
+            assert!(s.contains("game_index"));
+            let loaded = load_restore_state().expect("load nav");
+            assert_eq!(loaded.scroll_index, Some(2));
+            assert_eq!(loaded.view.as_deref(), Some("library"));
+            assert_eq!(loaded.game_index, Some(5));
+            assert_eq!(loaded.last_system_index, Some(3));
+            clear_restore_state();
+        })
+    }
+
+    #[test]
+    fn restore_backward_compat_missing_nav() {
+        with_temp_root(|| {
+            // Simulate old JSON without new fields
+            let root = crate::safety::crystal_writable_root();
+            let dir = root.join("state");
+            let _ = std::fs::create_dir_all(&dir);
+            let p = dir.join("restore.json");
+            let old_json = r#"{"system_id":"ps2","rom_path":"D:/roms/a.iso","rom_basename":"a","timestamp":123,"version":1}"#;
+            std::fs::write(&p, old_json).unwrap();
+            let loaded = load_restore_state().expect("load legacy");
+            assert_eq!(loaded.system_id, "ps2");
+            assert_eq!(loaded.scroll_index, None);
+            assert_eq!(loaded.view, None);
+            assert_eq!(loaded.game_index, None);
+            assert_eq!(loaded.last_system_index, None);
+            clear_restore_state();
         })
     }
 
@@ -625,6 +739,10 @@ mod tests {
                 rom_basename: "game".to_string(),
                 timestamp: 1,
                 version: 1,
+                scroll_index: None,
+                view: None,
+                game_index: None,
+                last_system_index: None,
             };
             let err = save_restore_state(&huge).unwrap_err();
             assert!(err.contains("BOUNDED") || err.contains("ROM"));
@@ -650,6 +768,10 @@ mod tests {
                 rom_basename: "game".to_string(),
                 timestamp: 1,
                 version: 1,
+                scroll_index: None,
+                view: None,
+                game_index: None,
+                last_system_index: None,
             };
             // json will contain "secret" substring -> should be rejected
             let err = save_restore_state(&state);
@@ -709,6 +831,10 @@ mod tests {
                 rom_basename: "game".to_string(),
                 timestamp: now_ts(),
                 version: 1,
+                scroll_index: None,
+                view: None,
+                game_index: None,
+                last_system_index: None,
             };
             let _ = save_restore_state(&s).unwrap();
             assert!(load_restore_state().is_some());

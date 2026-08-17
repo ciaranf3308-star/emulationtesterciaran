@@ -1,11 +1,13 @@
 mod acquisition_watch;
 mod discovery;
 mod download_resolver;
+mod gamelist_favorites;
 mod import_game;
 mod launch_lifecycle;
 mod machine_config;
 mod provider_surface;
 mod safety;
+mod steam_launch;
 mod test_env_lock;
 
 use safety::{
@@ -1336,6 +1338,10 @@ fn launch_game_with_handoff(
             .map(|d| d.as_secs())
             .unwrap_or(0),
         version: 1,
+        scroll_index: None,
+        view: None,
+        game_index: None,
+        last_system_index: None,
     };
 
     let restore_path = launch_lifecycle::save_restore_state(&restore_state)
@@ -1528,6 +1534,7 @@ pub fn run() {
             launch_game_with_handoff,
             safety::get_safe_mode,
             safety::get_crystal_writable_root,
+            safety::write_crash_report,
             discovery::fetch_vimm,
             discovery::fetch_romsfun,
             discovery::discovery_cache_read,
@@ -1553,6 +1560,11 @@ pub fn run() {
             launch_lifecycle::save_launch_restore_state,
             launch_lifecycle::clear_launch_restore_state,
             launch_lifecycle::exit_crystal_after_handoff,
+            gamelist_favorites::set_favorite,
+            gamelist_favorites::get_favorite_status,
+            gamelist_favorites::refresh_metadata_after_launch,
+            steam_launch::safe_steam_launch,
+            steam_launch::safe_steam_launch_from_template,
             exit_crystal
         ])
         .run(tauri::generate_context!())

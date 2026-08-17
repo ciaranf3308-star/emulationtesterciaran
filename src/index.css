@@ -15,6 +15,42 @@
   --text-dim: var(--crystal-ink-dim);
   --line: var(--crystal-line);
   --accent: var(--crystal-electric);
+
+  /* V3 unified entrance choreography – one cubic, three phase durations */
+  --crystal-entrance-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --crystal-entrance-opacity: 380ms;
+  --crystal-entrance-transform: 480ms;
+  --crystal-entrance-filter: 420ms;
+}
+
+/* ── V3 unified entrance classes ── */
+.crystal-system-enter,
+.crystal-library-enter {
+  /* GPU-friendly: opacity + transform only, filter on background layer isolated */
+  transition-property: opacity, transform, filter;
+  transition-duration: var(--crystal-entrance-opacity), var(--crystal-entrance-transform), var(--crystal-entrance-filter);
+  transition-timing-function: var(--crystal-entrance-ease), var(--crystal-entrance-ease), var(--crystal-entrance-ease);
+  will-change: opacity, transform;
+}
+
+.crystal-system-enter {
+  /* storefront sharp – no blur in chrome */
+}
+
+.crystal-library-enter {
+  /* library cinematic defocus lives on background layer only – hardware/media sharp filter:none */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --crystal-entrance-opacity: 140ms;
+    --crystal-entrance-transform: 160ms;
+    --crystal-entrance-filter: 120ms;
+  }
+  .crystal-system-enter,
+  .crystal-library-enter {
+    transition-duration: 140ms, 160ms, 120ms !important;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -389,10 +425,41 @@ html.crystal-background-suspended *::after {
 /* ── SystemStage 5-layer architecture ── */
 .system-stage {
   position: relative;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   isolation: isolate;
+}
+
+/* V3: hardware foreground choreography – GPU-friendly transform+opacity only */
+.system-stage .layer-hardware,
+.system-stage .hardware-frame {
+  /* initial state for entrance; JS drives to opacity 1 scale 1 via inline transition */
+  will-change: opacity, transform;
+  /* ensure no layout thrash – transform only */
+}
+
+.system-stage.is-storefront .hardware-frame {
+  /* V7.3 showroom hero – visible but scaled for drama; opacity 1, scale = showroomPlacement */
+  opacity: 1;
+}
+
+.system-stage.is-entered .hardware-frame {
+  /* library – main hero, razor sharp, drop-shadow */
+  opacity: 1;
+  filter: none; /* hardware itself stays sharp; drop-shadow on inner img keeps GPU */
+}
+
+.system-stage .layer-background .stage-bg-image,
+.system-stage .layer-background img {
+  /* background blur isolated – 32px dark / 26px light handled via inline filter in SystemStage */
+  will-change: filter, transform;
+}
+
+/* gameplay & physical media razor-sharp – never blurred */
+.system-stage .layer-gameplay,
+.system-stage .layer-physical {
+  filter: none !important;
 }
 
 .system-stage__layer {
@@ -537,3 +604,84 @@ html.crystal-background-suspended *::after {
   .top-bar, .bottom-hint { padding-left: 20px; padding-right: 20px; }
   .stage { padding-left: 20px; padding-right: 20px; }
 }
+
+/* ── Pillar 1: Cinematic fade bridge + spatial memory overlays ── */
+/* Unified timing – controller-safe cubic */
+:root {
+  --crystal-transition-curve: cubic-bezier(0.16,1,0.3,1);
+  --crystal-fade-out: 380ms;
+  --crystal-fade-in: 480ms;
+}
+
+.crystal-emulator-transitioning-out {
+  animation: crystal-fade-out var(--crystal-fade-out) var(--crystal-transition-curve) forwards !important;
+  pointer-events: none;
+}
+.crystal-emulator-transitioning-out .fullscreen-root,
+.crystal-emulator-transitioning-out #root,
+.crystal-emulator-transitioning-out .system-stage,
+.crystal-emulator-transitioning-out .golden-system-landing,
+.crystal-emulator-transitioning-out .golden-library {
+  animation: crystal-fade-out var(--crystal-fade-out) var(--crystal-transition-curve) forwards !important;
+}
+
+.crystal-emulator-transitioning-in {
+  animation: crystal-fade-in var(--crystal-fade-in) var(--crystal-transition-curve) both !important;
+}
+.crystal-emulator-transitioning-in .fullscreen-root,
+.crystal-emulator-transitioning-in #root,
+.crystal-emulator-transitioning-in .system-stage,
+.crystal-emulator-transitioning-in .golden-system-landing,
+.crystal-emulator-transitioning-in .golden-library {
+  animation: crystal-fade-in var(--crystal-fade-in) var(--crystal-transition-curve) both !important;
+}
+
+@keyframes crystal-fade-out {
+  0% { opacity: 1; filter: blur(0px) saturate(1); transform: scale(1); }
+  100% { opacity: 0; filter: blur(24px) saturate(0.7); transform: scale(1.05); }
+}
+@keyframes crystal-fade-in {
+  0% { opacity: 0; filter: blur(24px) saturate(0.7); transform: scale(1.08); }
+  100% { opacity: 1; filter: blur(0px) saturate(1); transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --crystal-fade-out: 120ms; --crystal-fade-in: 120ms; }
+  .crystal-emulator-transitioning-out,
+  .crystal-emulator-transitioning-in,
+  .crystal-emulator-transitioning-out .fullscreen-root,
+  .crystal-emulator-transitioning-in .fullscreen-root {
+    animation-duration: 120ms !important;
+  }
+}
+
+/* Instant restore placeholder shimmer */
+.crystal-instant-restore-placeholder {
+  position: absolute; inset: 0; z-index: 20;
+  display: grid; place-items: center;
+  background: rgba(10,10,15,0.72);
+  backdrop-filter: blur(22px) saturate(1.1);
+  -webkit-backdrop-filter: blur(22px) saturate(1.1);
+  animation: crystal-instant-pulse 1800ms var(--crystal-transition-curve) infinite;
+}
+.crystal-instant-restore-placeholder::after {
+  content: "RESTORING • " attr(data-system);
+  font-family: var(--crystal-mono);
+  font-size: 11px; letter-spacing: .12em;
+  color: rgba(230,244,255,.82);
+  padding: 10px 16px; border-radius: 999px;
+  border: 1px solid rgba(125,249,255,.18);
+  background: rgba(255,255,255,.04);
+}
+@keyframes crystal-instant-pulse {
+  0%,100% { opacity: .82; }
+  50% { opacity: 1; }
+}
+
+/* Spatial memory focus ring – non-intrusive */
+[data-spatial-system-index].crystal-spatial-last {
+  outline: 2px solid rgba(125,249,255,.42);
+  outline-offset: 3px;
+  border-radius: 12px;
+}
+

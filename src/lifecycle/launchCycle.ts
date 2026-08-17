@@ -1,6 +1,7 @@
 // src/lifecycle/launchCycle.ts – V8.7 zero-overhead game-launch handoff + return
 // Minimal contract: bounded RestoreState persisted via Tauri, spawn watcher BEFORE Crystal exit,
 // secure return path, pre-exit cleanup to free obvious resources.
+// Pillar 1 extension: spatial memory + restore fields.
 
 import { invokeBackend } from '../runtime/backend'
 
@@ -10,6 +11,11 @@ export type RestoreState = {
   rom_basename: string
   timestamp: number
   version: number
+  // Navigation & Restore extensions – optional, backwards-compatible
+  scroll_index?: number | null
+  view?: string | null
+  game_index?: number | null
+  last_system_index?: number | null
 }
 
 export type HandoffReady = {
@@ -18,12 +24,37 @@ export type HandoffReady = {
   restore_path: string
 }
 
-export async function saveRestoreState(systemId: string, romPath: string, romBasename: string): Promise<RestoreState> {
+export type ExtendedSaveArgs = {
+  scroll_index?: number | null
+  view?: string | null
+  game_index?: number | null
+  last_system_index?: number | null
+}
+
+export async function saveRestoreState(
+  systemId: string,
+  romPath: string,
+  romBasename: string,
+  ext?: ExtendedSaveArgs,
+): Promise<RestoreState> {
   return invokeBackend<RestoreState>('save_launch_restore_state', {
+    system_id: systemId,
+    rom_path: romPath,
+    rom_basename: romBasename,
+    scroll_index: ext?.scroll_index ?? null,
+    view: ext?.view ?? null,
+    game_index: ext?.game_index ?? null,
+    last_system_index: ext?.last_system_index ?? null,
+    // legacy PascalCase fallbacks for older handler mapping (harmless)
     systemId,
     romPath,
     romBasename,
   } as any)
+}
+
+// Backwards-compatible wrapper – older call sites that passed raw strings still work
+export async function saveRestoreStateSimple(systemId: string, romPath: string, romBasename: string) {
+  return saveRestoreState(systemId, romPath, romBasename)
 }
 
 // Alternate naming from Rust (launch_lifecycle prefix may also be registered as same command name)
@@ -128,3 +159,32 @@ export function isRestoreRecent(state: RestoreState | null, maxAgeSeconds = 300)
   if (age < 0) return false // far-future reject handled Rust-side also
   return age <= maxAgeSeconds
 }
+
+export type CrystalNavPersist = {
+  view?: string
+  systemId?: string
+  systemIndex?: number
+  gameIndex?: number
+  scrollIndex?: number
+  restored?: boolean
+  ts?: number
+}
+
+export const NAV_LS_KEY = 'crystal:nav'
+export const RESTORED_FLAG_KEY = 'crystal:restored'
+
+export function loadLocalNav(): CrystalNavPersist | null {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(NAV_LS_KEY) : null
+    if (!raw) return null
+    return JSON.parse(raw) as CrystalNavPersist
+  } catch { return null }
+}
+
+export function saveLocalNav(nav: CrystalNavPersist) {
+  try {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(NAV_LS_KEY, JSON.stringify({ ...nav, ts: Date.now() }))
+  } catch {}
+}
+
