@@ -342,8 +342,9 @@ describe('V8.4 discovery – detail parsing via fixture', () => {
 
 describe('V8.4 discovery – cache TTL (search 20m expire, detail 24h)', () => {
   test('search TTL 20m default', () => {
-    expect(SEARCH_TTL_MS_DEFAULT).toBe(20 * 60 * 1000);
-    expect(SEARCH_TTL_MS_DEFAULT).toBe(1_200_000);
+    // V3 Discovery Native – primary cached 24h bounded 500KB prune 24h
+    expect(SEARCH_TTL_MS_DEFAULT).toBe(24 * 60 * 60 * 1000);
+    expect(SEARCH_TTL_MS_DEFAULT).toBe(86_400_000);
   });
 
   test('search cache freshness – fresh vs expired', () => {
@@ -352,7 +353,7 @@ describe('V8.4 discovery – cache TTL (search 20m expire, detail 24h)', () => {
     expect(isSearchFresh(freshEntry)).toBe(true);
     expect(isCacheFresh(freshEntry)).toBe(true);
 
-    const expiredEntry = createSearchCacheEntry([{ id: '1' }], 'ps2', 'ffx', 'PS2', SEARCH_TTL_MS_DEFAULT, now - 21 * 60 * 1000);
+    const expiredEntry = createSearchCacheEntry([{ id: '1' }], 'ps2', 'ffx', 'PS2', SEARCH_TTL_MS_DEFAULT, now - 25 * 60 * 60 * 1000);
     expect(isSearchFresh(expiredEntry)).toBe(false);
     expect(isCacheFresh(expiredEntry)).toBe(false);
   });

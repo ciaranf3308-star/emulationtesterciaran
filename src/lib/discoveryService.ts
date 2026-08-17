@@ -65,6 +65,15 @@ export type DiscoverySearchParams = {
   browseLetter?: string;
   limit?: number;
   signal?: AbortSignal;
+  forceRefresh?: boolean;
+};
+
+export type DiscoverySearchResultWithMeta = {
+  results: DiscoveryResult[];
+  source: 'cache' | 'live';
+  timestamp: number;
+  fresh: boolean;
+  providerHealth?: { status: 'live' | 'cached' | 'slow'; lastSuccessMs?: number; lastFailReason?: string; lastParseCount?: number };
 };
 
 export function canonicalVaultUrl(id: string): string {
@@ -139,7 +148,7 @@ export async function search(params: DiscoverySearchParams): Promise<DiscoveryRe
   const providerQuery = params.browseLetter
     ? `__browse:${params.browseLetter.toUpperCase()}`
     : params.query;
-  const res: AuthResult[] = await service.search(params.systemId, providerQuery, { signal: params.signal });
+  const res: AuthResult[] = await service.search(params.systemId, providerQuery, { signal: params.signal, forceRefresh: params.forceRefresh });
   return res.map((r): DiscoveryResult => ({
     id: r.providerId || (r as any).id,
     providerId: r.providerId,
@@ -155,6 +164,42 @@ export async function search(params: DiscoverySearchParams): Promise<DiscoveryRe
     provider: r.provider || 'vimms',
     discCount: r.discCount,
   }));
+}
+
+export async function searchWithMeta(params: DiscoverySearchParams): Promise<DiscoverySearchResultWithMeta> {
+  try {
+    if (isStrictFixtureActive()) {
+      const basic = await search(params);
+      return { results: basic, source: 'live', timestamp: Date.now(), fresh: true, providerHealth: { status: 'live' } };
+    }
+  } catch {}
+  const providerQuery = params.browseLetter
+    ? `__browse:${params.browseLetter.toUpperCase()}`
+    : params.query;
+  try {
+    const withMeta = await service.searchWithMeta(params.systemId, providerQuery, { signal: params.signal, forceRefresh: params.forceRefresh });
+    const health = service.getHealth();
+    const mapped = withMeta.results.map((r): DiscoveryResult => ({
+      id: r.providerId || (r as any).id,
+      providerId: r.providerId,
+      title: r.title,
+      systemId: r.systemId,
+      system: r.systemId,
+      externalSystem: r.externalSystem,
+      region: r.region,
+      year: r.year as any,
+      availability: (r.availability || 'available') as DiscoveryAvailability,
+      externalUrl: r.externalUrl || buildVimmDetailUrl(r.providerId),
+      thumbnailUrl: r.thumbnailUrl || null,
+      provider: r.provider || 'vimms',
+      discCount: r.discCount,
+    }));
+    return { results: mapped, source: withMeta.source, timestamp: withMeta.timestamp, fresh: withMeta.fresh, providerHealth: health as any };
+  } catch (e: any) {
+    // Resilience: if live fails, try to return empty with health slow and allow caller fallback
+    const health = service.getHealth();
+    throw { error: e, providerHealth: health, source: 'live-failed' };
+  }
 }
 
 export async function detail(id: string, systemId?: string): Promise<DiscoveryGameDetail | null> {
@@ -250,6 +295,7 @@ export const primaryProvider = vimmProviderDormant;
 
 const discoveryService = {
   search,
+  searchWithMeta,
   detail,
   open,
   openVimmBackup,
@@ -263,6 +309,9 @@ const discoveryService = {
   primaryProvider,
   dormantVimmProvider,
   buildRomsFunCanonicalForDiscover,
+  getHealth: () => {
+    try { return (service as any).getHealth() } catch { return { status: 'live' } }
+  },
 };
 
 export default discoveryService;

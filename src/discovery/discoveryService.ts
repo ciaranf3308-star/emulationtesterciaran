@@ -11,7 +11,7 @@
 
 import type { DiscoveryResult, DiscoveryGameDetail } from './types';
 import type { CatalogProvider } from './catalogProvider';
-import { getCachedSearch, setCachedSearch, getCachedDetail, setCachedDetail } from './cache';
+import { getCachedSearch, getCachedSearchWithMeta, setCachedSearch, getCachedDetail, setCachedDetail } from './cache';
 import { SEARCH_TTL_MS_DEFAULT, DETAIL_TTL_MS } from './types';
 import { isTauriEnvironment } from '../runtime/environment';
 
@@ -26,6 +26,9 @@ interface ProviderState {
   activeToken: number;
   tokenSeq: number;
   inflight?: Promise<DiscoveryResult[]>;
+  lastSuccessMs: number;
+  lastFailReason?: string;
+  lastParseCount?: number;
 }
 
 export class DiscoveryService {
@@ -34,6 +37,7 @@ export class DiscoveryService {
     lastFetchMs: 0,
     activeToken: 0,
     tokenSeq: 0,
+    lastSuccessMs: 0,
   };
 
   constructor(provider: CatalogProvider) {
@@ -114,27 +118,35 @@ export class DiscoveryService {
     });
   }
 
-  async search(systemId: string, query: string, opts?: { signal?: AbortSignal }): Promise<DiscoveryResult[]> {
+  async search(systemId: string, query: string, opts?: { signal?: AbortSignal; forceRefresh?: boolean }): Promise<DiscoveryResult[]> {
+    const res = await this.searchWithMeta(systemId, query, opts);
+    return res.results;
+  }
+
+  async searchWithMeta(systemId: string, query: string, opts?: { signal?: AbortSignal; forceRefresh?: boolean }): Promise<{ results: DiscoveryResult[]; source: 'cache' | 'live'; timestamp: number; fresh: boolean }> {
     this.assertValidSystem(systemId);
 
     const token = ++this.state.tokenSeq;
     this.state.activeToken = token;
 
     const q = query.trim();
+    const force = !!opts?.forceRefresh;
 
-    // cache first (ignoring abort for cache read)
-    try {
-      const cached = await getCachedSearch(this.provider.id, systemId, q);
-      if (cached) {
-        // stale token check – if newer search already started, discard cached? we still return cache for this token if still active
-        if (this.state.activeToken !== token) {
-          throw new DOMException('Stale search – superseded', 'AbortError');
+    // cache first unless forceRefresh (X refresh bypasses cache)
+    if (!force) {
+      try {
+        const cachedMeta = await getCachedSearchWithMeta(this.provider.id, systemId, q);
+        if (cachedMeta) {
+          if (this.state.activeToken !== token) {
+            throw new DOMException('Stale search – superseded', 'AbortError');
+          }
+          // Return cached immediately – caller can show Cached badge; background refresh optional
+          return { results: cachedMeta.results, source: 'cache', timestamp: cachedMeta.timestamp, fresh: cachedMeta.fresh };
         }
-        return cached;
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') throw e;
+        // ignore cache errors, fallback to live
       }
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') throw e;
-      // ignore cache errors
     }
 
     if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -155,14 +167,32 @@ export class DiscoveryService {
         if (this.state.activeToken !== token) throw new DOMException('Stale result discarded', 'AbortError');
 
         this.state.lastFetchMs = Date.now();
+        this.state.lastSuccessMs = this.state.lastFetchMs;
+        this.state.lastFailReason = undefined;
+        this.state.lastParseCount = res.length;
 
-        // cache set best-effort
+        // cache set best-effort – 24h primary, <500KB enforced in cache.ts
         setCachedSearch(this.provider.id, systemId, q, res, SEARCH_TTL_MS_DEFAULT).catch(() => {});
 
-        return res;
+        return { results: res, source: 'live', timestamp: Date.now(), fresh: true };
       } catch (err: any) {
         const isAbort = err?.name === 'AbortError' || (typeof err?.message === 'string' && err.message.toLowerCase().includes('abort'));
         if (isAbort) throw err;
+
+        // Resilience: on parse failure, try cached fallback
+        const looksLikeParse = err?.message?.toLowerCase().includes('parse') || err?.message?.includes('selector') || err?.kind === 'parser-error';
+        if (looksLikeParse) {
+          try {
+            const fallback = await getCachedSearch(this.provider.id, systemId, q);
+            if (fallback && fallback.length > 0) {
+              this.state.lastFetchMs = Date.now();
+              this.state.lastFailReason = `parse_fail_fallback_cache: ${err?.message?.slice(0,120)}`;
+              // still set parse count as fallback length
+              this.state.lastParseCount = fallback.length;
+              return { results: fallback, source: 'cache', timestamp: Date.now(), fresh: false };
+            }
+          } catch {}
+        }
 
         // 429 handling – exponential backoff
         const is429 = err?.message?.includes('429') || err?.httpStatus === 429 || err?.status === 429;
@@ -172,11 +202,23 @@ export class DiscoveryService {
           await this.sleepWithAbort(backoff, opts?.signal);
           continue;
         }
-        // real failure
+        // real failure – record for health pill
         this.state.lastFetchMs = Date.now();
+        this.state.lastFailReason = err?.message ? String(err.message).slice(0, 160) : String(err).slice(0, 160);
         throw err;
       }
     }
+  }
+
+  getHealth(): { lastSuccessMs: number; lastFetchMs: number; lastFailReason?: string; lastParseCount?: number; status: 'live' | 'cached' | 'slow' } {
+    const now = Date.now();
+    if (this.state.lastFailReason) {
+      return { lastSuccessMs: this.state.lastSuccessMs, lastFetchMs: this.state.lastFetchMs, lastFailReason: this.state.lastFailReason, lastParseCount: this.state.lastParseCount, status: 'slow' };
+    }
+    if (this.state.lastSuccessMs && now - this.state.lastSuccessMs < 5 * 60 * 1000) {
+      return { lastSuccessMs: this.state.lastSuccessMs, lastFetchMs: this.state.lastFetchMs, lastParseCount: this.state.lastParseCount, status: 'live' };
+    }
+    return { lastSuccessMs: this.state.lastSuccessMs, lastFetchMs: this.state.lastFetchMs, lastParseCount: this.state.lastParseCount, status: 'cached' };
   }
 
   async getDetail(id: string, systemId?: string, opts?: { signal?: AbortSignal }): Promise<DiscoveryGameDetail> {

@@ -5,6 +5,11 @@
  * NOT BaseDirectory.AppLocalData (which resolves to com.crystal.frontend / AppLocalData id).
  * Rust safety architecture enforces this via crystal_writable_root + resolve_writable_path.
  *
+ * V3 Discovery Native – 24h primary cached in D:\CrystalFrontend\cache\discovery\ (fallback LOCALAPPDATA)
+ * - Cache structure { key: lowercase search, provider: vimm|romsfun, results, timestamp, version }
+ * - Bounded <500KB per file, prune >24h on access via Rust, limit max files 100
+ * - Frontend try cache first, then live fetch; hit <24h -> show badge Cached; X refresh bypasses cache
+ *
  * Frontend now talks to narrowly scoped Tauri commands:
  *   discovery_cache_read(key) -> Option<String>
  *   discovery_cache_write(key, content)
@@ -14,13 +19,14 @@
  * Falls back to localStorage when not in Tauri (browser dev / tests).
  */
 
-import type { DiscoveryResult, DiscoveryGameDetail, SearchCacheEntry, DetailCacheEntry } from './types';
-import { DETAIL_TTL_MS, SEARCH_TTL_MS_DEFAULT } from './types';
+import type { DiscoveryResult, DiscoveryGameDetail, SearchCacheEntry, DetailCacheEntry, DiscoveryCacheEnvelope } from './types';
+import { DETAIL_TTL_MS, SEARCH_TTL_MS_DEFAULT, DISCOVERY_CACHE_VERSION, DISCOVERY_CACHE_MAX_BYTES } from './types';
 import { getTauriInvoker } from '../runtime/tauri';
 import { isTauriEnvironment } from '../runtime/environment';
 
 const MEMORY_SEARCH = new Map<string, SearchCacheEntry>();
 const MEMORY_DETAIL = new Map<string, DetailCacheEntry>();
+const MEMORY_SEARCH_META = new Map<string, { timestamp: number; source: 'memory' | 'tauri' | 'local'; hits: number }>();
 
 function safeCacheKeyPart(s: string): string {
   return s.replace(/[^a-zA-Z0-9\-_]/g, '_').slice(0, 80) || 'none';
@@ -94,6 +100,25 @@ async function tauriCacheWrite(key: string, data: string): Promise<boolean> {
     const inv = await getTauriInvoker();
     if (!inv) return false;
 
+    // Bounded <500KB enforcement frontend-side (defense-in-depth, Rust also enforces)
+    if (data.length > DISCOVERY_CACHE_MAX_BYTES) {
+      try {
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed?.data) && parsed.data.length > 40) {
+          parsed.data = parsed.data.slice(0, 40);
+          data = JSON.stringify(parsed);
+        }
+        if (data.length > DISCOVERY_CACHE_MAX_BYTES) {
+          // Still too big – truncate data array aggressively
+          if (parsed?.results && Array.isArray(parsed.results)) {
+            parsed.results = parsed.results.slice(0, 20);
+            data = JSON.stringify(parsed);
+          }
+        }
+      } catch {}
+      if (data.length > DISCOVERY_CACHE_MAX_BYTES) return false;
+    }
+
     // Validate rel path locally before sending – defense-in-depth, ensures we never ask outside root
     const rel = getExpectedRelPath(key);
     if (!rel) return false;
@@ -131,23 +156,48 @@ export async function getCachedSearch(
   systemId: string,
   query: string
 ): Promise<DiscoveryResult[] | null> {
+  const res = await getCachedSearchWithMeta(provider, systemId, query);
+  return res ? res.results : null;
+}
+
+export async function getCachedSearchWithMeta(
+  provider: string,
+  systemId: string,
+  query: string
+): Promise<{ results: DiscoveryResult[]; timestamp: number; source: string; fresh: boolean } | null> {
   const key = getSearchCacheKey(provider, systemId, query);
   const now = Date.now();
 
   const mem = MEMORY_SEARCH.get(key);
   if (mem) {
-    if (!isExpired(mem, now)) return mem.data;
+    if (!isExpired(mem, now)) {
+      const meta = MEMORY_SEARCH_META.get(key);
+      return { results: mem.data, timestamp: mem.timestamp, source: 'memory', fresh: true && ((meta?.hits || 0) < 10) };
+    }
     MEMORY_SEARCH.delete(key);
+    MEMORY_SEARCH_META.delete(key);
   }
 
   const tauriText = await tauriCacheRead(key);
   if (tauriText) {
     try {
-      const parsed = JSON.parse(tauriText) as SearchCacheEntry;
-      if (parsed && Array.isArray(parsed.data) && typeof parsed.timestamp === 'number') {
-        if (!isExpired(parsed, now)) {
-          MEMORY_SEARCH.set(key, parsed);
-          return parsed.data;
+      const parsed = JSON.parse(tauriText) as SearchCacheEntry | DiscoveryCacheEnvelope;
+      // Try envelope { results, timestamp } first (V3)
+      if (parsed && (parsed as any).results && Array.isArray((parsed as any).results)) {
+        const env = parsed as DiscoveryCacheEnvelope;
+        const ts = typeof env.timestamp === 'number' ? (env.timestamp < 1e12 ? env.timestamp * 1000 : env.timestamp) : now;
+        const ageMs = now - ts;
+        if (ageMs < SEARCH_TTL_MS_DEFAULT) {
+          MEMORY_SEARCH.set(key, { provider, systemId, query, data: env.results as any, timestamp: ts, ttlMs: SEARCH_TTL_MS_DEFAULT } as any);
+          MEMORY_SEARCH_META.set(key, { timestamp: ts, source: 'tauri', hits: 0 });
+          return { results: env.results as any, timestamp: ts, source: 'tauri-envelope', fresh: true };
+        }
+      } else if (parsed && Array.isArray((parsed as any).data) && typeof (parsed as any).timestamp === 'number') {
+        const entry = parsed as SearchCacheEntry;
+        if (!isExpired(entry, now)) {
+          MEMORY_SEARCH.set(key, entry);
+          MEMORY_SEARCH_META.set(key, { timestamp: entry.timestamp, source: 'tauri', hits: 0 });
+          return { results: entry.data, timestamp: entry.timestamp, source: 'tauri', fresh: true };
         }
       }
     } catch {}
@@ -159,7 +209,8 @@ export async function getCachedSearch(
       const parsed = JSON.parse(ls) as SearchCacheEntry;
       if (parsed && !isExpired(parsed, now)) {
         MEMORY_SEARCH.set(key, parsed);
-        return parsed.data;
+        MEMORY_SEARCH_META.set(key, { timestamp: parsed.timestamp, source: 'local', hits: 0 });
+        return { results: parsed.data, timestamp: parsed.timestamp, source: 'local', fresh: true };
       } else {
         lsRemove(key);
       }
@@ -186,12 +237,33 @@ export async function setCachedSearch(
     ttlMs,
   };
   MEMORY_SEARCH.set(key, entry);
+  MEMORY_SEARCH_META.set(key, { timestamp: entry.timestamp, source: 'memory', hits: 0 });
+
+  // Also write V3 envelope for Rust compatibility + frontend 500KB bound
+  const envelope: DiscoveryCacheEnvelope = {
+    key: query.trim().toLowerCase() || '__empty__',
+    provider,
+    results: results as any,
+    timestamp: Math.floor(Date.now()/1000), // secs for Rust
+    version: DISCOVERY_CACHE_VERSION,
+  };
 
   try {
     const text = JSON.stringify(entry);
     const wrote = await tauriCacheWrite(key, text);
     if (!wrote) {
-      lsSet(key, text);
+      // fallback try envelope then localStorage
+      try {
+        const envText = JSON.stringify(envelope);
+        if (envText.length <= DISCOVERY_CACHE_MAX_BYTES) {
+          const wroteEnv = await tauriCacheWrite(key, envText);
+          if (!wroteEnv) lsSet(key, text);
+        } else {
+          lsSet(key, text);
+        }
+      } catch {
+        lsSet(key, text);
+      }
     }
   } catch {
     try {
@@ -269,13 +341,14 @@ export async function setCachedDetail(
 
 export function prune(): void {
   const now = Date.now();
-  for (const [k, v] of MEMORY_SEARCH) if (isExpired(v, now)) MEMORY_SEARCH.delete(k);
+  for (const [k, v] of MEMORY_SEARCH) if (isExpired(v, now)) { MEMORY_SEARCH.delete(k); MEMORY_SEARCH_META.delete(k); }
   for (const [k, v] of MEMORY_DETAIL) if (isExpired(v, now)) MEMORY_DETAIL.delete(k);
 }
 
 export function clearMemoryCache(): void {
   MEMORY_SEARCH.clear();
   MEMORY_DETAIL.clear();
+  MEMORY_SEARCH_META.clear();
 }
 
 export function isSafeCachePath(relPath: string): boolean {

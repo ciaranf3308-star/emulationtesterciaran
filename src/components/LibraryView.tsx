@@ -42,6 +42,8 @@ export type LibraryGameDetail = {
   playTimeLabel?: string | null
 }
 
+export type LibraryQuickFilter = 'all' | 'fav' | 'recent' | 'unplayed'
+
 export type LibraryViewProps = {
   systemId: string
   fullName: string
@@ -60,6 +62,14 @@ export type LibraryViewProps = {
   stageNode?: React.ReactNode
   safeMode?: boolean
   onSafeModeBlocked?: () => void
+  // Pillar 2 enhancements
+  filter?: LibraryQuickFilter
+  onFilterChange?: (f: LibraryQuickFilter) => void
+  chipFocused?: boolean
+  onChipFocusChange?: (focused: boolean) => void
+  continueGames?: Array<{ id: string; name: string; coverUrl?: string | null; lastPlayedLabel?: string | null }>
+  isEmptyDriveState?: boolean
+  onRefresh?: () => void
 }
 
 export function LibraryView({
@@ -79,6 +89,13 @@ export function LibraryView({
   logoUrl,
   safeMode,
   onSafeModeBlocked,
+  filter = 'all',
+  onFilterChange,
+  chipFocused = false,
+  onChipFocusChange,
+  continueGames = [],
+  isEmptyDriveState = false,
+  onRefresh,
 }: LibraryViewProps) {
   const isDark = theme === 'dark'
   const visual = getLibraryVisualProfile(systemId)
@@ -195,7 +212,7 @@ export function LibraryView({
             padding: '16px 12px 16px 14px',
             boxSizing: 'border-box',
             display: 'grid',
-            gridTemplateRows: 'auto minmax(0, 1.08fr) minmax(0, .92fr)',
+            gridTemplateRows: 'auto auto auto minmax(0, 1.04fr) minmax(0, .90fr)',
             gap: 10,
             // feathered to transparent — no giant translucent rectangle, no visible column boundary
             background: isDark
@@ -218,14 +235,137 @@ export function LibraryView({
             }}
           />
 
-          <div style={{ position: 'relative', zIndex: 1, fontFamily: 'var(--crystal-mono)', fontSize: 10, letterSpacing: '0.08em', opacity: 0.56, textTransform: 'uppercase' }}>
-            <span style={{ color: visual.accent, opacity: 1 }}>{String(games.findIndex(g => g.id === selectedId) + 1).padStart(2, '0')}</span>
+          <div style={{ position: 'relative', zIndex: 1, fontFamily: 'var(--crystal-mono)', fontSize: 10, letterSpacing: '0.08em', opacity: 0.56, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: visual.accent, opacity: 1 }}>{String(Math.max(1, games.findIndex(g => g.id === selectedId) + 1)).padStart(2, '0')}</span>
             <span style={{ opacity: .35 }}> / {String(games.length).padStart(2, '0')}</span>
             <span style={{ marginLeft: 10, opacity: .72 }}>{visual.label}</span>
             <span style={{ marginLeft: 8, opacity: .32 }}>• {visual.concept}</span>
+            {chipFocused && <span style={{ marginLeft: 12, fontSize: 9, opacity: .52, color: visual.accent }}>◂ CHIP NAV ▸</span>}
           </div>
 
-          <GameBrowserList theme={theme} systemId={systemId} games={games} selectedId={selectedId} onSelect={onSelect} />
+          {/* Smart filter chips – D-pad navigable, left/right cycles chips, A toggles, not text search clutter */}
+          <div
+            role="tablist"
+            aria-label="Library quick filters"
+            data-library-chip-row
+            data-chip-focused={chipFocused ? '1' : '0'}
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              display: 'flex',
+              gap: 6,
+              flexWrap: 'wrap',
+              padding: '2px 0 4px',
+            }}
+          >
+            {(['all','fav','recent','unplayed'] as const).map(fid => {
+              const active = filter === fid
+              const label = fid === 'all' ? 'All' : fid === 'fav' ? '★ Favorites' : fid === 'recent' ? 'Recent' : 'Unplayed'
+              return (
+                <button
+                  key={fid}
+                  role="tab"
+                  aria-selected={active}
+                  data-library-chip={fid}
+                  data-selected={active ? '1' : '0'}
+                  data-chip-focused-row={chipFocused ? '1' : '0'}
+                  onClick={() => onFilterChange?.(fid)}
+                  onFocus={() => onChipFocusChange?.(true)}
+                  style={{
+                    appearance: 'none',
+                    borderRadius: 999,
+                    padding: '5px 11px',
+                    fontFamily: 'var(--crystal-mono)',
+                    fontSize: 10,
+                    letterSpacing: '0.06em',
+                    fontWeight: active ? 800 : 600,
+                    border: active
+                      ? `1px solid ${isDark ? 'rgba(125,249,255,0.42)' : 'rgba(70,130,255,0.34)'}`
+                      : `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.10)'}`,
+                    background: active
+                      ? (isDark ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.14)')
+                      : (isDark ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.62)'),
+                    color: active ? (isDark ? '#c8fcff' : '#1d3a88') : (isDark ? 'rgba(230,244,255,0.72)' : 'rgba(18,26,44,0.68)'),
+                    cursor: 'pointer',
+                    boxShadow: active && chipFocused ? `0 0 0 2px ${isDark ? 'rgba(125,249,255,0.30)' : 'rgba(70,130,255,0.24)'}` : active ? `0 2px 12px ${isDark ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.12)'}` : 'none',
+                    transform: active ? 'translateZ(0) scale(1.02)' : 'none',
+                    transition: 'all 160ms cubic-bezier(.2,.8,.2,1)',
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Continue Playing row – if system has games with last_played, sort descending, show top 3-5 – uses existing metadata parser from Rust */}
+          {continueGames.length > 0 && (
+            <div style={{ position: 'relative', zIndex: 1, padding: '6px 0 8px', borderRadius: 10, background: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.52)', border: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`, overflow: 'hidden' }}>
+              <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, letterSpacing: '0.10em', opacity: 0.56, textTransform: 'uppercase', padding: '0 8px 6px', display: 'flex', justifyContent: 'space-between' }}>
+                <span>↺ Continue Playing</span><span style={{ opacity: .44 }}>{continueGames.length}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '0 8px 6px', scrollbarWidth: 'none' }}>
+                {continueGames.slice(0, 5).map(g => (
+                  <button
+                    key={g.id}
+                    onClick={() => onSelect(g.id)}
+                    style={{
+                      minWidth: 74,
+                      maxWidth: 92,
+                      flexShrink: 0,
+                      borderRadius: 8,
+                      border: `1px solid ${selectedId === g.id ? visual.accent : (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)')}`,
+                      background: selectedId === g.id ? (isDark ? 'rgba(125,249,255,0.10)' : 'rgba(70,130,255,0.10)') : (isDark ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.72)'),
+                      padding: 6,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    {g.coverUrl ? (
+                      <img src={g.coverUrl} alt="" style={{ width: '100%', height: 48, objectFit: 'cover', borderRadius: 6, display: 'block' }} />
+                    ) : (
+                      <div style={{ width: '100%', height: 48, borderRadius: 6, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', display: 'grid', placeItems: 'center', fontSize: 11 }}>◐</div>
+                    )}
+                    <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: isDark ? 'rgba(230,244,255,0.88)' : '#1a2a52' }}>{g.name.slice(0, 14)}</div>
+                    {g.lastPlayedLabel && <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 8, opacity: .52, whiteSpace: 'nowrap', overflow: 'hidden' }}>{g.lastPlayedLabel}</div>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* D-drive unplugged empty state – beautiful graphite illustration placeholder, not crash */}
+          {isEmptyDriveState ? (
+            <div style={{ position: 'relative', zIndex: 1, minHeight: 180, borderRadius: 14, border: `1px dashed ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.12)'}`, background: isDark ? 'linear-gradient(145deg, rgba(22,24,28,0.86), rgba(18,20,24,0.72))' : 'linear-gradient(145deg, rgba(255,255,255,0.86), rgba(242,245,248,0.86))', display: 'grid', placeItems: 'center', padding: 18, textAlign: 'center' }}>
+              {/* Graphite illustration – subtle drive with detached cable */}
+              <div style={{ width: 86, height: 86, borderRadius: 18, background: isDark ? 'radial-gradient(120% 120% at 30% 20%, #2a2e36, #1a1e24 60%, #13161b)' : 'radial-gradient(120% 120% at 30% 20%, #f8fafc, #e8edf3 62%, #dfe6ee)', border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.08)'}`, display: 'grid', placeItems: 'center', boxShadow: isDark ? '0 12px 28px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)' : '0 10px 22px rgba(18,26,44,0.10), inset 0 1px 0 rgba(255,255,255,0.84)' }}>
+                <svg width="42" height="42" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <defs>
+                    <linearGradient id="graphite-drive" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor={isDark ? "#7a828e" : "#98a6ba"} />
+                      <stop offset="100%" stopColor={isDark ? "#3a3f4a" : "#cbd5e1"} />
+                    </linearGradient>
+                  </defs>
+                  <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10V4.2A1.8 1.8 0 0 1 11.8 2.4H16.8A1.8 1.8 0 0 1 18.6 4.2V5H18.52A2.5 2.5 0 0 1 21 7.5V15.5A2.5 2.5 0 0 1 18.5 18H5.5A2.5 2.5 0 0 1 3 15.5V7.5Z" stroke="url(#graphite-drive)" strokeWidth="1.25" strokeLinejoin="round" opacity=".9"/>
+                  {/* detached cable hint */}
+                  <path d="M9 14.5C9 16 8 17 10 18.2" stroke={isDark ? "#5b6472" : "#94a3b8"} strokeWidth="1.1" strokeLinecap="round" strokeDasharray="3 3" opacity=".9"/>
+                  <circle cx="10.4" cy="18.8" r="1.2" fill={isDark ? "#6b7684" : "#cbd5e1"} opacity=".9"/>
+                  <circle cx="7" cy="10" r="1" fill={visual.accent} opacity=".86"/>
+                </svg>
+              </div>
+              <div style={{ marginTop: 12, fontFamily: 'var(--crystal-display)', fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: isDark ? '#e6f0ff' : '#1a2a4a' }}>Connect your library drive</div>
+              <div style={{ marginTop: 6, fontFamily: 'var(--crystal-mono)', fontSize: 10.5, lineHeight: 1.5, opacity: .68, maxWidth: 220, color: isDark ? 'rgba(230,244,255,0.68)' : 'rgba(18,26,44,0.68)' }}>
+                Plug in your <span style={{ color: visual.accent, fontWeight: 700 }}>D:\\Emulation</span> external drive to browse {fullName}. No crash – just vibing dark.
+              </div>
+              {onRefresh && (
+                <button onClick={onRefresh} style={{ marginTop: 12, appearance: 'none', borderRadius: 999, padding: '7px 14px', fontFamily: 'var(--crystal-mono)', fontSize: 10, fontWeight: 700, border: `1px solid ${isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.12)'}`, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.92)', color: isDark ? '#eef7ff' : '#16213e', cursor: 'pointer' }}>
+                  ↺ Refresh
+                </button>
+              )}
+            </div>
+          ) : (
+            <GameBrowserList theme={theme} systemId={systemId} games={games} selectedId={selectedId} onSelect={onSelect} />
+          )}
 
           <section className="library-details" style={{ minHeight: 0, overflow: 'auto', position: 'relative', zIndex: 1 }}>
             <SelectedGameContext

@@ -47,6 +47,14 @@ const KEY_MAP: Record<string, NavigationAction> = {
   E: 'nextSystem',
   PageDown: 'nextSystem',
   ']': 'nextSystem',
+  v: 'quickFilter',
+  V: 'quickFilter',
+  o: 'quickSettings',
+  O: 'quickSettings',
+  i: 'diagnosticsDebug',
+  I: 'diagnosticsDebug',
+  r: 'refresh',
+  R: 'refresh',
 }
 
 const NAV_KEYS_BLOCK_SCROLL = new Set(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Spacebar','PageUp','PageDown'])

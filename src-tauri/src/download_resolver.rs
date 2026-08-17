@@ -21,6 +21,11 @@ pub struct DownloadCandidate {
     detected_extensions: Vec<String>,
     suggested_system_id: Option<String>,
     suggestion_reason: String,
+    /// confidence meter: high/medium/low
+    confidence: String,
+    confidence_reason: String,
+    /// true when file is unsupported (e.g., Switch)
+    unsupported: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -28,6 +33,9 @@ pub struct DownloadCandidate {
 pub struct ResolveDownloadRequest {
     source_path: String,
     system_id: String,
+    /// when true, keep source archive after successful install (default false)
+    #[serde(default)]
+    keep_source: Option<bool>,
 }
 
 fn system_has_matching_rom(rom_dir: &std::path::Path, source_stem: &str) -> bool {
@@ -154,7 +162,13 @@ fn recognized_rom_extension(ext: &str) -> bool {
             | "xbe"
             | "elf"
             | "pbp"
+            | "xci"
+            | "nsp"
     )
+}
+
+fn is_unsupported_extension(ext: &str) -> bool {
+    matches!(ext, "xci" | "nsp")
 }
 
 #[derive(Default)]
@@ -164,40 +178,256 @@ struct ArchiveInspection {
     detected_extensions: Vec<String>,
 }
 
+/// Suggest system with confidence meter high/medium/low and reason string.
+///
+/// Returns (suggested_system_id, confidence, reason)
+///
+/// Confidence semantics:
+/// - high: exact file type match, safe to auto-select
+/// - medium: plausible but requires review (rvz gc/wii, pbp multi-disc, PS2 sports ISO)
+/// - low: ambiguous disc or unsupported (iso ambiguous, xci/nsp)
 fn suggest_system(
     file_name: &str,
     detected_extensions: &[String],
     possible: &[String],
     installed: &[String],
-) -> (Option<String>, String) {
+) -> (Option<String>, String, String) {
     let available = |id: &str| possible.iter().any(|candidate| candidate == id);
     if installed.len() == 1 {
-        return (Some(installed[0].clone()), "installed copy verified".to_string());
+        return (
+            Some(installed[0].clone()),
+            "high".to_string(),
+            "installed copy verified".to_string(),
+        );
     }
     let has = |ext: &str| detected_extensions.iter().any(|candidate| candidate == ext);
-    let canonical = if has("gb") { Some(("gb", "Game Boy file type")) }
-        else if has("gbc") { Some(("gbc", "Game Boy Color file type")) }
-        else if has("gba") { Some(("gba", "Game Boy Advance file type")) }
-        else if has("nds") { Some(("nds", "Nintendo DS file type")) }
-        else if has("3ds") || has("cia") { Some(("n3ds", "Nintendo 3DS file type")) }
-        else if has("z64") || has("n64") || has("v64") { Some(("n64", "Nintendo 64 file type")) }
-        else if has("sfc") || has("smc") { Some(("snes", "Super Nintendo file type")) }
-        else if has("md") || has("gen") || has("smd") || has("32x") { Some(("genesis", "Sega Genesis file type")) }
-        else if has("ciso") { Some(("gc", "GameCube compressed-disc file type")) }
-        else { None };
-    if let Some((id, reason)) = canonical {
-        if available(id) { return (Some(id.to_string()), reason.to_string()); }
+    let title_lower = file_name.to_ascii_lowercase();
+
+    // Unsupported first – Switch formats not in EmuDeck manifest
+    if has("xci") || has("nsp") {
+        let which = if has("xci") { "xci" } else { "nsp" };
+        return (
+            None,
+            "low".to_string(),
+            format!(
+                "Switch format .{} not configured in manifest – unsupported (candidate [])",
+                which
+            ),
+        );
     }
-    let title = file_name.to_ascii_lowercase();
-    if has("iso") && available("ps2")
-        && ["pro evolution soccer", "pes 20", "fifa "].iter().any(|needle| title.contains(needle))
-    {
-        return (Some("ps2".to_string()), "PlayStation 2 title match".to_string());
+
+    // Canonical high-confidence exact mappings
+    if has("gb") && available("gb") {
+        return (
+            Some("gb".to_string()),
+            "high".to_string(),
+            "inner .gb + candidate [gb] exact".to_string(),
+        );
     }
+    if has("gbc") && available("gbc") {
+        return (
+            Some("gbc".to_string()),
+            "high".to_string(),
+            "inner .gbc + candidate [gbc] exact".to_string(),
+        );
+    }
+    if has("gba") && available("gba") {
+        return (
+            Some("gba".to_string()),
+            "high".to_string(),
+            "inner .gba + candidate [gba] exact".to_string(),
+        );
+    }
+    if has("nds") && available("nds") {
+        return (
+            Some("nds".to_string()),
+            "high".to_string(),
+            "inner .nds + candidate [nds] exact".to_string(),
+        );
+    }
+    if has("3ds") && available("n3ds") {
+        return (
+            Some("n3ds".to_string()),
+            "high".to_string(),
+            "inner .3ds + candidate [n3ds] exact".to_string(),
+        );
+    }
+    if has("cia") && available("n3ds") {
+        return (
+            Some("n3ds".to_string()),
+            "high".to_string(),
+            "inner .cia + candidate [n3ds] exact".to_string(),
+        );
+    }
+    if (has("z64") || has("n64") || has("v64")) && available("n64") {
+        return (
+            Some("n64".to_string()),
+            "high".to_string(),
+            "inner .n64-family + candidate [n64] exact".to_string(),
+        );
+    }
+    if (has("sfc") || has("smc")) && available("snes") {
+        return (
+            Some("snes".to_string()),
+            "high".to_string(),
+            "inner .sfc/.smc + candidate [snes] exact".to_string(),
+        );
+    }
+    if has("md") || has("gen") || has("smd") || has("32x") {
+        if available("genesis") {
+            return (
+                Some("genesis".to_string()),
+                "high".to_string(),
+                format!("inner .{} + candidate [genesis] exact", detected_extensions.iter().find(|e| matches!(e.as_str(), "md"|"gen"|"smd"|"32x")).cloned().unwrap_or("md".to_string())),
+            );
+        }
+        if available("megadrive") {
+            return (
+                Some("megadrive".to_string()),
+                "high".to_string(),
+                format!("inner .{} + candidate [megadrive] exact", detected_extensions.iter().find(|e| matches!(e.as_str(), "md"|"gen"|"smd"|"32x")).cloned().unwrap_or("md".to_string())),
+            );
+        }
+    }
+    if has("ciso") && available("gc") {
+        return (
+            Some("gc".to_string()),
+            "high".to_string(),
+            "inner .ciso + candidate [gc] exact".to_string(),
+        );
+    }
+    if has("wbfs") && available("wii") {
+        return (
+            Some("wii".to_string()),
+            "high".to_string(),
+            "inner .wbfs + candidate [wii] exact".to_string(),
+        );
+    }
+    if has("wad") && available("wii") {
+        return (
+            Some("wii".to_string()),
+            "high".to_string(),
+            "inner .wad + candidate [wii] exact".to_string(),
+        );
+    }
+
+    // .rvz – Dolphin format GC/Wii – check inner file extension? conservative gc/wii both
+    if has("rvz") || has("gcz") {
+        let gc_avail = available("gc");
+        let wii_avail = available("wii");
+        // filename contains wii => map to wii with medium/high confidence
+        if title_lower.contains("wii") && wii_avail {
+            return (
+                Some("wii".to_string()),
+                "medium".to_string(),
+                "inner .rvz Dolphin gc/wii – filename contains 'wii' → wii".to_string(),
+            );
+        }
+        if gc_avail && wii_avail {
+            return (
+                None,
+                "medium".to_string(),
+                format!(
+                    "inner .rvz Dolphin gc/wii ambiguous candidates [{}, {}] – review required",
+                    "gc", "wii"
+                ),
+            );
+        }
+        if gc_avail {
+            return (
+                Some("gc".to_string()),
+                "medium".to_string(),
+                "inner .rvz Dolphin gc/wii – candidate [gc]".to_string(),
+            );
+        }
+        if wii_avail {
+            return (
+                Some("wii".to_string()),
+                "medium".to_string(),
+                "inner .rvz Dolphin gc/wii – candidate [wii]".to_string(),
+            );
+        }
+        return (
+            None,
+            "medium".to_string(),
+            "inner .rvz Dolphin gc/wii – no candidate in manifest".to_string(),
+        );
+    }
+
+    // .pbp – PSX multi-disc – PSP can also use pbp but less
+    if has("pbp") {
+        if available("psx") {
+            return (
+                Some("psx".to_string()),
+                "medium".to_string(),
+                "inner .pbp multi-disc PSX (PSP also uses PBP, review) – candidate [psx]".to_string(),
+            );
+        }
+        if available("psp") {
+            return (
+                Some("psp".to_string()),
+                "medium".to_string(),
+                "inner .pbp – candidate [psp] multi-disc possible".to_string(),
+            );
+        }
+        return (
+            None,
+            "medium".to_string(),
+            "inner .pbp multi-disc ambiguous – no psx/psp in manifest".to_string(),
+        );
+    }
+
+    // .iso – ambiguous – many systems use iso (ps2, psp, psx, gc? actually ciso)
+    if has("iso") {
+        // Known PS2 sports title hint allows medium despite ambiguity
+        if available("ps2")
+            && ["pro evolution soccer", "pes 20", "fifa "]
+                .iter()
+                .any(|needle| title_lower.contains(needle))
+        {
+            return (
+                Some("ps2".to_string()),
+                "medium".to_string(),
+                format!("inner .iso ambiguous candidates {:?} – PS2 title match '{}'", possible, file_name),
+            );
+        }
+        if possible.len() > 1 {
+            return (
+                None,
+                "low".to_string(),
+                format!("inner .iso ambiguous candidates {:?} – review required", possible),
+            );
+        }
+        if possible.len() == 1 {
+            return (
+                Some(possible[0].clone()),
+                "low".to_string(),
+                format!(
+                    "inner .iso single candidate [{}] but disc format requires review",
+                    possible[0]
+                ),
+            );
+        }
+        return (
+            None,
+            "low".to_string(),
+            "inner .iso ambiguous – no candidate in manifest".to_string(),
+        );
+    }
+
+    // Generic single possible system – high confidence if exact file type already matched above,
+    // otherwise high only for non-ambiguous formats
     if possible.len() == 1 {
-        return (Some(possible[0].clone()), "only compatible console".to_string());
+        // Avoid auto-selecting ambiguous disc formats when possible.len==1 came from iso/rvz path – already handled.
+        // This branch is for remaining formats that were not caught but have unique manifest mapping.
+        return (
+            Some(possible[0].clone()),
+            "high".to_string(),
+            format!("only compatible console [{}] – high confidence", possible[0]),
+        );
     }
-    (None, "console could not be determined safely".to_string())
+
+    (None, "low".to_string(), "console could not be determined safely – review required".to_string())
 }
 
 fn record_archive_entry(
@@ -211,7 +441,9 @@ fn record_archive_entry(
         .and_then(|v| v.to_str())
         .map(norm_ext)
         .unwrap_or_default();
-    if forbidden_loose_extension(&ext) || !recognized_rom_extension(&ext) {
+    // Allow unsupported for detection but keep for reason – still record
+    let is_unsupported = is_unsupported_extension(&ext);
+    if !is_unsupported && (forbidden_loose_extension(&ext) || !recognized_rom_extension(&ext)) {
         return;
     }
     if !inspection.detected_extensions.contains(&ext) {
@@ -328,7 +560,9 @@ pub fn scan_downloaded_games() -> Result<Vec<DownloadCandidate>, String> {
             .map(norm_ext)
             .unwrap_or_default();
         let archive = matches!(ext.as_str(), "zip" | "7z");
-        if !archive && forbidden_loose_extension(&ext) {
+        // Keep unsupported xci/nsp even though they are loose ROMs – show as unsupported for UX
+        let is_unsupported_loose = is_unsupported_extension(&ext);
+        if !archive && !is_unsupported_loose && forbidden_loose_extension(&ext) {
             continue;
         }
         let inspection = if ext == "zip" {
@@ -336,8 +570,13 @@ pub fn scan_downloaded_games() -> Result<Vec<DownloadCandidate>, String> {
         } else if ext == "7z" {
             inspect_7z(&path, &by_ext)
         } else {
+            let mut possible_ids = by_ext.get(&ext).cloned().unwrap_or_default();
+            // Unsupported loose file has no possible system – still surface it
+            if is_unsupported_loose && possible_ids.is_empty() {
+                // keep empty to trigger unsupported reason
+            }
             ArchiveInspection {
-                possible_system_ids: by_ext.get(&ext).cloned().unwrap_or_default(),
+                possible_system_ids: possible_ids,
                 content_stems: vec![path
                     .file_stem()
                     .and_then(|v| v.to_str())
@@ -346,11 +585,13 @@ pub fn scan_downloaded_games() -> Result<Vec<DownloadCandidate>, String> {
                 detected_extensions: vec![ext.clone()],
             }
         };
-        let possible = inspection.possible_system_ids;
-        if possible.is_empty() {
+        let possible = inspection.possible_system_ids.clone();
+        let detected = inspection.detected_extensions.clone();
+        let has_unsupported = detected.iter().any(|e| is_unsupported_extension(e));
+        if possible.is_empty() && !has_unsupported {
             continue;
         }
-        let mut source_stems = inspection.content_stems;
+        let mut source_stems = inspection.content_stems.clone();
         if source_stems.is_empty() {
             source_stems.push(
                 path.file_stem()
@@ -359,20 +600,24 @@ pub fn scan_downloaded_games() -> Result<Vec<DownloadCandidate>, String> {
                     .to_string(),
             );
         }
-        let installed_system_ids: Vec<String> = possible
-            .iter()
-            .filter(|id| {
-                rom_dirs
-                    .get(*id)
-                    .map(|dir| {
-                        source_stems
-                            .iter()
-                            .any(|stem| system_has_matching_rom(dir, stem))
-                    })
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
+        let installed_system_ids: Vec<String> = if has_unsupported {
+            Vec::new()
+        } else {
+            possible
+                .iter()
+                .filter(|id| {
+                    rom_dirs
+                        .get(*id)
+                        .map(|dir| {
+                            source_stems
+                                .iter()
+                                .any(|stem| system_has_matching_rom(dir, stem))
+                        })
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        };
         let metadata = entry
             .metadata()
             .map_err(|e| format!("DOWNLOAD_METADATA_FAILED: {e}"))?;
@@ -382,12 +627,15 @@ pub fn scan_downloaded_games() -> Result<Vec<DownloadCandidate>, String> {
             .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let (suggested_system_id, suggestion_reason) = suggest_system(
+        let (suggested_system_id, confidence, confidence_reason) = suggest_system(
             path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
             &inspection.detected_extensions,
             &possible,
             &installed_system_ids,
         );
+        let suggestion_reason = confidence_reason.clone();
+        let confidence_clone = confidence.clone();
+        let unsupported = has_unsupported || confidence == "low" && suggestion_reason.contains("unsupported");
         result.push(DownloadCandidate {
             path: path.to_string_lossy().to_string(),
             file_name: path
@@ -403,6 +651,9 @@ pub fn scan_downloaded_games() -> Result<Vec<DownloadCandidate>, String> {
             detected_extensions: inspection.detected_extensions,
             suggested_system_id,
             suggestion_reason,
+            confidence: confidence_clone,
+            confidence_reason,
+            unsupported,
         });
     }
     result.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
@@ -492,6 +743,20 @@ fn resolve_downloaded_game_blocking(
     if request.system_id.trim().is_empty() {
         return Err("SYSTEM_SELECTION_REQUIRED".to_string());
     }
+    // Block unsupported Switch formats early
+    let ext = source.extension().and_then(|v| v.to_str()).map(norm_ext).unwrap_or_default();
+    if is_unsupported_extension(&ext) {
+        return Err("UNSUPPORTED_FORMAT: Switch format not configured in manifest".to_string());
+    }
+    // If source is archive, inspect inner contents for unsupported switch formats
+    if ext == "zip" || ext == "7z" {
+        // Use empty by_ext for quick check – if archive contains xci/nsp we already surfaced as low confidence.
+        // Still block install attempting to select console for unsupported inner content unless user forced?
+        // For now, allow import_game to fail normally, but we pre-check detected extensions via a minimal by_ext.
+        // We reuse empty because manifest won't have xci/nsp anyway, so unsupported archive will be caught via inspection later.
+        // To avoid heavy work duplication, we let import_game_source handle validation and we surface its error.
+    }
+    let keep_source = request.keep_source.unwrap_or(false);
     let result = import_game_source(ImportRequest {
         systemId: request.system_id,
         sourcePath: source.to_string_lossy().to_string(),
@@ -509,7 +774,11 @@ fn resolve_downloaded_game_blocking(
         {
             return Err("INSTALL_VERIFICATION_FAILED_SOURCE_RETAINED".to_string());
         }
-        fs::remove_file(&source).map_err(|e| format!("INSTALLED_BUT_SOURCE_DELETE_FAILED: {e}"))?;
+        if !keep_source {
+            fs::remove_file(&source).map_err(|e| format!("INSTALLED_BUT_SOURCE_DELETE_FAILED: {e}"))?;
+        } else {
+            crate::safety::log_event("INFO", &format!("downloads inbox keep source enabled source={} freed=0", request.source_path));
+        }
     }
     crate::safety::log_event("INFO", &format!("downloads inbox install complete source={} status={}", request.source_path, result.status));
     Ok(result)
@@ -522,12 +791,60 @@ mod tests {
     #[test]
     fn detects_common_handheld_archives_without_prompting() {
         let possible = vec!["gb".to_string(), "gbc".to_string()];
-        assert_eq!(suggest_system("Tetris.zip", &["gb".into()], &possible, &[]).0.as_deref(), Some("gb"));
+        let (suggested, conf, reason) = suggest_system("Tetris.zip", &["gb".into()], &possible, &[]);
+        assert_eq!(suggested.as_deref(), Some("gb"));
+        assert_eq!(conf, "high");
+        assert!(reason.contains("inner .gb"));
     }
 
     #[test]
     fn detects_gamecube_ciso_and_ps2_sports_iso() {
-        assert_eq!(suggest_system("Super Mario Sunshine.7z", &["ciso".into()], &["gc".into(), "ps2".into()], &[]).0.as_deref(), Some("gc"));
-        assert_eq!(suggest_system("PES 2012.7z", &["iso".into()], &["ps2".into(), "wii".into()], &[]).0.as_deref(), Some("ps2"));
+        let (suggested, conf, _) = suggest_system("Super Mario Sunshine.7z", &["ciso".into()], &["gc".into(), "ps2".into()], &[]);
+        assert_eq!(suggested.as_deref(), Some("gc"));
+        assert_eq!(conf, "high");
+        let (suggested2, conf2, reason2) = suggest_system("PES 2012.7z", &["iso".into()], &["ps2".into(), "wii".into()], &[]);
+        assert_eq!(suggested2.as_deref(), Some("ps2"));
+        assert_eq!(conf2, "medium");
+        assert!(reason2.contains("PS2 title match"));
+    }
+
+    #[test]
+    fn rvz_dolphin_gc_wii_medium_unless_wii_in_name() {
+        let possible = vec!["gc".into(), "wii".into()];
+        let (suggested, conf, reason) = suggest_system("Mario Kart.7z", &["rvz".into()], &possible, &[]);
+        assert_eq!(suggested, None);
+        assert_eq!(conf, "medium");
+        assert!(reason.contains("inner .rvz Dolphin gc/wii"));
+        let (suggested2, conf2, reason2) = suggest_system("Wii Sports.rvz", &["rvz".into()], &possible, &[]);
+        assert_eq!(suggested2.as_deref(), Some("wii"));
+        assert_eq!(conf2, "medium");
+        assert!(reason2.contains("filename contains"));
+    }
+
+    #[test]
+    fn pbp_multi_disc_medium() {
+        let possible = vec!["psx".into(), "psp".into()];
+        let (suggested, conf, reason) = suggest_system("Final Fantasy VII.pbp", &["pbp".into()], &possible, &[]);
+        assert_eq!(suggested.as_deref(), Some("psx"));
+        assert_eq!(conf, "medium");
+        assert!(reason.contains("multi-disc"));
+    }
+
+    #[test]
+    fn xci_nsp_unsupported_low() {
+        let possible: Vec<String> = vec![];
+        let (suggested, conf, reason) = suggest_system("Game.nsp", &["nsp".into()], &possible, &[]);
+        assert_eq!(suggested, None);
+        assert_eq!(conf, "low");
+        assert!(reason.contains("Switch format"));
+    }
+
+    #[test]
+    fn iso_ambiguous_low() {
+        let possible = vec!["ps2".into(), "psp".into(), "psx".into()];
+        let (suggested, conf, reason) = suggest_system("Random Game.iso", &["iso".into()], &possible, &[]);
+        assert_eq!(suggested, None);
+        assert_eq!(conf, "low");
+        assert!(reason.contains("ambiguous candidates"));
     }
 }

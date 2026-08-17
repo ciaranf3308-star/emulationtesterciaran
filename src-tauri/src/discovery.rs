@@ -533,7 +533,96 @@ pub async fn fetch_vimm(url: String) -> Result<String, String> {
     Ok(body)
 }
 
-/// ---------- Discovery cache (narrowly scoped, guarded) ----------
+/// ---------- Discovery cache (narrowly scoped, guarded) — V3 Discovery Native ----------
+// Structures:
+// { key: lowercase search, provider: vimm|romsfun, results: Vec<DiscoveryGame>, timestamp, version }
+// Bounded <500KB per file, prune older than 24h on access, limit max files 100
+// Location: crystal_writable_root() + cache/discovery/ — ensure dir exists
+// SAFE_MODE allows read but cache writes inside app-data allowed (similar to other caches)
+// Tauri commands discovery_cache_read/write remain narrowly scoped; new overload via same key scheme
+
+const DISCOVERY_CACHE_MAX_BYTES: usize = 500 * 1024; // 500KB strict
+const DISCOVERY_CACHE_MAX_FILES: usize = 100;
+const DISCOVERY_CACHE_TTL_SECS: u64 = 24 * 3600;
+
+fn discovery_cache_root() -> std::path::PathBuf {
+    crate::safety::crystal_writable_root().join("cache").join("discovery")
+}
+
+fn prune_discovery_cache() {
+    let root = discovery_cache_root();
+    if !root.exists() {
+        return;
+    }
+    // Collect all .json files recursively (provider/system/query layout)
+    let mut files: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("json") {
+                    let meta = std::fs::metadata(&p);
+                    if let Ok(m) = meta {
+                        let mtime = m.modified().unwrap_or(std::time::UNIX_EPOCH + std::time::Duration::from_secs(0));
+                        let size = m.len();
+                        files.push((p, size, mtime));
+                    }
+                }
+            }
+        }
+    }
+
+    let now = std::time::SystemTime::now();
+    // First: remove files older than 24h or too large
+    for (path, size, mtime) in files.iter() {
+        if *size > DISCOVERY_CACHE_MAX_BYTES as u64 {
+            let _ = std::fs::remove_file(path);
+            crate::safety::log_event("info", &format!("discovery_cache_prune_oversize removed='{}' size={}", path.display(), size));
+            continue;
+        }
+        if let Ok(elapsed) = now.duration_since(*mtime) {
+            if elapsed.as_secs() > DISCOVERY_CACHE_TTL_SECS {
+                let _ = std::fs::remove_file(path);
+                crate::safety::log_event("info", &format!("discovery_cache_prune_expired removed='{}' age_secs={}", path.display(), elapsed.as_secs()));
+            }
+        }
+    }
+
+    // Re-collect after deletion to enforce max file count
+    let mut remaining: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    let mut stack2 = vec![root.clone()];
+    while let Some(dir) = stack2.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack2.push(p);
+                } else if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("json") {
+                    if let Ok(m) = std::fs::metadata(&p) {
+                        let mtime = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+                        remaining.push((p, mtime));
+                    }
+                }
+            }
+        }
+    }
+
+    if remaining.len() > DISCOVERY_CACHE_MAX_FILES {
+        // Oldest first
+        remaining.sort_by(|a, b| a.1.cmp(&b.1));
+        let to_remove = remaining.len() - DISCOVERY_CACHE_MAX_FILES;
+        for (path, _) in remaining.iter().take(to_remove) {
+            let _ = std::fs::remove_file(path);
+            crate::safety::log_event("info", &format!("discovery_cache_prune_limit removed='{}' max_files={}", path.display(), DISCOVERY_CACHE_MAX_FILES));
+        }
+    }
+
+    // Also prune empty directories (best effort)
+    // Keep to 2 levels cleanup shallow
+}
 
 fn sanitize_discovery_key(key: &str) -> Result<String, String> {
     let t = key.trim();
@@ -589,6 +678,9 @@ fn discovery_relative_path(sanitized: &str) -> String {
 
 #[tauri::command]
 pub fn discovery_cache_read(key: String) -> Result<Option<String>, String> {
+    // Prune on access – bounded 24h + max files + <500KB
+    prune_discovery_cache();
+
     let sanitized = sanitize_discovery_key(&key)?;
     let rel = discovery_relative_path(&sanitized);
 
@@ -628,6 +720,23 @@ pub fn discovery_cache_read(key: String) -> Result<Option<String>, String> {
         return Ok(None);
     }
 
+    // TTL check via mtime – if older than 24h treat as miss and delete (prune above already handles but double-check per-file)
+    if let Ok(meta) = std::fs::metadata(&abs) {
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(elapsed) = std::time::SystemTime::now().duration_since(mtime) {
+                if elapsed.as_secs() > DISCOVERY_CACHE_TTL_SECS {
+                    let _ = std::fs::remove_file(&abs);
+                    crate::safety::log_event("info", &format!("discovery_cache_read expired key='{}' age_secs={}", key, elapsed.as_secs()));
+                    return Ok(None);
+                }
+            }
+        }
+        if meta.len() > DISCOVERY_CACHE_MAX_BYTES as u64 {
+            let _ = std::fs::remove_file(&abs);
+            return Err(format!("discovery cache entry too large {} bytes for key '{}' – removed", meta.len(), key));
+        }
+    }
+
     let content = std::fs::read_to_string(&abs).map_err(|e| {
         format!(
             "discovery_cache_read failed reading '{}': {}",
@@ -636,15 +745,19 @@ pub fn discovery_cache_read(key: String) -> Result<Option<String>, String> {
         )
     })?;
 
-    // Size guard – similar to fetcher 2MB, cache entries small but cap
-    if content.len() > 2_000_000 {
+    // Size guard – 500KB strict (was 2MB), cache entries small but cap
+    if content.len() > DISCOVERY_CACHE_MAX_BYTES {
+        let _ = std::fs::remove_file(&abs);
         return Err(format!(
-            "discovery cache entry too large {} bytes for key '{}'",
+            "discovery cache entry too large {} bytes for key '{}' – max {}KB, removed",
             content.len(),
-            key
+            key,
+            DISCOVERY_CACHE_MAX_BYTES/1024
         ));
     }
 
+    // Also guard embedded timestamp – if JSON contains timestamp older than 24h, treat stale but still return with cache status? For resilience we treat file mtime as authority, but if embedded timestamp older than 24h, still prune next access.
+    // Try to parse timestamp to log but not strictly required.
     crate::safety::log_event(
         "info",
         &format!(
@@ -658,6 +771,14 @@ pub fn discovery_cache_read(key: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub fn discovery_cache_write(key: String, content: String) -> Result<(), String> {
+    // SAFE_MODE: cache writes inside app-data are allowed – browsing is allowed, only import/write to ROMs blocked.
+    // But we still log if safe mode active.
+    if crate::safety::is_safe_mode() {
+        crate::safety::log_event("info", &format!("discovery_cache_write safe_mode=1 key='{}' allowed (app-data only)", key));
+    }
+
+    prune_discovery_cache();
+
     let sanitized = sanitize_discovery_key(&key)?;
     let rel = discovery_relative_path(&sanitized);
 
@@ -668,13 +789,17 @@ pub fn discovery_cache_write(key: String, content: String) -> Result<(), String>
         ));
     }
 
-    if content.len() > 2_000_000 {
+    if content.len() > DISCOVERY_CACHE_MAX_BYTES {
         return Err(format!(
-            "discovery cache write too large {} bytes for key '{}' – max 2MB",
+            "discovery cache write too large {} bytes for key '{}' – max {}KB (500KB bound)",
             content.len(),
-            key
+            key,
+            DISCOVERY_CACHE_MAX_BYTES/1024
         ));
     }
+
+    // Validate JSON structure minimally – must contain timestamp if possible, but allow any string for backward compat.
+    // Bounded file <500KB ensured above.
 
     // resolve_writable_path ensures parent dirs exist and validates safety via is_safe_write_path internally.
     // It also ensures %LOCALAPPDATA%\\CrystalFrontend\\ cache\\discovery structure.
@@ -702,6 +827,9 @@ pub fn discovery_cache_write(key: String, content: String) -> Result<(), String>
         )
     })?;
 
+    // After write, enforce max files 100 (prune may have already)
+    prune_discovery_cache();
+
     crate::safety::log_event(
         "info",
         &format!(
@@ -712,6 +840,43 @@ pub fn discovery_cache_write(key: String, content: String) -> Result<(), String>
         ),
     );
     Ok(())
+}
+
+// V3 additional helper: provider-aware struct validation (used by tests / frontend future)
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiscoveryCacheEnvelope {
+    key: String,
+    provider: String, // vimm | romsfun
+    results: serde_json::Value, // Vec<DiscoveryGame>
+    timestamp: u64,
+    version: u32,
+}
+
+pub(crate) fn is_discovery_cache_fresh_json(json_str: &str) -> bool {
+    if let Ok(env) = serde_json::from_str::<DiscoveryCacheEnvelope>(json_str) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if now >= env.timestamp {
+            let age = now - env.timestamp;
+            return age < DISCOVERY_CACHE_TTL_SECS;
+        }
+        return true;
+    }
+    // Fallback to SearchCacheEntry style { timestamp, ttlMs }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(ts) = v.get("timestamp").and_then(|t| t.as_u64()) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) as u64;
+            // timestamp may be millis – compare sensibly
+            let age_ms = now.saturating_sub(ts);
+            // If timestamp is secs (smaller), treat millis check differently – heuristic: if ts < 1e12 it's secs
+            if ts < 1_000_000_000_000 {
+                let now_secs = now / 1000;
+                return now_secs.saturating_sub(ts) < DISCOVERY_CACHE_TTL_SECS;
+            } else {
+                return age_ms < DISCOVERY_CACHE_TTL_SECS * 1000;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

@@ -87,10 +87,23 @@ export interface DetailCacheEntry extends CacheEntry<DiscoveryGameDetail> {
   systemId?: string;
 }
 
-export const SEARCH_TTL_MS_DEFAULT = 20 * 60 * 1000; // 20 minutes (15-30 range)
+export const SEARCH_TTL_MS_DEFAULT = 24 * 60 * 60 * 1000; // 24h primary Vimm cache – V3 Discovery Native, bounded 500KB, prune 24h
 export const SEARCH_TTL_MS_MIN = 15 * 60 * 1000;
-export const SEARCH_TTL_MS_MAX = 30 * 60 * 1000;
+export const SEARCH_TTL_MS_MAX = 24 * 60 * 60 * 1000; // max aligns with 24h TTL for Vimm primary
 export const DETAIL_TTL_MS = 24 * 60 * 60 * 1000; // 24h = 86400000
+
+// V3 envelope for Rust side cache compatibility
+export interface DiscoveryCacheEnvelope {
+  key: string; // lowercased search string
+  provider: 'vimm' | 'romsfun' | string; // provider identifier
+  results: DiscoveryResult[];
+  timestamp: number; // epoch secs or millis – Rust accepts both
+  version: number;
+}
+
+export const DISCOVERY_CACHE_VERSION = 3;
+export const DISCOVERY_CACHE_MAX_BYTES = 500 * 1024;
+export const DISCOVERY_CACHE_MAX_FILES = 100;
 
 export function isCacheFresh(entry: CacheEntry<unknown>, now = Date.now()): boolean {
   return now - entry.timestamp < entry.ttlMs;

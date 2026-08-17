@@ -133,3 +133,19 @@ export async function exitCrystalAfterHandoff(): Promise<void> {
   return invokeBackend<void>('exit_crystal_after_handoff', {})
 }
 
+export async function setFavorite(systemId: string, romBasename: string, romPath: string, favorite: boolean): Promise<any> {
+  if (!isTauriEnvironment()) throw new Error('setFavorite requires Tauri')
+  return invokeBackend<any>('set_favorite', { system_id: systemId, rom_basename: romBasename, rom_path: romPath, favorite })
+}
+
+export async function getFavoriteStatus(systemId: string, romBasename: string, romPath?: string): Promise<boolean> {
+  if (!isTauriEnvironment()) return false
+  return invokeBackend<boolean>('get_favorite_status', { system_id: systemId, rom_basename: romBasename, rom_path: romPath || '' })
+}
+
+export async function refreshMetadataAfterLaunch(systemId: string): Promise<any> {
+  if (!isTauriEnvironment()) return { refreshed: false }
+  return invokeBackend<any>('refresh_metadata_after_launch', { system_id: systemId })
+}
+
+export { invokeBackend as invoke }
