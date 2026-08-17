@@ -114,10 +114,6 @@ export function SystemLanding({
     return parts.join('  ·  ')
   }, [resolvedMeta])
 
-  const recentIsFixture = Boolean(
-    recentGame?.id?.startsWith('_') || recentGame?.coverUrl?.toString?.().toLowerCase?.().includes('fixture')
-  )
-
   return (
     <div
       className="golden-system-landing"
@@ -137,9 +133,9 @@ export function SystemLanding({
       <div
         className="landing-left"
         style={{
-          width: '30%',
-          minWidth: 360,
-          maxWidth: 440,
+          width: '29%',
+          minWidth: 390,
+          maxWidth: 560,
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
@@ -402,7 +398,7 @@ export function SystemLanding({
               </span>
               <span style={{ fontWeight: 600 }}>DISCOVER</span>
               <span aria-hidden style={{ width: 1, height: 9, background: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(18,26,44,0.10)' }} />
-              <span style={{ opacity: 0.62, fontWeight: 500 }}>ROMSFUN CATALOG</span>
+              <span style={{ opacity: 0.62, fontWeight: 500 }}>VIMM CATALOG</span>
             </button>
           )}
 
@@ -423,41 +419,6 @@ export function SystemLanding({
 
       {/* RIGHT – hero negative space + subtle wash */}
       <div style={{ flex: 1, position: 'relative', pointerEvents: 'none', overflow: 'hidden' }}>
-        {recentGame?.coverUrl ? (
-          <div
-            aria-hidden
-            style={{
-              position: 'absolute',
-              inset: '-8%',
-              overflow: 'hidden',
-              opacity: recentIsFixture ? (isDark ? 0.18 : 0.12) : isDark ? 0.34 : 0.20,
-            }}
-          >
-            <img
-              src={recentGame.coverUrl}
-              alt=""
-              loading="eager"
-              decoding="async"
-              style={{
-                width: '116%',
-                height: '116%',
-                objectFit: 'cover',
-                objectPosition: 'center 36%',
-                filter: 'blur(28px) saturate(1.10) brightness(1.02)',
-                transform: 'scale(1.06)',
-              }}
-            />
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                background: isDark
-                  ? 'radial-gradient(78% 64% at 52% 40%, transparent 14%, rgba(6,9,14,0.20) 56%, rgba(6,9,14,0.58) 92%), linear-gradient(90deg, rgba(6,9,14,0.66) 0%, rgba(6,9,14,0.16) 34%, transparent 76%)'
-                  : 'radial-gradient(82% 68% at 54% 42%, transparent 12%, rgba(250,252,255,0.20) 52%, rgba(244,247,255,0.52) 88%), linear-gradient(90deg, rgba(251,253,255,0.60) 0%, rgba(251,253,255,0.12) 32%, transparent 74%)',
-              }}
-            />
-          </div>
-        ) : null}
         <div
           aria-hidden
           style={{

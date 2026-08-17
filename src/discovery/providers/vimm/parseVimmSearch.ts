@@ -52,6 +52,14 @@ function extractYear(text: string): number | undefined {
   return undefined;
 }
 
+function decodeBasicEntities(value: string): string {
+  return value
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&amp;/gi, '&').replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#039;/gi, "'").replace(/&lt;/gi, '<').replace(/&gt;/gi, '>');
+}
+
 function hasDomParser(): boolean {
   return typeof (globalThis as any).DOMParser !== 'undefined' || (typeof (globalThis as any).window !== 'undefined' && typeof (globalThis as any).window.DOMParser !== 'undefined');
 }
@@ -153,7 +161,18 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
       for (const row of rows) {
         const tds = Array.from(row.querySelectorAll('td'));
         if (tds.length === 0) continue;
-        const anchor = row.querySelector('a[href*="/vault/"]') as HTMLAnchorElement | null;
+        // Live Vimm rows contain a deliberately hidden /vault/999999 anchor
+        // before the real title. Never treat hidden/numeric decoys as games.
+        const anchor = Array.from(row.querySelectorAll('a[href*="/vault/"]'))
+          .find((candidate) => {
+            const href = candidate.getAttribute('href') || '';
+            const text = (candidate.textContent || '').trim();
+            const style = (candidate.getAttribute('style') || '').toLowerCase();
+            return /\/vault\/\d+/.test(href)
+              && !/\/vault\/999999(?:\D|$)/.test(href)
+              && !style.includes('display:none')
+              && !/^\d+$/.test(text);
+          }) as HTMLAnchorElement | undefined;
         if (!anchor) continue;
         const href = anchor.getAttribute('href') || '';
         const m = href.match(/\/vault\/(\d+)/);
@@ -308,7 +327,15 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
 
   // 3. Generic vault anchors – live fallback
   const anchors = Array.from(doc.querySelectorAll('a[href*="/vault/"]')) as HTMLAnchorElement[];
-  const vaultAnchors = anchors.filter(a => /\/vault\/\d+/.test(a.getAttribute('href') || ''));
+  const vaultAnchors = anchors.filter(a => {
+    const href = a.getAttribute('href') || '';
+    const text = (a.textContent || '').trim();
+    const style = (a.getAttribute('style') || '').toLowerCase();
+    return /\/vault\/\d+/.test(href)
+      && !/\/vault\/999999(?:\D|$)/.test(href)
+      && !style.includes('display:none')
+      && !/^\d+$/.test(text);
+  });
 
   if (vaultAnchors.length === 0) {
     const bodyText = doc.body?.textContent?.toLowerCase() || '';
@@ -327,6 +354,7 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
     if (!m) continue;
     const id = m[1];
     const titleRaw = (a.textContent || '').trim() || a.getAttribute('title')?.trim() || `Game ${id}`;
+    if (id === '999999' || /^\d+$/.test(titleRaw)) continue;
     const title = titleRaw.replace(/\s+/g, ' ').trim().slice(0, 200);
     let row: Element | null = a.closest('tr') || a.closest('li') || a.closest('div');
     let rowText = row?.textContent || a.parentElement?.textContent || '';
@@ -388,12 +416,13 @@ function parseWithDom(html: string, crystalSystemId: string, vimmSystemToken: st
 
 function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: string): DiscoveryResult[] {
   // Table header mapping regex fallback
-  const vaultRe = /href=["']\/vault\/(\d+)["'][^>]*>([^<]{1,200}?)<\/a>/gi;
+  const vaultRe = /href\s*=\s*["']\s*\/vault\/(\d+)["'][^>]*>([^<]{1,200}?)<\/a>/gi;
   const matches: { id: string; title: string; index: number }[] = [];
   let m: RegExpExecArray | null;
   while ((m = vaultRe.exec(html)) !== null) {
     const id = m[1];
-    const titleRaw = m[2].trim().replace(/\s+/g, ' ');
+    const titleRaw = decodeBasicEntities(m[2]).trim().replace(/\s+/g, ' ');
+    if (id === '999999' || /^\d+$/.test(titleRaw)) continue;
     matches.push({ id, title: titleRaw.slice(0, 200), index: m.index });
   }
 
@@ -408,6 +437,7 @@ function parseWithRegex(html: string, crystalSystemId: string, vimmSystemToken: 
       let g: RegExpExecArray | null;
       while ((g = gen.exec(html)) !== null) {
         const id = g[1];
+        if (id === '999999') continue;
         if (seen.has(id)) continue;
         seen.add(id);
         matches.push({ id, title: `Game ${id}`, index: g.index });

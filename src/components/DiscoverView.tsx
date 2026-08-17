@@ -11,7 +11,8 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import type { GameEntry } from '../runtime/backend'
 import discoveryService, { type DiscoveryResult, canonicalVaultUrl } from '../lib/discoveryService'
-import { isInLibrary } from '../lib/discoveryMatching'
+import { isInLibrary, normalizeTitle } from '../lib/discoveryMatching'
+import { toAssetUrl } from '../runtime/mediaUrl'
 import SystemLogo from './SystemLogo'
 
 export type BeginAcquisitionRequest = {
@@ -38,6 +39,18 @@ type DiscoverProps = {
   acquisitionPhase?: string | null
 }
 
+const PROVIDER_NAVIGATION_TITLES = new Set([
+  'atari 2600', 'atari 5200', 'atari 7800', 'nintendo', 'super nintendo',
+  'nintendo 64', 'nintendo ds', 'nintendo 3ds', 'game boy', 'game boy color',
+  'game boy advance', 'gamecube', 'wii', 'wii u', 'sega 32x', 'master system',
+  'genesis', 'dreamcast', 'playstation', 'playstation 2', 'playstation 3',
+  'playstation portable', 'xbox', 'xbox 360', 'the vault', 'emulation lair',
+])
+
+function removeProviderNavigationRows(items: any[]): any[] {
+  return items.filter(item => !PROVIDER_NAVIGATION_TITLES.has(normalizeTitle(String(item?.title || ''))))
+}
+
 export function DiscoverView({
   systemId,
   systemFullName,
@@ -53,6 +66,10 @@ export function DiscoverView({
   const isDark = theme === 'dark'
   const searchInputRef = useRef<HTMLInputElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const gridColumns = useCallback(() => {
+    const width = containerRef.current?.clientWidth || 0
+    return Math.max(1, Math.floor((width + 12) / 257))
+  }, [])
 
   const prefill = useMemo(() => {
     if (selectedLocalGame?.name) return selectedLocalGame.name
@@ -70,6 +87,7 @@ export function DiscoverView({
 
   const [query, setQuery] = useState(prefill)
   const [debounced, setDebounced] = useState(prefill)
+  const [browseLetter, setBrowseLetter] = useState('FEATURED')
   const [results, setResults] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [searching, setSearching] = useState(false)
@@ -78,12 +96,16 @@ export function DiscoverView({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const [focusedIdx, setFocusedIdx] = useState(0)
+  const browseOptions = useMemo(() => ['FEATURED', ...'#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')], [])
+  const [focusZone, setFocusZone] = useState<'search' | 'browse' | 'grid'>('grid')
+  const [focusedBrowseIdx, setFocusedBrowseIdx] = useState(0)
   const [selectedDetail, setSelectedDetail] = useState<DiscoveryResult | null>(null)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
 
   // Detail resolved for panel with extra metadata
   const [detailResolving, setDetailResolving] = useState(false)
   const [detailFull, setDetailFull] = useState<any>(null)
+  const [localCoverUrls, setLocalCoverUrls] = useState<Record<string, string>>({})
 
   // Abort controller for stale searches
   const abortRef = useRef<AbortController | null>(null)
@@ -97,13 +119,14 @@ export function DiscoverView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill])
 
-  // autoFocus desktop
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try { searchInputRef.current?.focus() } catch {}
-    }, 120)
-    return () => clearTimeout(t)
-  }, [])
+  const activateBrowse = useCallback((index: number) => {
+    const next = browseOptions[Math.max(0, Math.min(browseOptions.length - 1, index))]
+    setQuery('')
+    setBrowseLetter(next)
+    setFocusedBrowseIdx(index)
+    setFocusedIdx(0)
+    setFocusZone('grid')
+  }, [browseOptions])
 
   // debounce 340ms
   useEffect(() => {
@@ -114,6 +137,43 @@ export function DiscoverView({
   useEffect(() => {
     setFocusedIdx(0)
   }, [debounced, results.length])
+
+  // Reuse the user's already-scraped covers for catalog titles that are in
+  // their library. This is instant, offline, and avoids fabricating artwork.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const pairs = await Promise.all((libraryGames || []).filter(game => game.cover_path).map(async game => {
+        const url = await toAssetUrl(game.cover_path)
+        return [normalizeTitle(game.name), url] as const
+      }))
+      if (cancelled) return
+      const next: Record<string, string> = {}
+      for (const [key, url] of pairs) if (key && url) next[key] = url
+      setLocalCoverUrls(next)
+    })()
+    return () => { cancelled = true }
+  }, [libraryGames])
+
+  // Vimm search rows do not consistently expose box art. Resolve only the
+  // currently focused result (debounced), then cache its verified detail
+  // thumbnail into the grid. Controller browsing therefore gains artwork
+  // without firing dozens of provider requests.
+  useEffect(() => {
+    if (focusZone !== 'grid') return
+    const focused = results[focusedIdx]
+    if (!focused || focused.thumbnailUrl || focused.thumbUrl) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      try {
+        const detail = await discoveryService.detail(String(focused.id || focused.providerId), systemId)
+        const thumbnailUrl = detail?.thumbnailUrl
+        if (cancelled || !thumbnailUrl) return
+        setResults(current => current.map((item, index) => index === focusedIdx ? { ...item, thumbnailUrl } : item))
+      } catch {}
+    }, 420)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [focusZone, focusedIdx, results, systemId])
 
   // Track detail open state globally for App→Discover coordination (prevents double-back)
   useEffect(() => {
@@ -128,15 +188,6 @@ export function DiscoverView({
   useEffect(() => {
     let cancelled = false
     async function doSearch() {
-      if (!debounced || debounced.length < 1) {
-        setResults([])
-        setTotal(0)
-        setSearching(false)
-        setOffline(false)
-        setSchemaChanged(false)
-        setErrorMsg(null)
-        return
-      }
       if (abortRef.current) {
         try { abortRef.current.abort() } catch {}
       }
@@ -147,16 +198,24 @@ export function DiscoverView({
       setSchemaChanged(false)
       setErrorMsg(null)
       try {
-        const res: any = await discoveryService.search({ systemId, query: debounced, limit: 24, signal: ac.signal })
+        const res: any = await discoveryService.search({
+          systemId,
+          query: debounced,
+          browseLetter: debounced ? undefined : browseLetter,
+          limit: 48,
+          signal: ac.signal,
+        })
         if (cancelled || ac.signal.aborted) return
         if (Array.isArray(res)) {
-          setResults(res)
-          setTotal(res.length)
+          const clean = removeProviderNavigationRows(res)
+          setResults(clean)
+          setTotal(clean.length)
           setOffline(false)
           setSchemaChanged(false)
         } else {
-          setResults(res.results)
-          setTotal(res.total)
+          const clean = removeProviderNavigationRows(res.results || [])
+          setResults(clean)
+          setTotal(clean.length)
           setOffline(!!res.offline)
           setSchemaChanged(!!res.schemaChanged)
           if (res.error && !res.offline && !res.schemaChanged) setErrorMsg(res.error)
@@ -177,7 +236,7 @@ export function DiscoverView({
       cancelled = true
       try { abortRef.current?.abort() } catch {}
     }
-  }, [debounced, systemId])
+  }, [debounced, browseLetter, systemId])
 
 
   // focus follow scroll
@@ -187,7 +246,7 @@ export function DiscoverView({
     if (el) {
       try { el.scrollIntoView({ block: 'nearest', behavior: 'auto' }) } catch {}
     }
-  }, [focusedIdx])
+  }, [focusedIdx, focusZone])
 
   const inLibraryCheck = useCallback((title: string) => {
     if (!libraryGames) return false
@@ -276,10 +335,10 @@ export function DiscoverView({
     // Lazy callback: the coordinator invokes this only after the Downloads
     // watcher is ready, so fast downloads cannot be missed.
     const openExternalPage = () => discoveryService.open(idStr)
-    const openVimmBackupPage = () => discoveryService.openVimmBackup(systemId, expectedTitle)
+    const openRomsFunBackupPage = () => discoveryService.openRomsFunBackup(systemId, expectedTitle)
     const externalUrl = provider === 'vimm'
-      ? discoveryService.buildVimmBackupUrl(systemId, expectedTitle)
-      : canonicalVaultUrl(idStr)
+      ? canonicalVaultUrl(idStr)
+      : discoveryService.buildRomsFunBackupUrl(systemId, expectedTitle)
 
     startInFlightRef.current = true
     try {
@@ -287,8 +346,8 @@ export function DiscoverView({
         systemId,
         expectedTitle,
         providerId: idStr,
-        initialUrl: idStr.includes('/') ? `https://romsfun.com/roms/${idStr.replace(/^roms\//,'')}` : undefined,
-        openExternalPage: provider === 'vimm' ? openVimmBackupPage : openExternalPage,
+        initialUrl: externalUrl,
+        openExternalPage: provider === 'vimm' ? openExternalPage : openRomsFunBackupPage,
         externalUrl,
       })
       setShowDetailPanel(false)
@@ -339,18 +398,26 @@ export function DiscoverView({
         }
         if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'k') {
           e.preventDefault()
-          setFocusedIdx(i => Math.max(0, i - 1))
+          if (focusZone === 'grid' && focusedIdx < gridColumns() && !debounced) setFocusZone('browse')
+          else if (focusZone === 'grid') setFocusedIdx(i => Math.max(0, i - gridColumns()))
+          else if (focusZone === 'browse') { setFocusZone('search'); searchInputRef.current?.focus() }
           return
         }
         if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'j') {
           e.preventDefault()
-          setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + 1))
+          if (focusZone !== 'grid') { searchInputRef.current?.blur(); setFocusZone(debounced ? 'grid' : focusZone === 'search' ? 'browse' : 'grid') }
+          else setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + gridColumns()))
+          return
+        }
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && focusZone === 'browse') {
+          e.preventDefault()
+          setFocusedBrowseIdx(i => Math.max(0, Math.min(browseOptions.length - 1, i + (e.key === 'ArrowRight' ? 1 : -1))))
           return
         }
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          const r = results[focusedIdx]
-          if (r) openDetail(r)
+          if (focusZone === 'browse') activateBrowse(focusedBrowseIdx)
+          else { const r = results[focusedIdx]; if (r) openDetail(r) }
           return
         }
         if (e.key === 'x' || e.key === 'X') {
@@ -383,15 +450,29 @@ export function DiscoverView({
         return
       } else {
         // results list mode
-        if (action === 'up') setFocusedIdx(i => Math.max(0, i - 1))
-        else if (action === 'down') setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + 1))
-        else if (action === 'left') setFocusedIdx(i => Math.max(0, i - 1))
-        else if (action === 'right') setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + 1))
+        if (action === 'up') {
+          if (focusZone === 'grid' && focusedIdx < gridColumns() && !debounced) setFocusZone('browse')
+          else if (focusZone === 'grid') setFocusedIdx(i => Math.max(0, i - gridColumns()))
+          else if (focusZone === 'browse') { setFocusZone('search'); searchInputRef.current?.focus() }
+        }
+        else if (action === 'down') {
+          if (focusZone !== 'grid') { searchInputRef.current?.blur(); setFocusZone(debounced ? 'grid' : focusZone === 'search' ? 'browse' : 'grid') }
+          else setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + gridColumns()))
+        }
+        else if (action === 'left') {
+          if (focusZone === 'browse') setFocusedBrowseIdx(i => Math.max(0, i - 1))
+          else setFocusedIdx(i => Math.max(0, i - 1))
+        }
+        else if (action === 'right') {
+          if (focusZone === 'browse') setFocusedBrowseIdx(i => Math.min(browseOptions.length - 1, i + 1))
+          else setFocusedIdx(i => Math.min(Math.max(results.length - 1, 0), i + 1))
+        }
         else if (action === 'confirm') {
-          const r = results[focusedIdx]
-          if (r) openDetail(r)
+          if (focusZone === 'browse') activateBrowse(focusedBrowseIdx)
+          else if (focusZone === 'search') searchInputRef.current?.focus()
+          else { const r = results[focusedIdx]; if (r) openDetail(r) }
         } else if (action === 'search') {
-          try { searchInputRef.current?.focus() } catch {}
+          setFocusZone('search'); try { searchInputRef.current?.focus() } catch {}
         } else if (action === 'back' || action === 'menu') {
           // results B -> return to origin (library/system) via onBack – single exit, no double-back
           onBack()
@@ -406,13 +487,13 @@ export function DiscoverView({
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('crystal-discover-nav' as any, onDiscoverNav)
     }
-  }, [results, focusedIdx, showDetailPanel, onBack, selectedDetail, detailFull, handleGetGame, canGetGame, acquisitionActive])
+  }, [results, focusedIdx, focusedBrowseIdx, focusZone, browseOptions.length, debounced, showDetailPanel, onBack, selectedDetail, detailFull, handleGetGame, canGetGame, acquisitionActive, gridColumns, activateBrowse])
 
   const resultCountLabel = useMemo(() => {
     if (searching) return 'searching…'
-    if (!debounced) return 'type to search catalog'
+    if (!debounced) return `${results.length} games • ${browseLetter}`
     return `${total || results.length} results`
-  }, [searching, debounced, total, results.length])
+  }, [searching, debounced, browseLetter, total, results.length])
 
   return (
     <div
@@ -529,21 +610,22 @@ export function DiscoverView({
           flex: 1,
           display: 'flex', alignItems: 'center', gap: 10,
           background: isDark ? 'rgba(18,22,36,0.72)' : 'rgba(255,255,255,0.84)',
-          border: `1px solid ${isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)'}`,
+          border: `1px solid ${focusZone === 'search' ? (isDark ? 'rgba(125,249,255,0.72)' : 'rgba(70,130,255,0.64)') : (isDark ? 'rgba(125,249,255,0.18)' : 'rgba(70,130,255,0.18)')}`,
           borderRadius: 12,
           padding: '0 12px',
           height: 42,
           boxShadow: isDark ? '0 6px 18px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.06)' : '0 6px 16px rgba(18,26,44,0.06), inset 0 1px 0 rgba(255,255,255,0.9)',
         }}>
           <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.56, whiteSpace: 'nowrap' }}>
-            {systemFullName.toUpperCase()} — Search ROMsFun
+            {systemFullName.toUpperCase()} — Search Vimm's Lair
           </span>
           <input
             ref={searchInputRef}
             value={query}
             onChange={e => setQuery(e.target.value)}
+            onFocus={() => setFocusZone('search')}
             onKeyDown={e => { if (e.key === 'Escape') { if (query) { setQuery(''); e.preventDefault() } else onBack() } }}
-            placeholder={selectedLocalGame ? `“${selectedLocalGame.name}”` : 'title, no shop terms…'}
+            placeholder="Search any part of a title…"
             style={{
               flex: 1, background: 'transparent', border: 'none', outline: 'none',
               color: isDark ? '#eef7ff' : '#16213e',
@@ -564,8 +646,19 @@ export function DiscoverView({
         </div>
       </div>
 
-      {/* Results scrollable */}
-      <div ref={containerRef} style={{ flex: 1, overflowY: 'auto', zIndex: 1, padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {!query && (
+        <div style={{ zIndex: 2, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 7, padding: '10px 22px 11px', overflowX: 'auto', scrollbarWidth: 'none', background: isDark ? 'rgba(8,10,16,0.30)' : 'rgba(255,255,255,0.42)', borderBottom: `1px solid ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(18,26,44,0.06)'}` }}>
+          <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9.5, opacity: 0.5, marginRight: 5, whiteSpace: 'nowrap' }}>BROWSE</span>
+          {browseOptions.map((letter, browseIdx) => {
+            const active = browseLetter === letter
+            const focused = focusZone === 'browse' && focusedBrowseIdx === browseIdx
+            return <button key={letter} onClick={() => activateBrowse(browseIdx)} onFocus={() => { setFocusZone('browse'); setFocusedBrowseIdx(browseIdx) }} style={{ width: letter === 'FEATURED' ? 76 : 30, height: 30, flex: `0 0 ${letter === 'FEATURED' ? 76 : 30}px`, borderRadius: 9, cursor: 'pointer', outline: focused ? `2px solid ${isDark ? '#fff' : '#173c91'}` : 'none', outlineOffset: 2, transform: focused ? 'translateY(-2px)' : 'none', border: `1px solid ${active ? (isDark ? 'rgba(125,249,255,.65)' : 'rgba(70,130,255,.58)') : (isDark ? 'rgba(255,255,255,.08)' : 'rgba(18,26,44,.08)')}`, background: active ? (isDark ? '#7df9ff' : '#4a86ff') : (isDark ? 'rgba(255,255,255,.04)' : 'rgba(255,255,255,.62)'), color: active ? (isDark ? '#041018' : '#fff') : 'inherit', fontFamily: 'var(--crystal-mono)', fontSize: 10, fontWeight: 800 }}>{letter}</button>
+          })}
+        </div>
+      )}
+
+      {/* Storefront grid: browse first, partial-title search when needed. */}
+      <div ref={containerRef} style={{ flex: 1, overflowY: 'auto', zIndex: 1, padding: '18px 22px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', alignContent: 'start', gap: 12 }}>
         {offline && (
           <div style={{
             padding: '18px 16px', borderRadius: 12,
@@ -573,13 +666,13 @@ export function DiscoverView({
             border: `1px solid ${isDark ? 'rgba(255,180,120,0.18)' : 'rgba(180,120,20,0.18)'}`,
             fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.5,
           }}>
-            <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>ROMSFUN UNAVAILABLE</div>
-            <div style={{ opacity: 0.72, marginBottom: 10 }}>Network offline or ROMsFun is currently unreachable.</div>
+            <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>VIMM'S LAIR UNAVAILABLE</div>
+            <div style={{ opacity: 0.72, marginBottom: 10 }}>Network offline or Vimm's Lair is currently unreachable.</div>
             <button onClick={handleOpenVaultRoot} style={{
               padding: '8px 14px', borderRadius: 999, border: 'none',
               background: isDark ? '#7df9ff' : '#4a86ff', color: isDark ? '#041018' : '#fff',
               fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-            }}>OPEN ROMSFUN</button>
+            }}>OPEN VIMM'S LAIR</button>
           </div>
         )}
         {schemaChanged && (
@@ -590,12 +683,12 @@ export function DiscoverView({
             fontFamily: 'var(--crystal-mono)', fontSize: 11, lineHeight: 1.5,
           }}>
             <div style={{ fontWeight: 700, marginBottom: 6, fontFamily: 'var(--crystal-display)', fontSize: 13 }}>CATALOG FORMAT CHANGED</div>
-            <div style={{ opacity: 0.72, marginBottom: 10 }}>Crystal's catalog parser no longer matches ROMsFun. Please update Crystal or open the provider page.</div>
+            <div style={{ opacity: 0.72, marginBottom: 10 }}>Crystal's catalogue parser no longer matches Vimm's Lair. Please update Crystal or open the provider page.</div>
             <button onClick={handleOpenVaultRoot} style={{
               padding: '8px 14px', borderRadius: 999, border: 'none',
               background: isDark ? '#7df9ff' : '#4a86ff', color: isDark ? '#041018' : '#fff',
               fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-            }}>OPEN ROMSFUN</button>
+            }}>OPEN VIMM'S LAIR</button>
           </div>
         )}
         {!offline && !schemaChanged && !searching && debounced && results.length === 0 && (
@@ -603,23 +696,24 @@ export function DiscoverView({
             No catalog entries for “{debounced}” on {systemFullName}. Try broader title. {errorMsg && <span style={{ color: '#ff7b7b' }}> {errorMsg}</span>}
           </div>
         )}
-        {!offline && !schemaChanged && !searching && !debounced && (
-          <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.42, padding: '24px 4px' }}>
-            Type to search {systemFullName} on ROMsFun. Enter a title to begin.
+        {!offline && !schemaChanged && !searching && !debounced && results.length === 0 && (
+          <div style={{ gridColumn: '1 / -1', fontFamily: 'var(--crystal-mono)', fontSize: 11, opacity: 0.52, padding: '24px 4px' }}>
+            No {browseLetter} titles found for {systemFullName}. Choose another letter or search any part of a title.
           </div>
         )}
         {!offline && !schemaChanged && results.map((r, idx) => {
-          const focused = idx === focusedIdx
+          const focused = focusZone === 'grid' && idx === focusedIdx
           const inLib = inLibraryCheck(r.title)
+          const visualUrl = r.thumbUrl || r.thumbnailUrl || localCoverUrls[normalizeTitle(r.title)] || backgroundUrl
           return (
             <div
               key={`${r.id}-${idx}`}
               data-result-idx={idx}
-              onClick={() => { setFocusedIdx(idx); openDetail(r) }}
+              onClick={() => { setFocusZone('grid'); setFocusedIdx(idx); openDetail(r) }}
               tabIndex={0}
-              onFocus={() => setFocusedIdx(idx)}
+              onFocus={() => { setFocusZone('grid'); setFocusedIdx(idx) }}
               style={{
-                display: 'flex',
+                display: 'flex', minHeight: 112,
                 gap: 12,
                 padding: '12px 12px',
                 borderRadius: 12,
@@ -633,13 +727,13 @@ export function DiscoverView({
                 transition: 'all 180ms cubic-bezier(0.16,1,0.3,1)',
               }}
             >
-              {r.thumbUrl || r.thumbnailUrl ? (
-                <img src={r.thumbUrl || r.thumbnailUrl} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 8, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.08)'}`, flexShrink: 0, background: '#fff' }} />
+              {visualUrl ? (
+                <img src={visualUrl} alt="" style={{ width: 68, height: 84, objectFit: 'cover', objectPosition: 'center', borderRadius: 9, border: `1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(18,26,44,0.08)'}`, flexShrink: 0, background: '#fff' }} />
               ) : (
-                <div style={{ width: 56, height: 56, borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(18,26,44,0.06)', display: 'grid', placeItems: 'center', fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.5, flexShrink: 0 }}>◐</div>
+                <div style={{ width: 68, height: 84, borderRadius: 9, background: isDark ? 'linear-gradient(145deg, rgba(125,249,255,.10), rgba(255,255,255,.025))' : 'linear-gradient(145deg, rgba(70,130,255,.12), rgba(255,255,255,.72))', border: `1px solid ${isDark ? 'rgba(125,249,255,.12)' : 'rgba(70,130,255,.12)'}`, display: 'grid', placeItems: 'center', fontFamily: 'var(--crystal-mono)', fontSize: 17, fontWeight: 800, letterSpacing: '.06em', color: isDark ? 'rgba(125,249,255,.68)' : 'rgba(50,95,190,.68)', flexShrink: 0 }}>{String(r.title || '?').slice(0, 2).toUpperCase()}</div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 13.5, fontWeight: 650, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.title}</div>
+                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 14.5, fontWeight: 680, lineHeight: 1.18, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }}>{r.title}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap', fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.62 }}>
                   {r.region && <span style={{ padding: '2px 7px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', border: `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'} ` }}>{r.region}</span>}
                   {r.year && <span>{r.year}</span>}
@@ -658,7 +752,7 @@ export function DiscoverView({
                     background: inLib ? (isDark ? 'rgba(255,214,90,0.16)' : 'rgba(255,200,60,0.18)') : isDark ? 'rgba(255,255,255,0.04)' : 'rgba(18,26,44,0.05)',
                     border: `1px solid ${inLib ? (isDark ? 'rgba(255,214,90,0.24)' : 'rgba(255,180,0,0.24)') : isDark ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)'}`,
                     color: inLib ? (isDark ? '#ffd85a' : '#8a5a00') : undefined,
-                  }}>{inLib ? '★ IN YOUR LIBRARY' : 'NOT IN YOUR LIBRARY'}</span>
+                  }}>{inLib ? '★ OWNED' : 'NEW'}</span>
                   {(r as any).rating != null && String((r as any).rating) !== 'none' && (
                     <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9.5, opacity: 0.6 }}>★ {String((r as any).rating)}</span>
                   )}

@@ -2,6 +2,7 @@ import type { LibraryGameDetail } from '../LibraryView'
 
 type SelectedCtxProps = {
   theme: 'light' | 'dark'
+  systemId?: string
   game: LibraryGameDetail | null | undefined
   mediaResolving?: boolean
   onLaunch: (game: LibraryGameDetail) => void
@@ -48,6 +49,7 @@ function playersShort(players: string | number | null | undefined): string | nul
 
 export function SelectedGameContext({
   theme,
+  systemId,
   game,
   mediaResolving,
   onLaunch,
@@ -78,16 +80,17 @@ export function SelectedGameContext({
         minHeight: '100%',
         boxSizing: 'border-box',
         background: isDark
-          ? 'linear-gradient(145deg, rgba(8,14,24,0.78) 0%, rgba(8,12,20,0.62) 100%)'
-          : 'linear-gradient(145deg, rgba(250,252,255,0.90) 0%, rgba(239,244,252,0.76) 100%)',
+          ? 'linear-gradient(145deg, rgba(5,10,19,.94) 0%, rgba(9,15,26,.82) 100%)'
+          : 'linear-gradient(145deg, rgba(255,255,255,.96) 0%, rgba(237,243,252,.92) 100%)',
         backdropFilter: 'blur(18px) saturate(1.08)',
         WebkitBackdropFilter: 'blur(18px) saturate(1.08)',
         border: `1px solid ${isDark ? 'rgba(255,255,255,0.08)' : 'rgba(18,26,44,0.07)'}`,
-        borderRadius: 16,
+        borderRadius: systemId === 'n64' || systemId === 'genesis' || systemId === 'megadrive' ? '8px 18px 18px 8px' : 16,
         padding: '14px 14px 12px 14px',
         boxShadow: isDark
           ? '0 14px 32px rgba(0,0,0,0.36), 0 0 0 1px rgba(255,255,255,0.03) inset'
           : '0 12px 28px rgba(18,26,44,0.12), inset 0 1px 0 rgba(255,255,255,0.9)',
+        borderLeft: '3px solid var(--library-accent)',
         display: 'flex',
         flexDirection: 'column',
         gap: 8,

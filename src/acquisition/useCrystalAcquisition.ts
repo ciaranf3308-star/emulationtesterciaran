@@ -225,6 +225,15 @@ export function useCrystalAcquisition(opts: UseCrystalAcquisitionOpts = {}): Cry
     }
   }, [])
 
+  // Successful imports should flow straight back to the selected game. The
+  // READY card is informational, not a modal choice between resolving and
+  // launching. Briefly show success, then release all acquisition ownership.
+  useEffect(() => {
+    if (crystalPhase !== "READY_TO_PLAY" || !found) return
+    const timer = window.setTimeout(() => close(), 1100)
+    return () => window.clearTimeout(timer)
+  }, [crystalPhase, found, close])
+
   const isNonDismissed = extState !== null
 
   return {

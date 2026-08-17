@@ -34,6 +34,12 @@ html, body, #root {
 
 button, a { font-family: inherit; }
 
+html.crystal-background-suspended *,
+html.crystal-background-suspended *::before,
+html.crystal-background-suspended *::after {
+  animation-play-state: paused !important;
+}
+
 .fullscreen-root {
   position: relative;
   width: 100%;

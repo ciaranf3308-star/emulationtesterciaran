@@ -102,8 +102,11 @@ describe('V8.3 editorial density', () => {
 })
 
 describe('V8.3 spacing', () => {
-  test('SystemLanding large', () => {
+  test('SystemLanding retains the daily-driver content hierarchy', () => {
     const sl = readFileSync('src/components/SystemLanding.tsx', 'utf8')
-    expect(sl.length).toBeGreaterThan(20000)
+    expect(sl).toContain("import { SystemSummary }")
+    expect(sl).toContain('<SystemSummary')
+    expect(sl).toContain('continueGame={continueGame}')
+    expect(sl).toContain('favoriteCount={favoriteCount}')
   })
 })

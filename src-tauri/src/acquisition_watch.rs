@@ -715,7 +715,10 @@ pub fn start_acquisition_watch(
     let validated_external_url = if let Some(raw_url) = externalUrl.as_deref() {
         let parsed = url::Url::parse(raw_url).map_err(|e| format!("INVALID_CATALOG_URL: {}", e))?;
         let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-        let allowed_host = matches!(host.as_str(), "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net");
+        let allowed_host = matches!(
+            host.as_str(),
+            "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net"
+        );
         let allowed_path = if host.ends_with("romsfun.com") {
             parsed.path().starts_with("/roms/")
         } else {
@@ -728,7 +731,10 @@ pub fn start_acquisition_watch(
             || !parsed.username().is_empty()
             || parsed.password().is_some()
         {
-            return Err("CATALOG_URL_BLOCKED: only validated Vimm or ROMsFun catalog pages may open".to_string());
+            return Err(
+                "CATALOG_URL_BLOCKED: only validated Vimm or ROMsFun catalog pages may open"
+                    .to_string(),
+            );
         }
         Some(raw_url.to_string())
     } else {
@@ -739,7 +745,10 @@ pub fn start_acquisition_watch(
     *opt = Some(session);
 
     if let Some(url) = validated_external_url {
-        log_event("info", &format!("external_catalog_open_requested url='{}'", url));
+        log_event(
+            "info",
+            &format!("external_catalog_open_requested url='{}'", url),
+        );
         #[cfg(target_os = "windows")]
         if let Err(error) = std::process::Command::new("rundll32.exe")
             .arg("url.dll,FileProtocolHandler")
@@ -760,7 +769,15 @@ pub fn start_acquisition_watch(
 }
 
 #[tauri::command]
-pub fn get_acquisition_watch_status(
+pub async fn get_acquisition_watch_status(
+    sessionId: String,
+) -> Result<AcquisitionSessionResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || get_acquisition_watch_status_blocking(sessionId))
+        .await
+        .map_err(|error| format!("ACQUISITION_WORKER_FAILED: {error}"))?
+}
+
+fn get_acquisition_watch_status_blocking(
     sessionId: String,
 ) -> Result<AcquisitionSessionResponse, String> {
     let guard = session_mutex();
@@ -916,11 +933,25 @@ pub fn get_acquisition_watch_status(
     }
 
     if high.is_empty() {
-        session.state = AcquisitionState::WaitingForStability;
+        // Every candidate in this branch is already stable and readable. Waiting
+        // longer cannot improve title matching, so surface the ambiguity instead
+        // of leaving the frontend on "Finishing download" forever.
+        session.state = AcquisitionState::Ambiguous;
+        session.error_code = Some("NO_HIGH_CONFIDENCE_MATCH".to_string());
+        session.candidate_paths = stable_candidates.clone();
+        session.message = Some(format!(
+            "Downloaded file name does not safely match '{}'. Found: {}",
+            session.expected_title,
+            stable_candidates
+                .iter()
+                .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
         log_event(
-            "info",
+            "warn",
             &format!(
-                "acquisition no high match session_id={} candidate_count={} stable={} expected='{}'",
+                "acquisition no high match terminal session_id={} candidate_count={} stable={} expected='{}'",
                 session.session_id,
                 candidates.len(),
                 stable_candidates.len(),
@@ -986,23 +1017,67 @@ pub fn get_acquisition_watch_status(
 
     match import_game_source(req) {
         Ok(res) => {
-            session.import_result = Some(res.clone());
-            match res.status.as_str() {
-                "INSTALLED" => {
-                    session.state = AcquisitionState::Installed;
-                }
-                "ALREADY_INSTALLED" => {
-                    session.state = AcquisitionState::AlreadyInstalled;
-                }
-                "COLLISION" => {
-                    session.state = AcquisitionState::Collision;
-                    session.error_code = res.errorCode.clone().or(Some("COLLISION".to_string()));
-                    session.message = res.message.clone();
-                }
-                _ => {
+            // A completed acquisition owns the newly detected source file. Once
+            // every installed destination has been verified, remove that source
+            // archive/ROM so Downloads does not become a second ROM library.
+            // Identical ALREADY_INSTALLED results are equally safe to clear: the
+            // importer returns exact, byte-verified destination paths for them.
+            if matches!(res.status.as_str(), "INSTALLED" | "ALREADY_INSTALLED") {
+                let destinations_verified = !res.installedPaths.is_empty()
+                    && res
+                        .installedPaths
+                        .iter()
+                        .all(|path| std::path::Path::new(path).is_file());
+                if destinations_verified {
+                    match fs::remove_file(&selected) {
+                        Ok(()) => log_event(
+                            "info",
+                            &format!(
+                                "acquisition source cleaned session_id={} candidate_basename={}",
+                                session.session_id, selected_basename
+                            ),
+                        ),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            session.state = AcquisitionState::Failed;
+                            session.error_code =
+                                Some("INSTALLED_BUT_SOURCE_DELETE_FAILED".to_string());
+                            session.message = Some(format!(
+                                "Game installed, but Crystal could not remove the original download: {}",
+                                error
+                            ));
+                        }
+                    }
+                } else {
                     session.state = AcquisitionState::Failed;
-                    session.error_code = res.errorCode.clone().or(Some(res.status.clone()));
-                    session.message = res.message.clone();
+                    session.error_code =
+                        Some("INSTALL_VERIFICATION_FAILED_SOURCE_RETAINED".to_string());
+                    session.message = Some(
+                        "Game import reported success, but installed files could not be verified; original download retained."
+                            .to_string(),
+                    );
+                }
+            }
+            session.import_result = Some(res.clone());
+            if !matches!(session.state, AcquisitionState::Failed) {
+                match res.status.as_str() {
+                    "INSTALLED" => {
+                        session.state = AcquisitionState::Installed;
+                    }
+                    "ALREADY_INSTALLED" => {
+                        session.state = AcquisitionState::AlreadyInstalled;
+                    }
+                    "COLLISION" => {
+                        session.state = AcquisitionState::Collision;
+                        session.error_code =
+                            res.errorCode.clone().or(Some("COLLISION".to_string()));
+                        session.message = res.message.clone();
+                    }
+                    _ => {
+                        session.state = AcquisitionState::Failed;
+                        session.error_code = res.errorCode.clone().or(Some(res.status.clone()));
+                        session.message = res.message.clone();
+                    }
                 }
             }
             log_event(
@@ -1099,6 +1174,7 @@ mod tests {
     use super::*;
     use crate::test_env_lock::acquire_shared_test_env_lock;
     use std::fs;
+    use std::io::Write;
     use tempfile::TempDir;
 
     fn create_mock_config(rom_dir: &Path, exts: Vec<&str>) -> serde_json::Value {
@@ -1468,7 +1544,7 @@ mod tests {
         let res = cancel_acquisition_watch("test-cancel-1".to_string()).unwrap();
         assert_eq!(res.state, AcquisitionState::Cancelled);
 
-        let res2 = get_acquisition_watch_status("test-cancel-1".to_string()).unwrap();
+        let res2 = get_acquisition_watch_status_blocking("test-cancel-1".to_string()).unwrap();
         assert_eq!(res2.state, AcquisitionState::Cancelled);
 
         {
@@ -1500,6 +1576,7 @@ mod tests {
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
                 None,
+                None,
             );
             assert!(first.is_ok(), "first should succeed {:?}", first.err());
 
@@ -1508,6 +1585,7 @@ mod tests {
                 "Mario".to_string(),
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
+                None,
                 None,
             );
             assert!(second.is_err());
@@ -1519,6 +1597,7 @@ mod tests {
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
                 Some(true),
+                None,
             );
             assert!(third.is_ok());
 
@@ -1554,6 +1633,7 @@ mod tests {
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
                 Some(true),
+                None,
             )
         });
         assert!(res.is_err());
@@ -1585,6 +1665,7 @@ mod tests {
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
                 Some(true),
+                None,
             )
         });
         assert!(res.is_err());
@@ -1611,6 +1692,7 @@ mod tests {
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
                 Some(true),
+                None,
             )
         });
         assert!(res.is_err());
@@ -1651,6 +1733,7 @@ mod tests {
             None,
             Some(watch_dir.to_string_lossy().to_string()),
             Some(true),
+            None,
         );
         if let Some(p) = prev {
             std::env::set_var("CRYSTAL_MACHINE_CONFIG", p);
@@ -1681,7 +1764,15 @@ mod tests {
         crate::safety::set_test_writable_root_override(writable_td.path());
 
         let src = watch.join("Game.zip");
-        fs::write(&src, b"data").unwrap();
+        {
+            let file = fs::File::create(&src).unwrap();
+            let mut archive = zip::ZipWriter::new(file);
+            archive
+                .start_file("Game.gbc", zip::write::FileOptions::default())
+                .unwrap();
+            archive.write_all(b"valid test rom bytes").unwrap();
+            archive.finish().unwrap();
+        }
 
         let cfg = create_mock_config(&rom_dir, vec!["zip", "gbc"]);
         let cfg_path = td.path().join("cfg.json");
@@ -1750,6 +1841,7 @@ mod tests {
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
                 Some(true),
+                None,
             )
             .expect("start A should succeed");
             let session_a = start_a.sessionId.clone();
@@ -1768,6 +1860,7 @@ mod tests {
                 "Game B".to_string(),
                 None,
                 Some(watch_dir.to_string_lossy().to_string()),
+                None,
                 None,
             )
             .expect("start B after cancel must succeed");

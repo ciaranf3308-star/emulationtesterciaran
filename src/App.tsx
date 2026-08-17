@@ -9,7 +9,8 @@ import { isTauriEnvironment } from './runtime/environment'
 import { resolveLaunchRequest } from './launcher/resolver'
 import { getLauncherBridge } from './launcher/bridge'
 import type { GameEntry } from './runtime/backend'
-import { listGames, listAllGames, getFavorites, getRecentlyPlayed, verifyMedia } from './runtime/backend'
+import { dedupeLibraryGames } from './lib/dedupeLibraryGames'
+import { listGames, listAllGames, getFavorites, getRecentlyPlayed, verifyMedia, invokeBackend } from './runtime/backend'
 import { toAssetUrl, pickGameplayFromResolved, type ResolvedGameMedia } from './runtime/mediaUrl'
 import type { GameplaySource } from './stage/types'
 import SystemLanding, { type LandingGameBrief } from './components/SystemLanding'
@@ -27,6 +28,7 @@ import { isFixtureEnabled, isDevFixtureAllowed } from './dev/fixtures/fixtureMod
 import { useCrystalAcquisition } from './acquisition/useCrystalAcquisition'
 import { useProviderSurface } from './acquisition/useProviderSurface'
 import AcquisitionStatusCard from './acquisition/AcquisitionStatusCard'
+import { acquisitionOwnsConfirm } from './acquisition/inputOwnership'
 import ProviderSurfaceView from './components/ProviderSurfaceView'
 import { buildCanonicalDetailUrl as buildRomsFunCanonicalForBegin } from './discovery/providers/romsfun/romsfunRoutes'
 // V8.3.1 signed updater – official Tauri v2 plugin – non-blocking startup check, restrained UI, manual Settings entry
@@ -34,6 +36,7 @@ import { checkForUpdate } from './updater/crystalUpdater'
 import type { CrystalUpdateInfo } from './updater/crystalUpdater'
 import { UpdaterBanner } from './components/UpdaterBanner'
 import { SettingsUpdaterPanel } from './components/SettingsUpdaterPanel'
+import { DownloadResolverPanel } from './components/DownloadResolverPanel'
 
 import DiscoverView from './components/DiscoverView'
 
@@ -51,7 +54,14 @@ function lastPlayedLabel(g: GameEntry): string | null {
   const raw = (g as any).last_played ?? (g as any).lastplayed ?? null
   if (!raw) return null
   try {
-    const ms = Date.parse(raw)
+    const text = String(raw).trim()
+    const esde = text.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/)
+    const ms = esde
+      ? new Date(
+          Number(esde[1]), Number(esde[2]) - 1, Number(esde[3]),
+          Number(esde[4]), Number(esde[5]), Number(esde[6]),
+        ).getTime()
+      : Date.parse(text)
     if (!isNaN(ms)) {
       const diffMs = Date.now() - ms
       const mins = Math.floor(diffMs / 60000)
@@ -62,7 +72,7 @@ function lastPlayedLabel(g: GameEntry): string | null {
       return `${days} days ago`
     }
   } catch {}
-  return String(raw).slice(0, 10)
+  return 'played previously'
 }
 
 function AppInner() {
@@ -396,7 +406,7 @@ function AppInner() {
   }, [activeSystemId, fullName])
 
   const activeGames = useMemo(() => {
-    return gameCache.get(activeSystemId) || []
+    return dedupeLibraryGames(gameCache.get(activeSystemId) || [])
   }, [gameCache, activeSystemId])
 
   const summary = useMemo(() => {
@@ -486,7 +496,8 @@ function AppInner() {
       return {
         id: g.id,
         name: g.name,
-        coverUrl: anyG._fixtureCoverUrl || fix?.cover || null,
+        coverUrl: anyG._fixtureCoverUrl || fix?.cover || gameIdentityMedia[g.id]?.cover || null,
+        marqueeUrl: anyG._fixtureLogoUrl || fix?.marquee || gameIdentityMedia[g.id]?.marquee || null,
         lastPlayedLabel: lastPlayedLabel(g) || undefined,
         metricLabel: (() => {
           const pc = parsePlayCount(g)
@@ -496,7 +507,7 @@ function AppInner() {
         })(),
       }
     },
-    []
+    [gameIdentityMedia]
   )
 
   const continueGameBrief = useMemo(() => toLandingBrief(summary.continuePlaying as any), [summary, toLandingBrief])
@@ -527,10 +538,37 @@ function AppInner() {
         romPath: game.rom_path,
         selectedCommandLabel: sys.launchSelection.selectedLabel,
       })
-      if (req.ok === false) return
+      if (req.ok === false) {
+        console.error('[launch] request rejected:', req.reason)
+        setSafeModeToast(`LAUNCH FAILED • ${req.reason}`)
+        setTimeout(() => setSafeModeToast(null), 5000)
+        return
+      }
       launchInFlightRef.current = true
+      try {
+        await getLauncherBridge().launch(req.backendRequest)
+        setSafeModeToast(`LAUNCHED • ${game.name}`)
+        setTimeout(() => setSafeModeToast(null), 1800)
+      } catch (e: any) {
+        const msg = e?.message || String(e)
+        console.error('[launch] failed:', msg)
+        setSafeModeToast(`LAUNCH FAILED • ${msg}`)
+        setTimeout(() => setSafeModeToast(null), 5000)
+      } finally {
+        setTimeout(() => { launchInFlightRef.current = false }, 1200)
+      }
+      return
+      /* legacy handoff removed
       // V8.7 – zero-overhead handoff + return watcher: attempt new path first, secure watcher BEFORE exit, keep Crystal open on failure
       try {
+        // Keep Crystal resident behind the emulator. The watcher/exit handoff was
+        // unreliable on the Ally and made successful launches look like failures.
+        await getLauncherBridge().launch(req.backendRequest)
+        setSafeModeToast(`LAUNCHED • ${game.name}`)
+        setTimeout(() => setSafeModeToast(null), 1800)
+        setTimeout(() => { launchInFlightRef.current = false }, 1200)
+        return
+        legacy handoff removed: Crystal stays resident while emulator owns focus
         const { launchWithHandoff, runPreExitCleanup, exitAfterHandoff } = await import('./lifecycle/launchCycle')
         // Persist restore state implicitly inside backend (also does explicit save)
         const handoff = await launchWithHandoff(req.backendRequest)
@@ -547,7 +585,7 @@ function AppInner() {
           } catch {}
         })
         return
-      } catch (e: any) {
+	      } catch (e: any) {
         const msg = e?.message || String(e)
         // WATCHER_CREATE_FAILED or missing command – keep Crystal open, fallback to legacy launch if appropriate
         if (msg.includes('SAFE_MODE_BLOCKED_LAUNCH')) {
@@ -556,7 +594,7 @@ function AppInner() {
           setTimeout(() => setSafeModeToast(null), 2400)
           launchInFlightRef.current = false
           return
-        }
+	      }
         if (msg.includes('WATCHER_CREATE_FAILED') || msg.includes('RESTORE_SAVE_FAILED')) {
           launchInFlightRef.current = false
           console.warn('[lifecycle] watcher creation failed – stay open, no orphan –', msg)
@@ -567,10 +605,16 @@ function AppInner() {
       }
       try {
         await getLauncherBridge().launch(req.backendRequest)
-      } catch {}
+      } catch (e: any) {
+        const msg = e?.message || String(e)
+        console.error('[launch] failed:', msg)
+        setSafeModeToast(`LAUNCH FAILED • ${msg}`)
+        setTimeout(() => setSafeModeToast(null), 5000)
+      }
       finally {
         launchInFlightRef.current = false
       }
+      */
     },
     [config, safeMode]
   )
@@ -696,6 +740,39 @@ function AppInner() {
     [isRealMachine, stageConfig.gameplayRegions]
   )
 
+  const moveSettingsFocus = useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.crystal-settings button:not(:disabled)'))
+      .filter(button => button.offsetParent !== null)
+    if (!buttons.length) return
+    const current = document.activeElement as HTMLButtonElement | null
+    if (!current || !buttons.includes(current)) {
+      const firstContentButton = buttons.find(button => button.closest('[data-settings-content]')) || buttons[0]
+      firstContentButton.focus({ preventScroll: true })
+      firstContentButton.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      return
+    }
+    const from = current.getBoundingClientRect()
+    const fromX = from.left + from.width / 2
+    const fromY = from.top + from.height / 2
+    const vertical = direction === 'up' || direction === 'down'
+    const sign = direction === 'up' || direction === 'left' ? -1 : 1
+    const ranked = buttons
+      .filter(button => button !== current)
+      .map(button => {
+        const rect = button.getBoundingClientRect()
+        const dx = rect.left + rect.width / 2 - fromX
+        const dy = rect.top + rect.height / 2 - fromY
+        const primary = vertical ? dy * sign : dx * sign
+        const cross = vertical ? Math.abs(dx) : Math.abs(dy)
+        return { button, primary, score: primary * 10 + cross }
+      })
+      .filter(item => item.primary > 3)
+      .sort((a, b) => a.score - b.score)
+    const next = ranked[0]?.button || buttons[(buttons.indexOf(current) + sign + buttons.length) % buttons.length]
+    next.focus({ preventScroll: true })
+    next.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+  }, [])
+
   const onNav = useCallback(
     (action: NavigationAction) => {
       // V8.6D1 provider surface guard – Discover list must not react underneath while surface active
@@ -743,10 +820,10 @@ function AppInner() {
               if (sel) { handleLaunchGame(sel as any); return }
               return
             }
-            if (nonTerminalBlocking) {
+            if (nonTerminalBlocking && acquisitionOwnsConfirm(view, phase)) {
               return
             }
-            if (terminalCloseable) {
+            if (terminalCloseable && acquisitionOwnsConfirm(view, phase)) {
               return
             }
           }
@@ -886,11 +963,19 @@ function AppInner() {
         }
         // don't switch systems in discover
         return
+      } else if (view === 'settings') {
+        if (action === 'back' || action === 'menu') {
+          setView('system')
+        } else if (action === 'up' || action === 'left' || action === 'down' || action === 'right') {
+          moveSettingsFocus(action)
+        } else if (action === 'confirm') {
+          const focused = document.activeElement as HTMLButtonElement | null
+          if (focused?.matches('.crystal-settings button:not(:disabled)')) focused.click()
+          else moveSettingsFocus('down')
+        }
+        return
       } else {
         if (action === 'back') setView('system')
-        if (action === 'menu' && view !== 'settings') {
-          // menu still goes to settings unless already
-        }
         if (action === 'search') {
           setDiscoverPrefillGame(null)
           setDiscoverOrigin(view as any)
@@ -898,10 +983,39 @@ function AppInner() {
         }
       }
     },
-    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame]
+    [view, systemIds, activeSystemId, activeGames, selectedGameEntry, config, safeMode, stageConfig, crystalAcq, providerSurf, handleLaunchGame, moveSettingsFocus]
   )
 
   // Effects – must be unconditional and before any early returns
+  useEffect(() => {
+    if (view !== 'settings') return
+    const frame = window.requestAnimationFrame(() => moveSettingsFocus('down'))
+    return () => window.cancelAnimationFrame(frame)
+  }, [view, moveSettingsFocus])
+
+  // Crystal remains resident behind an emulator. Stop expensive media decoding
+  // and visual animation while its window is not active, then resume only the
+  // visible videos when the user returns.
+  useEffect(() => {
+    const suspendBackgroundWork = () => {
+      document.documentElement.classList.add('crystal-background-suspended')
+      document.querySelectorAll<HTMLVideoElement>('video').forEach(video => video.pause())
+    }
+    const resumeBackgroundWork = () => {
+      document.documentElement.classList.remove('crystal-background-suspended')
+      document.querySelectorAll<HTMLVideoElement>('video').forEach(video => {
+        if (video.offsetParent !== null && video.autoplay) void video.play().catch(() => {})
+      })
+    }
+    window.addEventListener('blur', suspendBackgroundWork)
+    window.addEventListener('focus', resumeBackgroundWork)
+    return () => {
+      window.removeEventListener('blur', suspendBackgroundWork)
+      window.removeEventListener('focus', resumeBackgroundWork)
+      document.documentElement.classList.remove('crystal-background-suspended')
+    }
+  }, [])
+
   useEffect(() => {
     try {
       const qp = typeof window !== 'undefined' ? window.location.search : ''
@@ -1837,6 +1951,7 @@ function AppInner() {
 
       {view === 'settings' && (
         <div
+          className="crystal-settings"
           style={{
             position: 'absolute',
             inset: 0,
@@ -1914,7 +2029,7 @@ function AppInner() {
             </button>
           </div>
 
-          <div style={{ position: 'relative', zIndex: 2, flex: 1, overflowY: 'auto', padding: '22px 24px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div data-settings-content style={{ position: 'relative', zIndex: 2, flex: 1, overflowY: 'auto', padding: '22px 24px 32px', display: 'flex', flexDirection: 'column', gap: 16, scrollBehavior: 'smooth' }}>
             {/* Premium hardware context */}
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14 }}>
               <div
@@ -2028,13 +2143,23 @@ function AppInner() {
                 >
                   <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10, opacity: 0.66, letterSpacing: '0.08em', marginBottom: 6 }}>SAFE MODE • WRITE GUARD</div>
                   <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, lineHeight: 1.5, opacity: 0.78 }}>
-                    Crystal only writes to <span style={{ fontFamily: 'var(--crystal-mono)', background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', padding: '1px 6px', borderRadius: 6 }}>%LOCALAPPDATA%\\CrystalFrontend\\</span>. ROM / ES-DE / EmuDeck / BIOS untouched. {safeMode ? 'SAFE MODE active — launch blocked.' : 'Normal operation — ROG ready.'}
+                    Crystal keeps app data under <span style={{ fontFamily: 'var(--crystal-mono)', background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(18,26,44,0.06)', padding: '1px 6px', borderRadius: 6 }}>%LOCALAPPDATA%\\CrystalFrontend\\</span> and writes game imports only to the selected EmuDeck ROM folder. ES-DE configuration and BIOS files remain untouched. {safeMode ? 'SAFE MODE active — launch blocked.' : 'Normal operation — ROG ready.'}
                   </div>
                 </div>
               </div>
             </div>
 
             <SettingsUpdaterPanel theme={theme} />
+
+            <DownloadResolverPanel
+              theme={theme}
+              systems={systemsForUI.map(s => ({ id: s.id, fullName: s.fullName }))}
+              initialSystemId={activeSystemId}
+              onLibraryChanged={async (systemId) => {
+                const games = await listGames(systemId)
+                setGameCache(prev => new Map(prev).set(systemId, games))
+              }}
+            />
 
             {/* Discovery entry */}
             <div
@@ -2050,11 +2175,11 @@ function AppInner() {
             >
               <div>
                 <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 700, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  DISCOVER — ROMSFUN
+                  DISCOVER — VIMM'S LAIR
                   <span style={{ fontFamily: 'var(--crystal-mono)', fontSize: 9, padding: '3px 8px', borderRadius: 999, background: theme === 'dark' ? 'rgba(125,249,255,0.12)' : 'rgba(70,130,255,0.10)', border: `1px solid ${theme === 'dark' ? 'rgba(125,249,255,0.16)' : 'rgba(70,130,255,0.16)'}`, color: theme === 'dark' ? '#7df9ff' : '#295fdc' }}>IN-APP PROVIDER • SAFE DOWNLOAD CAPTURE</span>
                 </div>
                 <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, lineHeight: 1.5, marginTop: 6, maxWidth: 560 }}>
-                  Browse ROMsFun inside Crystal. The provider owns its pages and controls; Crystal captures only supported downloads into isolated staging before the existing safe importer runs.
+                  Browse Vimm's catalog in Crystal with controller-first search and detail views. Provider pages open externally when needed; completed downloads can be resolved safely from Settings.
                 </div>
               </div>
               <button
@@ -2079,7 +2204,27 @@ function AppInner() {
                 OPEN DISCOVERY
               </button>
             </div>
+
+            <div style={{ padding: 16, borderRadius: 14, background: theme === 'dark' ? 'rgba(70,18,26,0.34)' : 'rgba(255,244,246,0.90)', border: `1px solid ${theme === 'dark' ? 'rgba(255,118,138,0.20)' : 'rgba(176,38,62,0.16)'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontFamily: 'var(--crystal-display)', fontSize: 12.5, fontWeight: 720 }}>Exit Crystal</div>
+                <div style={{ fontFamily: 'var(--crystal-mono)', fontSize: 10.5, opacity: 0.66, marginTop: 5 }}>Close the frontend and return to Windows.</div>
+              </div>
+              <button
+                onClick={() => { invokeBackend<void>('exit_crystal').catch(() => window.close()) }}
+                style={{ padding: '10px 16px', borderRadius: 999, border: `1px solid ${theme === 'dark' ? 'rgba(255,118,138,0.28)' : 'rgba(176,38,62,0.22)'}`, background: theme === 'dark' ? 'rgba(255,92,118,0.14)' : 'rgba(176,38,62,0.10)', color: theme === 'dark' ? '#ff9bad' : '#a7223d', fontFamily: 'var(--crystal-mono)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
+              >
+                [A] EXIT CRYSTAL
+              </button>
+            </div>
           </div>
+          <style>{`
+            .crystal-settings button:focus-visible {
+              outline: 2px solid ${theme === 'dark' ? '#7df9ff' : '#4a86ff'};
+              outline-offset: 3px;
+              box-shadow: 0 0 0 5px ${theme === 'dark' ? 'rgba(125,249,255,0.13)' : 'rgba(74,134,255,0.13)'};
+            }
+          `}</style>
         </div>
       )}
 

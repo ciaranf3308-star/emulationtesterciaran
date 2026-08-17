@@ -91,6 +91,18 @@ pub fn crystal_writable_root() -> PathBuf {
             return ov;
         }
     }
+    if let Ok(configured) = std::env::var("CRYSTAL_DATA_ROOT") {
+        let trimmed = configured.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    // This ROG installation keeps its emulation library on D:. Prefer the
+    // dedicated Crystal data directory there when that drive is mounted.
+    let d_root = PathBuf::from(r"D:\CrystalFrontend");
+    if Path::new(r"D:\").exists() {
+        return d_root;
+    }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         let trimmed = local.trim();
         if !trimmed.is_empty() {

@@ -15,6 +15,7 @@ function loadFixture(name: string): string {
 // ------------- Vimm route building -------------
 
 import { buildSearchUrl, buildDetailUrl, isValidVimmUrl, parseIdFromUrl } from '../../src/discovery/providers/vimm/vimmRoutes';
+import { parseVimmDetail } from '../../src/discovery/providers/vimm/parseVimmDetail';
 import { crystalToVimmToken, isSupportedCrystalSystem, listSupportedCrystalSystems, listUnsupportedExplicit, vimmTokenToCrystal } from '../../src/discovery/providers/vimm/vimmSystemMap';
 import { isValidVimmUrl as isValidHost, validateHost, assertAllowedVimmUrl } from '../../src/discovery/providers/vimm/hostValidation';
 import { isSameHostRedirect, validateRedirectChain, assertSameHostRedirect, resolveRedirectLocation } from '../../src/discovery/providers/vimm/redirect';
@@ -27,6 +28,15 @@ import { StaleQueryGuard, createStaleGuard } from '../../src/discovery/providers
 import { matchLocalLibrary, isInLibrary as isInLibraryConservative, batchMatch } from '../../src/discovery/providers/vimm/matcher';
 import { RATE_LIMIT_MS, getBackoffDelayMs, classifyFetchError } from '../../src/discovery/providers/vimm/rateLimit';
 import { VimmProvider } from '../../src/discovery/providers/vimm/VimmProvider';
+import { parseVimmSearch } from '../../src/discovery/providers/vimm/parseVimmSearch';
+
+test('live browse rows ignore Vimm hidden numeric decoy anchors', () => {
+  const html = `<html><body><table><tr><th>Title</th><th>Region</th></tr><tr><td><a href="/vault/999999" style="display:none">9</a><a href="/vault/42283">Mario Is Missing!</a></td><td><img src="/images/flags/europe.png" title="Europe"></td></tr></table></body></html>`;
+  const rows = parseVimmSearch(html, 'snes', 'SNES');
+  expect(rows).toHaveLength(1);
+  expect(rows[0].providerId).toBe('42283');
+  expect(rows[0].title).toBe('Mario Is Missing!');
+});
 
 describe('V8.4 discovery – Vimm route building (search URL encoding, detail URL)', () => {
   test('search URL encodes query, includes system token, validates host', () => {
@@ -283,6 +293,13 @@ describe('V8.4 discovery – search parsing via fixture html', () => {
 });
 
 describe('V8.4 discovery – detail parsing via fixture', () => {
+  test('visible Vimm download row wins over hidden unavailable upload row', () => {
+    const html = `<html><body><h1>The Vault: Spider-Man (Dreamcast)</h1>
+      <table><tr id="dl-row"><td><form id="dl_form"><button type="submit">Download</button></form></td></tr>
+      <tr id="upload-row" style="display:none"><td>Download unavailable</td></tr></table></body></html>`;
+    const detail = parseVimmDetail(html, '16948', '16948');
+    expect(detail.availability).toBe('available');
+  });
   test('supportedDetail.html – parses fields', () => {
     const html = loadFixture('supportedDetail.html');
     const detail = parseDetailHtml(html, 'ps2', 'PS2', '12345');

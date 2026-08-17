@@ -59,6 +59,33 @@ function detectAvailabilityFull(text: string): 'available' | 'unavailable' | 'ta
   return 'available';
 }
 
+function elementIsHidden(el: Element | null): boolean {
+  if (!el) return true;
+  if (el.hasAttribute('hidden')) return true;
+  const style = (el.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+  return style.includes('display:none') || style.includes('visibility:hidden');
+}
+
+/** Vimm renders both dl-row and upload-row in the document, hiding one with CSS.
+ * Never classify from body text alone: the hidden upload row contains
+ * "Download unavailable" even when a working Download form is visible. */
+function detectDomAvailability(doc: Document, fallbackText: string): 'available' | 'unavailable' | 'takedown' {
+  const downloadForm = doc.querySelector('form#dl_form');
+  const downloadRow = doc.querySelector('#dl-row');
+  const uploadRow = doc.querySelector('#upload-row');
+  const downloadButton = downloadForm?.querySelector('button[type="submit"], input[type="submit"]');
+
+  if (downloadForm && downloadButton && !elementIsHidden(downloadForm) && !elementIsHidden(downloadRow)) {
+    return 'available';
+  }
+  if (uploadRow && !elementIsHidden(uploadRow)) {
+    const text = (uploadRow.textContent || '').toLowerCase();
+    if (text.includes('publisher request') || text.includes('takedown') || text.includes('dmca')) return 'takedown';
+    return 'unavailable';
+  }
+  return detectAvailabilityFull(fallbackText);
+}
+
 function hasDomParser(): boolean {
   return typeof (globalThis as any).DOMParser !== 'undefined' || (typeof (globalThis as any).window !== 'undefined' && typeof (globalThis as any).window.DOMParser !== 'undefined');
 }
@@ -130,7 +157,7 @@ function parseWithDom(html: string, _providerId: string, detailId: string): Disc
   // If H2 is system full name, try mapping later? Keep raw.
   if (!systemToken && systemFull) systemToken = systemFull.slice(0, 30);
 
-  const availability = detectAvailabilityFull(bodyText + ' ' + html.slice(0, 2000));
+  const availability = detectDomAvailability(doc, bodyText + ' ' + html.slice(0, 2000));
 
   // Helper: label scan for detail page real labels
   function findByLabel(labels: string[]): string | undefined {
@@ -425,7 +452,18 @@ function parseWithRegex(html: string, _providerId: string, detailId: string): Di
 
   if (!title || title.length < 2) throw makeErr(200, 'Detail title missing in regex path', 'h1/title');
 
-  const availability = detectAvailabilityFull(low);
+  const downloadRowMatch = html.match(/<tr[^>]*id=["']dl-row["'][^>]*>([\s\S]*?)<\/tr>/i);
+  const uploadRowTag = html.match(/<tr[^>]*id=["']upload-row["'][^>]*>/i)?.[0] || '';
+  const visibleDownload = !!downloadRowMatch
+    && /<form[^>]*id=["']dl_form["'][^>]*>[\s\S]*?(?:<button[^>]*type=["']submit["']|<input[^>]*type=["']submit["'])/i.test(downloadRowMatch[1])
+    && !/style=["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(downloadRowMatch[0]);
+  const visibleUpload = !!uploadRowTag
+    && !/style=["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(uploadRowTag);
+  const availability = visibleDownload
+    ? 'available'
+    : visibleUpload
+      ? detectAvailabilityFull(html.match(/<tr[^>]*id=["']upload-row["'][^>]*>([\s\S]*?)<\/tr>/i)?.[1] || 'unavailable')
+      : detectAvailabilityFull(low);
 
   const yearMatch = html.match(/\b(19\d{2}|20[0-2]\d|2030)\b/);
   let year: number | undefined;

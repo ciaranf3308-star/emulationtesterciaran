@@ -120,7 +120,7 @@ async function importGameSource(sourcePath: string, systemId: string): Promise<a
   }
   const api = await import('@tauri-apps/api/core');
   const invoke = (api as any).invoke;
-  return await invoke('import_game_source', { request: { systemId, sourcePath } });
+  return await invoke('import_game_source_async', { request: { systemId, sourcePath } });
 }
 
 export function useProviderSurface(opts: UseProviderSurfaceOpts = {}): UseProviderSurfaceReturn {
@@ -416,6 +416,15 @@ export function useProviderSurface(opts: UseProviderSurfaceOpts = {}): UseProvid
     setFound(null);
     setErrorDetail(null);
   }, [state]);
+
+  // The provider download directory is session-owned and is removed by close.
+  // Once the installed game has been refreshed and selected, dismiss the
+  // provider surface automatically instead of trapping the user on READY.
+  useEffect(() => {
+    if (phase !== 'READY_TO_PLAY' || !found) return;
+    const timer = window.setTimeout(() => { void close(); }, 1100);
+    return () => window.clearTimeout(timer);
+  }, [phase, found, close]);
 
   // Controller minimal B/Back recovery – document ROG need: ensure Discover list input underneath blocked while provider surface active
   // Safe focus enter/exit – frontend should prevent accidental A PLAY while surface active

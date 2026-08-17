@@ -3,6 +3,7 @@ import type { NavigationAction, InputEvent, InputHandler, GamepadAdapter as Game
 const DEADZONE = 0.25
 const INITIAL_DELAY = 400
 const REPEAT_INTERVAL = 120
+const REPEATABLE_ACTIONS = new Set<NavigationAction>(['up', 'down', 'left', 'right', 'nextSystem', 'previousSystem', 'media'])
 
 type ButtonMap = Partial<Record<number, NavigationAction>>
 
@@ -166,11 +167,13 @@ class GamepadAdapterImpl implements GamepadAdapterInterface {
             st.lastEmit = performance.now()
             if (st.repeatTimeoutId !== null) window.clearTimeout(st.repeatTimeoutId)
             if (st.repeatIntervalId !== null) window.clearInterval(st.repeatIntervalId)
-            st.repeatTimeoutId = window.setTimeout(() => {
-              st.repeatIntervalId = window.setInterval(() => {
-                if (st.pressed) this.emit(action, true)
-              }, this.opts.repeatInterval) as unknown as number
-            }, this.opts.initialDelay) as unknown as number
+            if (REPEATABLE_ACTIONS.has(action)) {
+              st.repeatTimeoutId = window.setTimeout(() => {
+                st.repeatIntervalId = window.setInterval(() => {
+                  if (st.pressed) this.emit(action, true)
+                }, this.opts.repeatInterval) as unknown as number
+              }, this.opts.initialDelay) as unknown as number
+            }
           }
         } else {
           if (st.pressed) {

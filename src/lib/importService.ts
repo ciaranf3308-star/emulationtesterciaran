@@ -46,7 +46,7 @@ export async function importGameSource(req: ImportRequest): Promise<ImportResult
   if (typeof invoke !== 'function' || invoke === null) {
     throw new Error('Tauri invoke not available');
   }
-  const result = (await invoke('import_game_source', { request: req })) as ImportResult;
+  const result = (await invoke('import_game_source_async', { request: req })) as ImportResult;
   return result;
 }
 

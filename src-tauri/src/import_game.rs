@@ -11,7 +11,84 @@ use std::fs::OpenOptions;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Default)]
+struct ImportActivityState {
+    active: bool,
+    system_id: String,
+    source_name: String,
+    staging_dir: Option<PathBuf>,
+    started_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportActivity {
+    pub active: bool,
+    pub system_id: String,
+    pub source_name: String,
+    pub extracted_bytes: u64,
+    pub started_at: u64,
+}
+
+static IMPORT_ACTIVITY: OnceLock<Mutex<ImportActivityState>> = OnceLock::new();
+
+fn import_activity_state() -> &'static Mutex<ImportActivityState> {
+    IMPORT_ACTIVITY.get_or_init(|| Mutex::new(ImportActivityState::default()))
+}
+
+struct ImportActivityGuard;
+
+impl Drop for ImportActivityGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = import_activity_state().lock() {
+            state.active = false;
+            state.staging_dir = None;
+        }
+    }
+}
+
+fn directory_bytes(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(kind) = entry.file_type() {
+                    if kind.is_dir() {
+                        pending.push(entry.path());
+                    } else if kind.is_file() {
+                        total =
+                            total.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+                    }
+                }
+            }
+        }
+    }
+    total
+}
+
+#[tauri::command]
+pub fn get_import_activity() -> ImportActivity {
+    let state = import_activity_state()
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_default();
+    let extracted_bytes = state
+        .staging_dir
+        .as_deref()
+        .map(directory_bytes)
+        .unwrap_or(0);
+    ImportActivity {
+        active: state.active,
+        system_id: state.system_id,
+        source_name: state.source_name,
+        extracted_bytes,
+        started_at: state.started_at,
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ImportRequest {
@@ -436,7 +513,6 @@ fn parse_cue_referenced_files(cue_path: &Path) -> Result<Vec<String>, String> {
     Ok(refs)
 }
 
-#[tauri::command]
 pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String> {
     if is_safe_mode() {
         return Err("SAFE_MODE_BLOCKED_IMPORT".to_string());
@@ -451,6 +527,28 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
         return Err("SOURCE_PATH_EMPTY".to_string());
     }
     let src_path = PathBuf::from(&source_path_str);
+
+    {
+        let mut activity = import_activity_state()
+            .lock()
+            .map_err(|error| format!("IMPORT_ACTIVITY_LOCK_FAILED: {error}"))?;
+        if activity.active {
+            return Err("IMPORT_ALREADY_IN_PROGRESS".to_string());
+        }
+        activity.active = true;
+        activity.system_id = system_id.clone();
+        activity.source_name = src_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        activity.started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        activity.staging_dir = None;
+    }
+    let _activity_guard = ImportActivityGuard;
 
     if let Err(e) = validate_source_path(&src_path) {
         return Err(e);
@@ -486,6 +584,9 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
     let session_id = Uuid::new_v4().to_string();
     let staging_dir = staging_base.join(format!("import-{}", session_id));
     fs::create_dir_all(&staging_dir).map_err(|e| format!("STAGING_DIR_CREATE_FAILED: {}", e))?;
+    if let Ok(mut activity) = import_activity_state().lock() {
+        activity.staging_dir = Some(staging_dir.clone());
+    }
 
     let cleanup_staging = |dir: &Path| {
         let _ = fs::remove_dir_all(dir);
@@ -495,7 +596,14 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
     let mut detected_files: Vec<String> = Vec::new();
     let mut files_to_install: Vec<PathBuf> = Vec::new();
 
-    if extension_allowed(&src_ext, &valid_exts) {
+    // Archives must always go through Crystal's validated extraction pipeline,
+    // even when ES-DE lists .zip/.7z as directly launchable extensions.
+    // Checking validExtensions first previously copied archives into ROM folders
+    // and sent the archive path to emulators such as DuckStation.
+    if extension_allowed(&src_ext, &valid_exts)
+        && !src_ext.eq_ignore_ascii_case("zip")
+        && !src_ext.eq_ignore_ascii_case("7z")
+    {
         let file_name = src_path
             .file_name()
             .ok_or_else(|| "SOURCE_NO_FILENAME".to_string())?;
@@ -1421,6 +1529,13 @@ pub fn import_game_source(request: ImportRequest) -> Result<ImportResult, String
             rom_dir.display()
         )),
     })
+}
+
+#[tauri::command]
+pub async fn import_game_source_async(request: ImportRequest) -> Result<ImportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || import_game_source(request))
+        .await
+        .map_err(|error| format!("IMPORT_WORKER_FAILED: {error}"))?
 }
 
 #[cfg(test)]

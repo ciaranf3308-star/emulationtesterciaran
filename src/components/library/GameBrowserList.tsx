@@ -3,6 +3,7 @@ import type { CarouselGame } from '../GameBoxCarousel'
 
 export type GameBrowserListProps = {
   theme: 'light' | 'dark'
+  systemId?: string
   games: CarouselGame[]
   selectedId: string
   onSelect: (id: string) => void
@@ -35,7 +36,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: 7,
+        gap: 8,
         padding: 0,
         margin: 0,
         overflowY: 'auto',
@@ -63,8 +64,8 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
               alignItems: 'center',
               gap: 10,
               padding: '8px 10px',
-              height: 72,
-              minHeight: 72,
+              height: 68,
+              minHeight: 68,
               boxSizing: 'border-box',
               borderRadius: 12,
               border: isSel
@@ -72,8 +73,8 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
                 : `1px solid transparent`,
               background: isSel
                 ? isDark
-                  ? 'rgba(125,249,255,0.12)'
-                  : 'rgba(70,130,255,0.10)'
+                  ? 'color-mix(in srgb, var(--library-accent), transparent 84%)'
+                  : 'color-mix(in srgb, var(--library-accent), transparent 87%)'
                 : isDark
                 ? 'linear-gradient(90deg, rgba(13,19,30,0.58), rgba(13,19,30,0.28))'
                 : 'linear-gradient(90deg, rgba(255,255,255,0.70), rgba(255,255,255,0.44))',
@@ -87,8 +88,8 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
               cursor: 'pointer',
               textAlign: 'left',
               transition: 'background 160ms ease, border-color 160ms ease, transform 160ms ease, opacity 160ms ease',
-              opacity: isSel ? 1 : 0.86,
-              transform: isSel ? 'translateZ(0) scale(1.01)' : 'translateZ(0)',
+              opacity: isSel ? 1 : 0.72,
+              transform: isSel ? 'translate3d(5px,0,0) scale(1.015)' : 'translateZ(0)',
             }}
             onMouseEnter={e => {
               if (!isSel) (e.currentTarget as HTMLButtonElement).style.opacity = '1'
@@ -99,8 +100,8 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
           >
             <div
               style={{
-                width: 48,
-                height: 52,
+                width: 46,
+                height: 50,
                 borderRadius: 8,
                 overflow: 'hidden',
                 flexShrink: 0,
@@ -167,7 +168,7 @@ export function GameBrowserList({ theme, games, selectedId, onSelect }: GameBrow
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: isDark ? '#7df9ff' : '#4a86ff',
+                  background: 'var(--library-accent)',
                   boxShadow: isDark ? '0 0 8px rgba(125,249,255,0.7)' : '0 0 8px rgba(70,130,255,0.6)',
                   flexShrink: 0,
                 }}

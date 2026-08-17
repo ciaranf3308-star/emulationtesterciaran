@@ -2,8 +2,24 @@
 // This module is the canonical source for machine-config location & loading.
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use crate::safety::{crystal_writable_root, is_safe_mode, log_event};
+
+#[derive(Clone)]
+struct ConfigCacheEntry {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    value: serde_json::Value,
+}
+
+static CONFIG_CACHE: OnceLock<Mutex<Option<ConfigCacheEntry>>> = OnceLock::new();
+
+fn config_cache() -> &'static Mutex<Option<ConfigCacheEntry>> {
+    CONFIG_CACHE.get_or_init(|| Mutex::new(None))
+}
 
 pub fn candidate_config_paths() -> Vec<PathBuf> {
     let mut cands = Vec::new();
@@ -12,6 +28,10 @@ pub fn candidate_config_paths() -> Vec<PathBuf> {
             cands.push(PathBuf::from(envp));
         }
     }
+    // Keep configuration alongside Crystal's writable data root. On this ROG
+    // that resolves to D:\CrystalFrontend when the emulation drive is mounted.
+    cands.push(crystal_writable_root().join("crystal-machine-config.json"));
+    cands.push(crystal_writable_root().join("machine-config.json"));
     if let Ok(cur) = std::env::current_exe() {
         if let Some(parent) = cur.parent() {
             cands.push(parent.join("crystal-machine-config.json"));
@@ -87,6 +107,16 @@ pub fn load_machine_config_json() -> Result<serde_json::Value, String> {
     for path in &candidates {
         tried.push(path.display().to_string());
         if path.exists() {
+            let metadata = std::fs::metadata(path).ok();
+            let modified = metadata.as_ref().and_then(|m| m.modified().ok());
+            let len = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            if let Ok(cache) = config_cache().lock() {
+                if let Some(entry) = cache.as_ref() {
+                    if entry.path == *path && entry.modified == modified && entry.len == len {
+                        return Ok(entry.value.clone());
+                    }
+                }
+            }
             match std::fs::read_to_string(path) {
                 Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                     Ok(v) => {
@@ -129,6 +159,14 @@ pub fn load_machine_config_json() -> Result<serde_json::Value, String> {
                                 is_safe_mode()
                             ),
                         );
+                        if let Ok(mut cache) = config_cache().lock() {
+                            *cache = Some(ConfigCacheEntry {
+                                path: path.clone(),
+                                modified,
+                                len,
+                                value: v.clone(),
+                            });
+                        }
                         return Ok(v);
                     }
                     Err(e) => {

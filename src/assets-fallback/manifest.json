@@ -614,6 +614,8 @@
                          "carouselIcon":  "carousel-icons/spectravideo.webp"
                      },
     "steam":  {
+                  "backgroundLight":  "backgrounds/light/steam.png",
+                  "backgroundDark":  "backgrounds/dark/steam.png",
                   "logoDark":  "logos/dark/steam.png",
                   "carouselIcon":  "carousel-icons/steam.webp"
               },

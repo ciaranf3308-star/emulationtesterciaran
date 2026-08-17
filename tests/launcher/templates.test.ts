@@ -108,43 +108,20 @@ describe('sanitized template realism', ()=>{
     }
   })
 
-  test('Xbox360 Xenia + INJECT blocked, ok:false, reason contains INJECT, template preserved exactly', ()=>{
+  test('Xbox360 Xenia + INJECT is passed to the native ES-DE expander', ()=>{
     const cfg = makeConfig()
     const template = '%STARTDIR%=%EMUDIR% %EMULATOR_XENIA% %INJECT%=%BASENAME%.commands %ROM%'
     const res = resolveLaunchRequest(cfg, { systemId:'xbox360', romPath:'D:\\Emulation\\roms\\xbox360\\Game\\default.xex', selectedCommandLabel:'xenia (Standalone)' } as any)
-    expect(res.ok).toBe(false)
-    if (!res.ok) {
-      expect(res.reason).toContain('INJECT')
-      expect(res.unsupported).toContain('INJECT')
-      // blocking reason mentions preservation – but at least contains token
-      expect(res.reason.toLowerCase()).toContain('inject')
-      // template must be preserved verbatim – we can reconstruct via capabilities
-      const caps = getCapabilitiesForTemplate(template)
-      expect(caps.some(c=>c.token.includes('INJECT'))).toBe(true)
-      // Ensure config still holds original verbatim
-      const sys = cfg.systems.find(s=>s.id==='xbox360')!
-      const cmd = sys.commands.find(c=>c.label==='xenia (Standalone)')!
-      expect(cmd.template).toBe(template)
-    }
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.backendRequest.commandTemplate).toBe(template)
   })
 
-  test('Steam EMULATOR_OS-SHELL + modifiers blocked, reason contains OS-SHELL', ()=>{
+  test('Steam EMULATOR_OS-SHELL + modifiers is supported', ()=>{
     const cfg = makeConfig()
     const template = '%HIDEWINDOW% %ESCAPESPECIALS% %RUNINBACKGROUND% %EMULATOR_OS-SHELL% /C %ROM%'
     const res = resolveLaunchRequest(cfg, { systemId:'steam', romPath:'D:\\steam\\game.lnk', selectedCommandLabel:'Steam (Standalone)' } as any)
-    expect(res.ok).toBe(false)
-    if (!res.ok) {
-      expect(res.reason.toUpperCase()).toContain('OS-SHELL')
-      expect(res.unsupported?.toUpperCase()).toContain('OS-SHELL')
-      // capabilities: modifiers runtimeSupported true, OS-SHELL false
-      const caps = getCapabilitiesForTemplate(template)
-      const mods = caps.filter(c=>c.category==='modifier')
-      expect(mods.length).toBe(3)
-      expect(mods.every(c=>c.runtimeSupported)).toBe(true)
-      const shell = caps.find(c=>c.category==='shell')
-      expect(shell).toBeDefined()
-      expect(shell?.runtimeSupported).toBe(false)
-    }
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.backendRequest.commandTemplate).toBe(template)
   })
 
   test('selected-label resolution reuse existing resolver logic', ()=>{

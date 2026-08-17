@@ -1,5 +1,6 @@
 mod acquisition_watch;
 mod discovery;
+mod download_resolver;
 mod import_game;
 mod launch_lifecycle;
 mod machine_config;
@@ -13,9 +14,22 @@ use safety::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 #[cfg(not(target_os = "windows"))]
 use tauri_plugin_shell::ShellExt;
+
+static LAUNCH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static LAST_SUCCESSFUL_LAUNCH_MS: AtomicU64 = AtomicU64::new(0);
+const DUPLICATE_LAUNCH_COOLDOWN_MS: u64 = 10_000;
+
+struct LaunchGuard;
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        LAUNCH_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
 
 /// Shared types for frontend/backend API
 
@@ -192,19 +206,25 @@ fn list_files_in_dir(dir: &Path, valid_exts: &[String]) -> Vec<PathBuf> {
         }
     }
     let accept_all = ext_lower_set.is_empty();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if let Ok(ft) = entry.file_type() {
-                if ft.is_file() {
+    // ES-DE supports games in subfolders (and writes those relative paths to
+    // gamelist.xml). Walk recursively so Crystal sees the same library.
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
                     let path = entry.path();
-                    if accept_all {
+                    if ft.is_dir() {
+                        pending.push(path);
+                    } else if ft.is_file()
+                        && (accept_all
+                            || path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|e| ext_lower_set.contains(&e.to_lowercase()))
+                                .unwrap_or(false))
+                    {
                         files.push(path);
-                    } else {
-                        if let Some(ext_os) = path.extension().and_then(|e| e.to_str()) {
-                            if ext_lower_set.contains(&ext_os.to_lowercase()) {
-                                files.push(path);
-                            }
-                        }
                     }
                 }
             }
@@ -374,7 +394,34 @@ fn enumerate_games_for_system(
 
     let rom_dir_path = PathBuf::from(rom_dir_str.clone());
 
-    let files = list_files_in_dir(&rom_dir_path, &valid_exts);
+    let mut files = list_files_in_dir(&rom_dir_path, &valid_exts);
+    // A CUE is the launchable identity for a cue/bin disc set. Individual BIN
+    // tracks are implementation files, not separate games.
+    let cue_dirs: std::collections::HashSet<PathBuf> = files
+        .iter()
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("cue"))
+                .unwrap_or(false)
+        })
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect();
+    files.retain(|p| {
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("bin")
+            && p.parent().map(|d| cue_dirs.contains(d)).unwrap_or(false)
+        {
+            return false;
+        }
+        if ext.eq_ignore_ascii_case("7z") || ext.eq_ignore_ascii_case("zip") {
+            let extracted = p.with_extension("");
+            if extracted.is_dir() {
+                return false;
+            }
+        }
+        true
+    });
 
     let gamelist_path = if !roots_gamelists.is_empty() {
         let sep = if roots_gamelists.contains('\\') {
@@ -679,24 +726,67 @@ fn verify_media(
 // ---------- Launch backend ----------
 
 fn contains_blocked_placeholder(template: &str) -> Option<(String, String)> {
-    let upper = template.to_uppercase();
-    if upper.contains("%INJECT%") {
-        return Some(("%INJECT%".to_string(), "Requires process injection (Xbox360 Xenia: STARTDIR=\"%GAMEDIR%\"; \"%EMULATOR%\" \"%ROM%\" + INJECT semantics not yet implemented)".to_string()));
-    }
-    if upper.contains("%EMULATOR_OS-SHELL%") || upper.contains("%OS-SHELL%") {
-        return Some((
-            "%EMULATOR_OS-SHELL%".to_string(),
-            "OS-SHELL requires OS shell execution semantics (Steam) not in launch contract V6"
-                .to_string(),
-        ));
-    }
-    if upper.contains("OS-SHELL") {
-        return Some((
-            "%OS-SHELL%".to_string(),
-            "OS-SHELL token detected – blocked until backend implements os_shell".to_string(),
-        ));
-    }
+    let _ = template;
     None
+}
+
+fn expand_inject_directives(
+    template: &str,
+    gamedir: &Path,
+    basename: &str,
+) -> Result<String, String> {
+    let inject_re = regex::Regex::new(r#"(?i)%INJECT%=([^\s]+)"#).unwrap();
+    let mut expanded = template.to_string();
+    let directives: Vec<(String, String)> = inject_re
+        .captures_iter(template)
+        .filter_map(|cap| {
+            Some((
+                cap.get(0)?.as_str().to_string(),
+                cap.get(1)?.as_str().to_string(),
+            ))
+        })
+        .collect();
+
+    for (directive, raw_name) in directives {
+        let relative = raw_name.trim_matches('"').replace("%BASENAME%", basename);
+        let candidate = gamedir.join(&relative);
+        if !candidate.starts_with(gamedir) {
+            return Err(format!(
+                "INJECT path escaped game directory: '{}'",
+                candidate.display()
+            ));
+        }
+        let injected = if candidate.is_file() {
+            let metadata = std::fs::metadata(&candidate).map_err(|e| {
+                format!(
+                    "Could not inspect INJECT file '{}': {}",
+                    candidate.display(),
+                    e
+                )
+            })?;
+            if metadata.len() > 64 * 1024 {
+                return Err(format!(
+                    "INJECT file is too large: '{}'",
+                    candidate.display()
+                ));
+            }
+            std::fs::read_to_string(&candidate)
+                .map_err(|e| {
+                    format!(
+                        "Could not read INJECT file '{}': {}",
+                        candidate.display(),
+                        e
+                    )
+                })?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            String::new()
+        };
+        expanded = expanded.replacen(&directive, &injected, 1);
+    }
+    Ok(expanded)
 }
 
 fn extract_placeholders(template: &str) -> Vec<String> {
@@ -795,6 +885,26 @@ fn resolve_find_rule_path(
             if path.exists() {
                 return Some(path);
             }
+            // ES-DE staticpath rules may deliberately contain a filename
+            // wildcard (for versioned emulator executables such as PCSX2).
+            // Path::exists treats '*' literally, so resolve the same pattern
+            // ES-DE uses and choose a deterministic file match.
+            if expanded.contains('*') || expanded.contains('?') {
+                if let Ok(matches) = glob::glob(&expanded) {
+                    let mut files: Vec<PathBuf> = matches
+                        .filter_map(Result::ok)
+                        .filter(|candidate| candidate.is_file())
+                        .collect();
+                    files.sort_by(|a, b| {
+                        a.to_string_lossy()
+                            .to_lowercase()
+                            .cmp(&b.to_string_lossy().to_lowercase())
+                    });
+                    if let Some(found) = files.into_iter().next() {
+                        return Some(found);
+                    }
+                }
+            }
         }
     }
     for entry_rule in &rule.rules {
@@ -890,6 +1000,14 @@ fn split_command_respecting_quotes(cmd: &str) -> (String, Vec<String>) {
     (prog, cleaned_args)
 }
 
+fn quote_command_value(value: &str) -> String {
+    if value.is_empty() || (!value.chars().any(char::is_whitespace) && !value.contains('"')) {
+        return value.to_string();
+    }
+
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
 // ---------- Launch internal – single authority for spawn ----------
 
 fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::Child, String> {
@@ -901,6 +1019,26 @@ fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::C
         );
         log_event("warn", &msg);
         return Err("SAFE_MODE_BLOCKED_LAUNCH: Crystal SAFE MODE active – launch blocked. Disable CRYSTAL_SAFE_MODE to allow launching.".to_string());
+    }
+
+    if LAUNCH_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        log_event("warn", "launch_duplicate_blocked: launch already in flight");
+        return Err("LAUNCH_ALREADY_IN_PROGRESS".to_string());
+    }
+    let _launch_guard = LaunchGuard;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last_ms = LAST_SUCCESSFUL_LAUNCH_MS.load(Ordering::Acquire);
+    if last_ms > 0 && now_ms.saturating_sub(last_ms) < DUPLICATE_LAUNCH_COOLDOWN_MS {
+        log_event(
+            "warn",
+            "launch_duplicate_blocked: successful launch cooldown active",
+        );
+        return Err(
+            "LAUNCH_DUPLICATE_BLOCKED: A game was already launched moments ago".to_string(),
+        );
     }
 
     log_event(
@@ -950,10 +1088,6 @@ fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::C
         "%ROMPATH%".to_string(),
         gamedir.to_string_lossy().to_string(),
     );
-    subs.insert(
-        "%STARTDIR%".to_string(),
-        gamedir.to_string_lossy().to_string(),
-    );
 
     if let Some(first_emu) = emu_map.values().next() {
         let first_str = first_emu.to_string_lossy().to_string();
@@ -999,18 +1133,21 @@ fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::C
     subs.insert("%ESCAPESPECIALS%".to_string(), "".to_string());
     subs.insert("%RUNINBACKGROUND%".to_string(), "".to_string());
 
-    let mut expanded = request.commandTemplate.clone();
+    let mut expanded =
+        expand_inject_directives(&request.commandTemplate, &gamedir, &request.romBasename)?;
     let mut keys: Vec<String> = subs.keys().cloned().collect();
     keys.sort_by(|a, b| b.len().cmp(&a.len()));
     for k in keys {
         if let Some(v) = subs.get(&k) {
-            expanded = expanded.replace(&k, v);
+            let explicitly_quoted = format!("\"{}\"", k);
+            expanded = expanded.replace(&explicitly_quoted, &quote_command_value(v));
+            expanded = expanded.replace(&k, &quote_command_value(v));
         }
     }
 
     let mut working_dir_override: Option<PathBuf> = None;
     let trimmed = expanded.trim_start().to_string();
-    let startdir_prefix = regex::Regex::new(r#"(?i)^STARTDIR\s*=\s*"?([^";]+)"?\s*;\s*"#).unwrap();
+    let startdir_prefix = regex::Regex::new(r#"(?i)^%STARTDIR%\s*=\s*("[^"]+"|\S+)\s+"#).unwrap();
     let mut command_to_run = trimmed.clone();
     if let Some(cap) = startdir_prefix.captures(&trimmed) {
         if let Some(m) = cap.get(1) {
@@ -1026,6 +1163,7 @@ fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::C
     } else if let Some(wdt) = &request.workingDirectoryTemplate {
         if !wdt.trim().is_empty() {
             let mut wd_expanded = wdt.clone();
+            wd_expanded = wd_expanded.replace("%STARTDIR%", &gamedir.to_string_lossy());
             for (k, v) in &subs {
                 wd_expanded = wd_expanded.replace(k, v);
             }
@@ -1057,7 +1195,7 @@ fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::C
 
     let prog_path = PathBuf::from(&program);
     if !prog_path.exists() {
-        let is_windows_path = program.contains(":\\") || program.to_lowercase().ends_with(".exe");
+        let is_windows_path = PathBuf::from(&program).is_absolute() || program.contains(":\\");
         if is_windows_path && cfg!(target_os = "windows") {
             let err = format!("Emulator executable not found at '{}' (resolved from command '{}'). Check EmuDeck installation and findRules.", program, request.commandTemplate);
             log_event("error", &err);
@@ -1115,18 +1253,48 @@ fn launch_game_internal(request: LaunchBackendRequest) -> Result<std::process::C
     }
 
     match cmd.spawn() {
-        Ok(child) => {
+        Ok(mut child) => {
             log_event(
                 "info",
                 &format!(
-                    "launch_success program='{}' wd='{}' safe_mode={} pid={}",
+                    "launch_spawned program='{}' wd='{}' safe_mode={} pid={}",
                     program,
                     default_wd.display(),
                     is_safe_mode(),
                     child.id()
                 ),
             );
-            Ok(child)
+            std::thread::sleep(Duration::from_millis(900));
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let err = format!(
+                        "EMULATOR_EXITED_EARLY: '{}' exited during startup with status {}",
+                        request.commandLabel, status
+                    );
+                    log_event("error", &err);
+                    Err(err)
+                }
+                Ok(None) => {
+                    LAST_SUCCESSFUL_LAUNCH_MS.store(now_ms, Ordering::Release);
+                    log_event(
+                        "info",
+                        &format!(
+                            "launch_verified program='{}' pid={} survived_startup_ms=900",
+                            program,
+                            child.id()
+                        ),
+                    );
+                    Ok(child)
+                }
+                Err(e) => {
+                    let err = format!(
+                        "LAUNCH_STATUS_CHECK_FAILED: could not verify '{}' after spawn: {}",
+                        request.commandLabel, e
+                    );
+                    log_event("error", &err);
+                    Err(err)
+                }
+            }
         }
         Err(e) => {
             let err = format!(
@@ -1220,14 +1388,20 @@ fn launch_game_with_handoff(
 
 #[tauri::command]
 fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String> {
-    log_event("info", &format!("external_catalog_open_requested url='{}'", url));
+    log_event(
+        "info",
+        &format!("external_catalog_open_requested url='{}'", url),
+    );
     let parsed = url::Url::parse(&url).map_err(|e| {
         let message = format!("INVALID_CATALOG_URL: {}", e);
         log_event("error", &message);
         message
     })?;
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    let allowed_host = matches!(host.as_str(), "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net");
+    let allowed_host = matches!(
+        host.as_str(),
+        "romsfun.com" | "www.romsfun.com" | "vimm.net" | "www.vimm.net"
+    );
     let allowed_path = if host.ends_with("romsfun.com") {
         parsed.path().starts_with("/roms/")
     } else {
@@ -1240,7 +1414,9 @@ fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String>
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        let message = "CATALOG_URL_BLOCKED: only validated first-party catalog pages may open externally".to_string();
+        let message =
+            "CATALOG_URL_BLOCKED: only validated first-party catalog pages may open externally"
+                .to_string();
         log_event("error", &format!("{} url='{}'", message, url));
         return Err(message);
     }
@@ -1254,7 +1430,9 @@ fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String>
     #[cfg(not(target_os = "windows"))]
     let open_result = _app.shell().open(url.clone(), None).map(|_| {
         // Match std::process::Command::spawn's success shape for shared handling.
-        std::process::Command::new("true").spawn().expect("true must be available")
+        std::process::Command::new("true")
+            .spawn()
+            .expect("true must be available")
     });
 
     open_result.map_err(|e| {
@@ -1267,6 +1445,16 @@ fn open_external_catalog_url(_app: AppHandle, url: String) -> Result<(), String>
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[tauri::command]
+fn exit_crystal() -> Result<(), String> {
+    log_event("info", "exit_crystal requested by user");
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(75));
+        std::process::exit(0);
+    });
+    Ok(())
+}
+
 pub fn run() {
     // --- WATCHER MODE EARLY DETECTION (before Tauri builder) ---
     let raw_args: Vec<String> = std::env::args().collect();
@@ -1344,7 +1532,11 @@ pub fn run() {
             discovery::fetch_romsfun,
             discovery::discovery_cache_read,
             discovery::discovery_cache_write,
-            import_game::import_game_source,
+            download_resolver::scan_downloaded_games,
+            download_resolver::resolve_downloaded_game,
+            download_resolver::clear_verified_download,
+            import_game::import_game_source_async,
+            import_game::get_import_activity,
             acquisition_watch::get_default_download_directory,
             acquisition_watch::start_acquisition_watch,
             acquisition_watch::get_acquisition_watch_status,
@@ -1360,7 +1552,8 @@ pub fn run() {
             launch_lifecycle::get_launch_restore_state,
             launch_lifecycle::save_launch_restore_state,
             launch_lifecycle::clear_launch_restore_state,
-            launch_lifecycle::exit_crystal_after_handoff
+            launch_lifecycle::exit_crystal_after_handoff,
+            exit_crystal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1374,6 +1567,92 @@ fn main() {
 mod backend_launch_guard_tests {
     use super::*;
     use crate::test_env_lock::acquire_shared_test_env_lock;
+
+    #[test]
+    fn substituted_windows_paths_with_spaces_remain_single_arguments() {
+        let command = format!(
+            "{} -L {} {}",
+            quote_command_value(r"C:\Program Files\RetroArch\retroarch.exe"),
+            quote_command_value(r"C:\Program Files\RetroArch\cores\gambatte_libretro.dll"),
+            quote_command_value(r"D:\Emulation\roms\gb\Super Mario Land (World).gb")
+        );
+        let (program, args) = split_command_respecting_quotes(&command);
+
+        assert_eq!(program, r"C:\Program Files\RetroArch\retroarch.exe");
+        assert_eq!(
+            args,
+            vec![
+                "-L",
+                r"C:\Program Files\RetroArch\cores\gambatte_libretro.dll",
+                r"D:\Emulation\roms\gb\Super Mario Land (World).gb"
+            ]
+        );
+    }
+
+    #[test]
+    fn emulator_find_rule_resolves_versioned_wildcard_executable() {
+        let root = std::env::temp_dir().join(format!("crystal-find-rule-{}", std::process::id()));
+        let emulator_dir = root.join("Emulators").join("PCSX2-Qt");
+        std::fs::create_dir_all(&emulator_dir).unwrap();
+        let executable = emulator_dir.join("pcsx2-qt.exe");
+        std::fs::write(&executable, b"test").unwrap();
+        let pattern = format!("{}\\pcsx2-qt*.exe", emulator_dir.display());
+        let rule = FindRule {
+            kind: "emulator".into(),
+            identifier: "PCSX2".into(),
+            source: String::new(),
+            rules: vec![FindRuleEntry {
+                entry_type: "staticpath".into(),
+                entries: vec![pattern],
+            }],
+        };
+        let resolved = resolve_find_rule_path(&rule, &None, &root);
+        assert_eq!(resolved, Some(executable));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inject_directive_disappears_when_optional_file_is_absent() {
+        let root = std::env::temp_dir().join(format!("crystal-inject-none-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let expanded = expand_inject_directives(
+            "%EMULATOR_XENIA% %INJECT%=%BASENAME%.commands %ROM%",
+            &root,
+            "Halo 3 (Europe)",
+        )
+        .unwrap();
+        assert_eq!(expanded, "%EMULATOR_XENIA%  %ROM%");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inject_directive_reads_bounded_per_game_arguments() {
+        let root = std::env::temp_dir().join(format!("crystal-inject-args-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Halo 3.commands"), "--fullscreen\n--gpu=vulkan").unwrap();
+        let expanded = expand_inject_directives(
+            "%EMULATOR_XENIA% %INJECT%=%BASENAME%.commands %ROM%",
+            &root,
+            "Halo 3",
+        )
+        .unwrap();
+        assert_eq!(expanded, "%EMULATOR_XENIA% --fullscreen --gpu=vulkan %ROM%");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rom_enumerator_finds_supported_files_in_subfolders() {
+        let root =
+            std::env::temp_dir().join(format!("crystal-recursive-roms-{}", std::process::id()));
+        let nested = root.join("Wipeout Pulse");
+        std::fs::create_dir_all(&nested).unwrap();
+        let rom = nested.join("Wipeout Pulse.iso");
+        std::fs::write(&rom, b"test").unwrap();
+        std::fs::write(nested.join("Vimm's Lair.txt"), b"ignored").unwrap();
+        let found = list_files_in_dir(&root, &[".iso".into()]);
+        assert_eq!(found, vec![rom]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn espath_comes_from_authoritative_es_de_root_not_rom_drive() {

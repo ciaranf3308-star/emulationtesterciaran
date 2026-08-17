@@ -1,19 +1,16 @@
 /**
- * V8.6D1 – Discovery shim – ROMsFun primary, Vimm dormant fallback
+ * Discovery shim – Vimm authoritative catalogue, ROMsFun optional backup.
  * Premium gaming OS: graphite / silver / acrylic / cool electric cyan
- * Provider-neutral surface – ROMsFun real page rendered inside Crystal, not Edge
- *
- * Keeps Vimm implementation isolated dormant – DO NOT leak Vimm concepts into ROMsFun
+ * Provider-neutral result shape with provider-owned canonical URLs.
  */
 
-import { RomsFunProvider } from '../discovery/providers/romsfun/RomsFunProvider';
 import { VimmProvider } from '../discovery/providers/vimm/VimmProvider';
 import { DiscoveryService } from '../discovery/discoveryService';
 import { buildDetailUrl as buildVimmDetailUrl } from '../discovery/providers/vimm/vimmRoutes';
 import { buildSearchUrl as buildVimmSearchUrl } from '../discovery/providers/vimm/vimmRoutes';
 import { crystalToVimmToken } from '../discovery/providers/vimm/vimmSystemMap';
 import { validateOpenUrl as validateVimmOpenUrl } from '../discovery/providers/vimm/hostValidation';
-import { buildCanonicalDetailUrl as buildRomsFunDetailUrl, buildVaultRoot as buildRomsFunVaultRoot } from '../discovery/providers/romsfun/romsfunRoutes';
+import { buildCanonicalDetailUrl as buildRomsFunDetailUrl, buildCanonicalSearchUrl as buildRomsFunSearchUrl } from '../discovery/providers/romsfun/romsfunRoutes';
 import { validateRomsFunOpenUrl } from '../discovery/providers/romsfun/hostValidation';
 import { isTauriEnvironment } from '../runtime/environment';
 import { isDevFixtureAllowed, isFixtureEnabled } from '../dev/fixtures/fixtureMode';
@@ -32,12 +29,11 @@ async function openValidatedExternalUrl(url: string): Promise<void> {
   if (!opened) throw new Error('EXTERNAL_BROWSER_OPEN_FAILED: browser blocked the new window');
 }
 
-// Primary provider is ROMsFun per V8.6D1 Plan C
-const romsfunProvider = new RomsFunProvider();
-const vimmProviderDormant = new VimmProvider(); // dormant / fallback-capable
+const vimmProviderDormant = new VimmProvider();
 
-const service = new DiscoveryService(romsfunProvider);
-// For fallback internal reference: const vimmService = new DiscoveryService(vimmProviderDormant); // kept dormant but available if needed
+// Results and click-throughs must share one source of truth. Vimm search rows
+// carry the exact numeric vault id used by their canonical detail page.
+const service = new DiscoveryService(vimmProviderDormant);
 
 export type DiscoveryAvailability = 'available' | 'unavailable' | 'takedown' | 'unknown';
 
@@ -66,6 +62,7 @@ export type DiscoveryResult = {
 export type DiscoverySearchParams = {
   systemId: string;
   query: string;
+  browseLetter?: string;
   limit?: number;
   signal?: AbortSignal;
 };
@@ -139,7 +136,10 @@ export async function search(params: DiscoverySearchParams): Promise<DiscoveryRe
     // fallback to real provider
   }
 
-  const res: AuthResult[] = await service.search(params.systemId, params.query, { signal: params.signal });
+  const providerQuery = params.browseLetter
+    ? `__browse:${params.browseLetter.toUpperCase()}`
+    : params.query;
+  const res: AuthResult[] = await service.search(params.systemId, providerQuery, { signal: params.signal });
   return res.map((r): DiscoveryResult => ({
     id: r.providerId || (r as any).id,
     providerId: r.providerId,
@@ -150,9 +150,9 @@ export async function search(params: DiscoverySearchParams): Promise<DiscoveryRe
     region: r.region,
     year: r.year as any,
     availability: (r.availability || 'available') as DiscoveryAvailability,
-    externalUrl: r.externalUrl || buildRomsFunDetailUrl(r.providerId),
+    externalUrl: r.externalUrl || buildVimmDetailUrl(r.providerId),
     thumbnailUrl: r.thumbnailUrl || null,
-    provider: r.provider || 'romsfun',
+    provider: r.provider || 'vimms',
     discCount: r.discCount,
   }));
 }
@@ -217,9 +217,17 @@ export function buildVimmBackupUrl(systemId: string, title: string): string {
   return buildVimmSearchUrl(token, title);
 }
 
+export function buildRomsFunBackupUrl(systemId: string, title: string): string {
+  return buildRomsFunSearchUrl(systemId, title);
+}
+
+export async function openRomsFunBackup(systemId: string, title: string): Promise<void> {
+  await openValidatedExternalUrl(buildRomsFunBackupUrl(systemId, title));
+}
+
 export async function openRoot(): Promise<void> {
-  // Primary is ROMsFun home – but primary GET GAME flow does NOT call shell.open
-  const url = buildRomsFunVaultRoot();
+  // Open the authoritative catalogue root.
+  const url = 'https://vimm.net/vault';
   // internal fallback only
   try {
     if (isTauriEnvironment()) {
@@ -236,9 +244,9 @@ export function buildRomsFunCanonicalForDiscover(slugOrId: string): string {
   return buildRomsFunDetailUrl(slugOrId);
 }
 
-export const primaryProviderId = 'romsfun';
+export const primaryProviderId = 'vimms';
 export const dormantVimmProvider = vimmProviderDormant;
-export const primaryProvider = romsfunProvider;
+export const primaryProvider = vimmProviderDormant;
 
 const discoveryService = {
   search,
@@ -246,6 +254,8 @@ const discoveryService = {
   open,
   openVimmBackup,
   buildVimmBackupUrl,
+  openRomsFunBackup,
+  buildRomsFunBackupUrl,
   openRoot,
   canonicalVaultUrl,
   isAllowedOpenUrl,

@@ -14,7 +14,7 @@
 import type { CatalogProvider } from '../../catalogProvider';
 import type { DiscoveryResult, DiscoveryGameDetail } from '../../types';
 import { crystalToVimmToken, isSupportedCrystalSystem } from './vimmSystemMap';
-import { buildSearchUrl, buildDetailUrl } from './vimmRoutes';
+import { buildSearchUrl, buildBrowseUrl, buildDetailUrl } from './vimmRoutes';
 import { parseVimmSearch } from './parseVimmSearch';
 import { parseVimmDetail } from './parseVimmDetail';
 import { parseSearchHtml, parseDetailHtml } from './parser';
@@ -183,7 +183,8 @@ export class VimmProvider implements CatalogProvider {
     await this.enforceSpacing(opts?.signal);
     if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-    const url = buildSearchUrl(token, query);
+    const browse = query.match(/^__browse:([A-Z#]|FEATURED)$/i);
+    const url = browse ? buildBrowseUrl(token, browse[1]) : buildSearchUrl(token, query);
 
     const html = await tauriFetchVimm(url, opts?.signal);
 

@@ -14,6 +14,21 @@ export function buildVaultRoot(): string {
   return VAULT_ROOT;
 }
 
+export function buildBrowseUrl(systemToken: string, letter: string): string {
+  const token = systemToken.trim();
+  const bucket = letter.trim().toUpperCase();
+  if (!token) throw new Error('Vimm system token required');
+  if (bucket === 'FEATURED') {
+    const url = `${VAULT_ROOT}/${encodeURIComponent(token)}`;
+    if (!isValidVimmUrl(url)) throw new Error(`Built Vimm featured URL invalid: ${url}`);
+    return url;
+  }
+  if (!/^(?:[A-Z]|#)$/.test(bucket)) throw new Error(`Invalid Vimm browse bucket '${letter}'`);
+  const url = `${VAULT_ROOT}/${encodeURIComponent(token)}/${encodeURIComponent(bucket)}`;
+  if (!isValidVimmUrl(url)) throw new Error(`Built Vimm browse URL invalid: ${url}`);
+  return url;
+}
+
 export function isValidVimmUrl(urlStr: string): boolean {
   try { return hostIsValid(urlStr) } catch { return false }
 }

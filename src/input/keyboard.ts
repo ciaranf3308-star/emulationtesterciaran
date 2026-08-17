@@ -79,6 +79,7 @@ export function keyboardToAction(e: KeyboardEvent): NavigationAction | null {
 
 const DEFAULT_INITIAL_DELAY = 400
 const DEFAULT_REPEAT_INTERVAL = 120
+const REPEATABLE_ACTIONS = new Set<NavigationAction>(['up', 'down', 'left', 'right', 'nextSystem', 'previousSystem'])
 
 interface KeyState {
   action: NavigationAction
@@ -101,7 +102,7 @@ export function createKeyboardAdapter(onAction: InputHandler): KeyboardAdapter {
     if (isEditableKeyboardTarget(ev.target)) return
     const action = keyboardToAction(ev)
     if (!action) return
-    if (NAV_KEYS_BLOCK_SCROLL.has(ev.key) || action === 'up' || action === 'down' || action === 'left' || action === 'right') {
+    if (NAV_KEYS_BLOCK_SCROLL.has(ev.key) || action === 'up' || action === 'down' || action === 'left' || action === 'right' || action === 'confirm') {
       ev.preventDefault()
     }
     const keyId = ev.code || ev.key
@@ -110,14 +111,16 @@ export function createKeyboardAdapter(onAction: InputHandler): KeyboardAdapter {
     if (existing) return
     emit(action, false)
     const state: KeyState = { action, timeoutId: null, intervalId: null }
-    const timeoutId = window.setTimeout(() => {
-      const intervalId = window.setInterval(() => {
-        emit(action, true)
-      }, DEFAULT_REPEAT_INTERVAL) as unknown as number
-      state.intervalId = intervalId
-      state.timeoutId = null
-    }, DEFAULT_INITIAL_DELAY) as unknown as number
-    state.timeoutId = timeoutId
+    if (REPEATABLE_ACTIONS.has(action)) {
+      const timeoutId = window.setTimeout(() => {
+        const intervalId = window.setInterval(() => {
+          emit(action, true)
+        }, DEFAULT_REPEAT_INTERVAL) as unknown as number
+        state.intervalId = intervalId
+        state.timeoutId = null
+      }, DEFAULT_INITIAL_DELAY) as unknown as number
+      state.timeoutId = timeoutId
+    }
     keyStates.set(keyId, state)
   }
 

@@ -7,9 +7,8 @@
  *  - runtimeSupported: can frontend+planned backend execute now?
  *
  * Truth:
- *  %INJECT% requires process injection (Xbox360 Xenia)
- *  %EMULATOR_OS-SHELL% requires shell execution semantics (Steam)
- *  Both are recognized but NOT runtime supported – must block launch.
+ *  %INJECT% expands the optional per-game ES-DE argument file.
+ *  %EMULATOR_OS-SHELL% resolves through the configured system find rule.
  */
 
 export type PlaceholderCategory =
@@ -69,9 +68,8 @@ export function getPlaceholderCapability(token: string): PlaceholderCapability {
       token: raw,
       normalized,
       recognized: true,
-      runtimeSupported: false,
+      runtimeSupported: true,
       category: 'shell',
-      reason: `OS-SHELL requires shell execution semantics – token ${raw} not yet implemented`,
       requiresBackendFeature: 'shell-execution',
     }
   }
@@ -82,9 +80,8 @@ export function getPlaceholderCapability(token: string): PlaceholderCapability {
       token: raw,
       normalized,
       recognized: true,
-      runtimeSupported: false,
+      runtimeSupported: true,
       category: 'shell',
-      reason: `OS-SHELL requires shell execution semantics – token ${raw} not yet implemented`,
       requiresBackendFeature: 'shell-execution',
     }
   }
@@ -94,10 +91,9 @@ export function getPlaceholderCapability(token: string): PlaceholderCapability {
       token: raw,
       normalized,
       recognized: true,
-      runtimeSupported: false,
+      runtimeSupported: true,
       category: 'injection',
-      reason: 'Requires process injection semantics not yet implemented – Xbox360 Xenia INJECT',
-      requiresBackendFeature: 'process-injection',
+      requiresBackendFeature: 'argument-file-injection',
     }
   }
 

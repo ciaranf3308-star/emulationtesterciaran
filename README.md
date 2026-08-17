@@ -1,5 +1,250 @@
 # Crystal Frontend — Windows ROM Launcher
 
+## AUTHORITATIVE ROG ALLY X HANDOFF — 2026-08-17
+
+This section is the starting point for any agent continuing development. It describes the physical ROG Ally X installation that produced this repository state, the machine-local files that are intentionally absent from GitHub, and the contracts that must not be casually replaced with guessed paths.
+
+### Current product and build
+
+- Repository: `ciaranf3308-star/emulationtesterciaran`
+- Native application: React/TypeScript/Vite frontend inside a Tauri v2 Rust host.
+- Current product version: `4.5.0`.
+- Physical-machine checkout: `C:\Users\ciara\Documents\Crystal-ROG-Integration`.
+- Native development executable: `C:\Users\ciara\Documents\Crystal-ROG-Integration\src-tauri\target\release\crystal-frontend.exe`.
+- Desktop entry: `C:\Users\ciara\Desktop\Crystal.lnk` targets that executable.
+- Correct production build command: `cargo tauri build --no-bundle` from the repository root. A plain `cargo build --release` does **not** set Tauri's custom-protocol production configuration and can create an executable that attempts to load `http://localhost:1420`.
+- The release executable is a development deployment on this ROG, not a separately installed MSI. Rebuilding the path above updates the desktop shortcut automatically.
+
+### The non-negotiable machine-truth model
+
+Crystal does not maintain an independent emulator database. It is a controller-first frontend over the user's existing EmuDeck + ES-DE installation. The native backend reads one generated machine manifest and treats the launch command templates, extensions, ROM locations, media locations and selected emulator labels in that file as authoritative.
+
+The real manifest is intentionally ignored by Git because it contains personal absolute paths and a detailed machine inventory:
+
+`D:\CrystalFrontend\crystal-machine-config.json`
+
+Current physical manifest summary:
+
+- `schemaVersion`: `1`
+- generated: `2026-08-09T20:38:48+01:00`
+- populated systems: `19`
+- ROM root: `D:\Emulation\roms\`
+- scraped-media root: `D:\Emulation\storage\downloaded_media`
+- ES-DE gamelist root: `C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE\gamelists`
+
+The configured systems are:
+
+`n3ds, dreamcast, gb, gba, gbc, gc, genesis, megadrive, n64, nds, ps2, psp, psx, snes, steam, wii, wiiu, xbox, xbox360`
+
+Do not commit the real manifest, replace it with example data in installed mode, or infer a launch path from emulator documentation. Regenerate/audit it on the physical ROG when EmuDeck configuration changes.
+
+### Machine-config lookup order
+
+The canonical implementation is `src-tauri/src/machine_config.rs`. In practical priority order it checks:
+
+1. `CRYSTAL_MACHINE_CONFIG`, when explicitly set.
+2. Crystal's writable root (`D:\CrystalFrontend` while the D drive exists): `crystal-machine-config.json`, then `machine-config.json`.
+3. Paths beside/above the running executable and current directory.
+4. `%LOCALAPPDATA%\CrystalFrontend\` and compatible legacy Crystal Frontend locations.
+5. `%APPDATA%\CrystalFrontend\` and compatible legacy locations.
+6. User-profile compatibility locations.
+
+If no real manifest is found, the installed Tauri build deliberately blocks startup instead of silently showing example systems. Browser development may use `config/machine-config.example.json`, but that behavior must never leak into installed mode.
+
+### Writable storage and why it prefers D
+
+`src-tauri/src/safety.rs` owns the writable-root policy. On this ROG it prefers:
+
+`D:\CrystalFrontend`
+
+when that directory/drive is available. Otherwise it falls back to `%LOCALAPPDATA%\CrystalFrontend`. This is intentional: videos, screenshots, caches, extraction staging and logs should not needlessly consume the Windows system drive.
+
+Important runtime paths:
+
+- machine manifest: `D:\CrystalFrontend\crystal-machine-config.json`
+- log: `D:\CrystalFrontend\logs\crystal-frontend.log`
+- import staging/cache: `D:\CrystalFrontend\cache\imports\`
+- scraped media: `D:\Emulation\storage\downloaded_media\<system>\<media-type>\`
+- ROM destination: `D:\Emulation\roms\<system>\`
+
+`CRYSTAL_SAFE_MODE=1` blocks launches/import writes. Normal physical testing must first establish whether safe mode is active; never report a successful launch when the backend only accepted a request.
+
+### EmuDeck and ES-DE dependencies
+
+Crystal currently depends on these physical installations/configuration areas:
+
+- EmuDeck/ES-DE root: `C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE`
+- ES-DE gamelists: `C:\Users\ciara\AppData\Roaming\EmuDeck\EmulationStation-DE\ES-DE\gamelists\<system>\gamelist.xml`
+- EmuDeck 7-Zip executable: `C:\Users\ciara\AppData\Roaming\EmuDeck\backend\wintools\7z.exe`
+- ROM libraries: `D:\Emulation\roms\<system>`
+- scraped media: `D:\Emulation\storage\downloaded_media\<system>\{covers,physicalmedia,screenshots,titlescreens,videos,marquees,miximages}`
+
+Crystal reads ES-DE metadata (`name`, description, genre, developer, publisher, rating, release date, favorite, play count, play time and last played) from each system's `gamelist.xml`. Media filenames normally correspond to ROM basenames. The manifest may include exception samples where ES-DE's scraped filename differs.
+
+The launch backend must preserve each command template exactly as recorded. It resolves EmuDeck `staticpath`, `corepath` and `systempath` find rules at launch time, substitutes known placeholders, validates the ROM, uses the configured working directory and starts only one detached emulator process. `%INJECT%` and `%OS-SHELL%` remain blocked unless deliberately implemented and tested; do not "simplify" templates into hardcoded emulator EXEs.
+
+Current selected emulator labels include PCSX2 (PS2), Dolphin (GameCube/Wii), Azahar (3DS), melonDS (DS), DuckStation (PSX), PPSSPP (PSP), xemu (Xbox), Xenia (Xbox 360), Cemu (Wii U), mGBA (GBA), Genesis Plus GX, Snes9x and Mupen64Plus-Next. The manifest—not this prose—is authoritative if selections change.
+
+### Game enumeration and deduplication
+
+- Native enumeration respects each system's `validExtensions` from the real manifest.
+- Archives in ROM folders are not treated as playable ROMs after successful extraction.
+- `src/lib/dedupeLibraryGames.ts` removes duplicate logical entries caused by stale archives, repeated metadata or multiple equivalent paths.
+- `matchingRomFileCount` in the manifest is an audit snapshot, not a live UI count. Crystal enumerates the current directory for the live library.
+- The D drive can be unplugged. Missing media/ROM roots must produce a truthful unavailable/empty state, not example content or a crash.
+
+### Launch lifecycle contract
+
+The frontend's `PLAY` action is not itself proof of launch. The path is:
+
+1. `LibraryView`/App produces a request for the selected real game.
+2. `src/launcher/*` validates capability and preserves the configured template.
+3. Tauri `launch_game` resolves find rules and placeholders.
+4. The backend validates that the ROM and emulator/core exist.
+5. A per-game launch guard prevents rapid A presses from spawning many emulator copies.
+6. Crystal suspends expensive media/animation while an emulator owns the foreground.
+7. Return-to-frontend handling restores focus and refreshes relevant metadata.
+
+Do not display “launched” before the native backend has returned a successful spawn result. Historical bugs included dozens of RetroArch instances from repeated input and false-positive launch messages; the guards are intentional.
+
+### Discovery/provider policy
+
+Discovery is a browsing and ownership-assistance surface, not a ROM-hosting implementation. Vimm is the primary catalog mapping and ROMsFun remains a fallback/reference provider where applicable. Provider pages open externally when direct embedding or navigation is unsafe/unreliable.
+
+Important code:
+
+- `src/components/DiscoverView.tsx`
+- `src/discovery/providers/vimm/*`
+- `src/lib/discoveryService.ts`
+- `src-tauri/src/provider_surface.rs`
+- `src-tauri/src/acquisition_watch.rs`
+
+Provider data is volatile. Never assume a URL route from old documentation; test against the current physical provider. Search/detail parsing has fixtures and tests, but a passing parser test does not prove the live site is reachable.
+
+### Downloads inbox and install pipeline
+
+The Settings `Downloads inbox` is the supported manual-install recovery path. It watches the real Windows Downloads known folder. It is designed to make externally downloaded packages safe and understandable:
+
+1. Scan supported loose ROMs, ZIP and 7z packages.
+2. Inspect archive contents without trusting the outer filename.
+3. Detect inner extensions and candidate systems from the real manifest.
+4. Auto-select only a high-confidence console.
+5. Show a full-screen blocking progress state while inspecting/extracting/verifying.
+6. Extract into Crystal staging, validate traversal/size/file-count limits, then move valid game files into the selected EmuDeck ROM folder.
+7. Verify installed paths exist.
+8. Delete the original Downloads package only after `INSTALLED` or verified `ALREADY_INSTALLED`.
+9. Show a persistent success/failure result.
+
+Relevant implementation:
+
+- UI: `src/components/DownloadResolverPanel.tsx`
+- scanner/automatic destination/logging: `src-tauri/src/download_resolver.rs`
+- extraction and validation: `src-tauri/src/import_game.rs`
+- live provider acquisition: `src-tauri/src/acquisition_watch.rs`
+
+The current automatic mappings include `.gb → gb`, `.gbc → gbc`, `.gba → gba`, `.nds → nds`, `.3ds/.cia → n3ds`, N64/SNES/Genesis families, `.ciso → gc`, and known PS2 sports-title ISO matching. Ambiguous disc formats must remain reviewable rather than guessed. The scanner uses EmuDeck's `7z.exe` path above for `.7z` inspection.
+
+Never delete a source download before destination verification. Never allow extraction outside `D:\CrystalFrontend\cache\imports`. Never run archive contents. Never make Downloads a second permanent ROM library.
+
+### Controller and input ownership
+
+Crystal is controller-first. Input is centralized through semantic actions rather than per-component raw key listeners:
+
+- `src/hooks/useSemanticInput.ts`
+- `src/input/gamepad.ts`
+- `src/input/keyboard.ts`
+- `src/acquisition/inputOwnership.ts`
+
+The acquisition/provider surface temporarily owns input. This prevents one A/B press from activating both the overlay and the underlying library. Gamepad actions use edge/repeat handling and launch guards. Settings controls carry `data-settings-control` so D-pad traversal can find them. Any new modal must define who owns A, B, D-pad and Menu and must not leak events to the view underneath.
+
+Physical Ally controls still require human confirmation; browser automation cannot actuate the embedded controller hardware reliably.
+
+### Visual and asset architecture
+
+Do not flatten the stage into one background. The current library deliberately separates:
+
+1. themed background/environment,
+2. selected-game video/screenshot,
+3. selected physical media,
+4. transparent hardware foreground,
+5. React navigation/metadata chrome.
+
+System-specific calibration lives in `src/stage/config/`. Hardware foregrounds live in `public/assets/hardware/<system>/`. Theme assets live in `public/assets/Crystal-Frontend-Asset-Pack/` and are resolved through its manifest. The source fallback manifest in `src/assets-fallback/manifest.json` must be updated whenever the public manifest changes.
+
+The August 17 build adds:
+
+- `backgrounds/light/steam.png`
+- `backgrounds/dark/steam.png`
+- a replacement `backgrounds/light/auto-allgames.png`
+
+Known remaining theme-asset gaps:
+
+- Mega Drive light background
+- Mega Drive dark background
+- Mega Drive light logo
+- Mega Drive dark logo
+- Steam light logo
+
+Mega Drive already has a transparent hardware foreground and carousel icon. Do not regenerate those.
+
+### Performance constraints
+
+This is a handheld frontend that must leave thermal/power headroom for emulation:
+
+- Never mount one video per game row.
+- Decode only the selected system hardware foreground.
+- Pause videos and expensive animation when Crystal loses foreground focus.
+- Respect `prefers-reduced-motion`.
+- Prefer transform/opacity animations over layout animation and large full-screen live blur.
+- Long imports run in blocking worker threads, not the UI thread.
+- Modal install state prevents duplicate extraction jobs.
+- PowerShell must not appear during ordinary use; launch helpers should use hidden/no-console semantics.
+
+### Validation on the physical ROG
+
+Before calling a handoff build usable:
+
+1. `bun run typecheck`
+2. `bun test src tests`
+3. `bun run build`
+4. `cargo test --manifest-path src-tauri/Cargo.toml`
+5. `cargo tauri build --no-bundle`
+6. Launch the release EXE beside/with access to the real machine manifest.
+7. Verify the 1152×654 logical viewport at Windows 175% scaling has no clipped primary controls or unwanted body scrollbar.
+8. Physically test Ally D-pad, A, B, X, Y, View and Menu.
+9. Launch at least one representative standalone emulator and one RetroArch core, confirm exactly one process, exit, and verify return-to-Crystal.
+10. Test a small disposable import package before a multi-gigabyte archive. Confirm progress, destination, ROM visibility and source cleanup.
+11. Review `D:\CrystalFrontend\logs\crystal-frontend.log` for native errors.
+
+Tests are necessary but not sufficient: provider reachability, controller hardware, emulator focus/exit and real archive installation require physical-machine validation.
+
+Selected physical-session evidence is retained under `docs/validation/` for visual context. These screenshots are evidence of specific sessions, not automated golden truth; check their capture context before using them as regression baselines.
+
+### Security, privacy and repository hygiene
+
+Never commit:
+
+- `D:\CrystalFrontend\crystal-machine-config.json`
+- ROMs, BIOS, saves or scraped game media
+- private signing keys, GitHub tokens or `.env` values
+- Downloads packages or provider content
+- `src-tauri/target`, root test output, logs or generated installers unless deliberately releasing them
+
+It is safe to commit code, sanitized example configuration, curated frontend artwork, tests and documentation. Log messages must use basenames/session IDs where practical and never dump secrets or full archive contents.
+
+### Immediate next-agent checklist
+
+- Pull the latest remote commit before editing.
+- Read this handoff section, `V2-DAILY-DRIVER-AUDIT.md`, `TAURI-INTEGRATION.md`, `docs/CRYSTAL-PRODUCT-RULE.md`, and the real config schema.
+- Do not rewrite the EmuDeck launch layer into a generic emulator map.
+- Do not add example-data fallback to the installed app.
+- Do not treat provider search results as guaranteed downloadable entries.
+- Preserve source cleanup verification and automatic destination conservatism.
+- Ask the user to run physical Ally tests when hardware actuation is required.
+- Any major visual overhaul must remain console-specific and retain the five independent stage layers.
+
+---
+
 Premium fullscreen Windows gaming frontend (React + TypeScript + Vite → Tauri). Replaces ES-DE visually while continuing to use the user's existing EmuDeck installation underneath.
 
 > **Note:** This build is Tauri v2 ready – `src-tauri/` implements real machine runtime; Vite build is 82 modules.

@@ -52,3 +52,8 @@ downloaded_media/
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/gen/
+/target/
+
+# Bun is the authoritative JS package manager for this repository.
+/pnpm-lock.yaml
+/pnpm-workspace.yaml

@@ -21,22 +21,21 @@ describe('placeholder capability mapping', () => {
     expect(getPlaceholderCapability('%CORE_RETROARCH%').runtimeSupported).toBe(true)
   })
 
-  test('%INJECT% recognized but not runtimeSupported', () => {
+  test('%INJECT% is supported by the backend argument-file expander', () => {
     const cap = getPlaceholderCapability('%INJECT%')
     expect(cap.recognized).toBe(true)
-    expect(cap.runtimeSupported).toBe(false)
+    expect(cap.runtimeSupported).toBe(true)
     expect(cap.category).toBe('injection')
-    expect(cap.reason).toContain('process injection')
+    expect(cap.requiresBackendFeature).toBe('argument-file-injection')
   })
 
-  test('OS-SHELL shell family blocked', () => {
+  test('OS-SHELL shell family resolves through configured find rules', () => {
     const tokens = ['%EMULATOR_OS-SHELL%', '%OS-SHELL%', '%EMULATOR_OS%']
     for (const t of tokens) {
       const cap = getPlaceholderCapability(t)
       expect(cap.recognized).toBe(true)
-      expect(cap.runtimeSupported).toBe(false)
+      expect(cap.runtimeSupported).toBe(true)
       expect(cap.category).toBe('shell')
-      expect(cap.reason?.toLowerCase()).toContain('shell')
     }
   })
 
@@ -71,16 +70,16 @@ describe('placeholder capability mapping', () => {
     expect(ready.blockingReasons.length).toBe(0)
   })
 
-  test('isLaunchReady blocked by INJECT', () => {
+  test('isLaunchReady supports INJECT', () => {
     const r = isLaunchReady('%STARTDIR%=%EMUDIR% %EMULATOR_XENIA% %INJECT%=%BASENAME%.commands %ROM%')
-    expect(r.ready).toBe(false)
-    expect(r.blockingReasons.join(' ')).toContain('INJECT')
+    expect(r.ready).toBe(true)
+    expect(r.blockingReasons).toEqual([])
   })
 
-  test('isLaunchReady blocked by OS-SHELL even with modifiers', () => {
+  test('isLaunchReady supports OS-SHELL with modifiers', () => {
     const r = isLaunchReady('%HIDEWINDOW% %ESCAPESPECIALS% %RUNINBACKGROUND% %EMULATOR_OS-SHELL% /C %ROM%')
-    expect(r.ready).toBe(false)
-    expect(r.blockingReasons.join('')).toMatch(/OS-SHELL/i)
+    expect(r.ready).toBe(true)
+    expect(r.blockingReasons).toEqual([])
     // modifiers themselves are supported
     const modCaps = r.capabilities.filter(c=>c.category==='modifier')
     expect(modCaps.every(c=>c.runtimeSupported)).toBe(true)
